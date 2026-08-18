@@ -1447,6 +1447,134 @@ async function upsertPathHead(env, chain, path, hash, updated) {
   ).bind(chain, path, hash, updated).run();
 }
 
+// V6.2: accepted-state (path_heads, semantic/curated) vs observed-source (live GitHub) freshness.
+// This NEVER writes to path_heads/chain_heads -- reconciliation is read-only with respect to
+// HEAD by design. It only records what was observed and whether it differs from what's accepted.
+async function upsertSourceFreshness(env, row) {
+  await env.CAIRNSTONE_DB.prepare(
+    `INSERT INTO source_freshness
+       (chain,path,owner,repo,checked_ref,observed_commit_sha,observed_at,accepted_stone_hash,accepted_commit_sha,drift,drift_reason)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(chain,path) DO UPDATE SET
+       owner=excluded.owner, repo=excluded.repo, checked_ref=excluded.checked_ref,
+       observed_commit_sha=excluded.observed_commit_sha, observed_at=excluded.observed_at,
+       accepted_stone_hash=excluded.accepted_stone_hash, accepted_commit_sha=excluded.accepted_commit_sha,
+       drift=excluded.drift, drift_reason=excluded.drift_reason`
+  ).bind(
+    row.chain, row.path, row.owner, row.repo, row.checked_ref, row.observed_commit_sha,
+    row.observed_at, row.accepted_stone_hash, row.accepted_commit_sha, row.drift ? 1 : 0, row.drift_reason
+  ).run();
+}
+
+// Live check: resolves current GitHub state for (owner,repo,path,ref), compares against the
+// chain's accepted path_head, records the result, and returns the comparison. Does NOT touch
+// path_heads/chain_heads -- drift is surfaced, never auto-resolved.
+async function checkSourceFreshnessFromBody(body, env) {
+  requireBindings(env);
+  const chain = requiredString(body.chain, "chain");
+  const path = requiredString(body.path, "path");
+  const owner = requiredString(body.owner, "owner");
+  const repoName = requiredString(body.repo, "repo");
+  const ref = String(body.ref || DEFAULT_GITHUB_REF);
+  const repo = `${owner}/${repoName}`;
+  const observedAt = new Date().toISOString();
+
+  const resolution = await resolveGitHubCommit(owner, repoName, ref, env);
+
+  const pathHeadRow = await env.CAIRNSTONE_DB.prepare(
+    "SELECT head_hash FROM path_heads WHERE chain = ? AND path = ?"
+  ).bind(chain, path).first();
+  const acceptedStoneHash = pathHeadRow ? pathHeadRow.head_hash : null;
+
+  let acceptedCommitSha = null;
+  if (acceptedStoneHash) {
+    const stoneRow = await env.CAIRNSTONE_DB.prepare(
+      "SELECT commit_sha FROM stones WHERE hash = ?"
+    ).bind(acceptedStoneHash).first();
+    acceptedCommitSha = stoneRow ? stoneRow.commit_sha : null;
+  }
+
+  let drift = false;
+  let driftReason = null;
+  if (!resolution.sha) {
+    drift = true;
+    driftReason = `observation_failed:${resolution.error || "unknown"}`;
+  } else if (!acceptedStoneHash) {
+    drift = true;
+    driftReason = "no_accepted_stone";
+  } else if (acceptedCommitSha !== resolution.sha) {
+    drift = true;
+    driftReason = "commit_mismatch";
+  }
+
+  await upsertSourceFreshness(env, {
+    chain, path, owner, repo: repoName, checked_ref: ref,
+    observed_commit_sha: resolution.sha, observed_at: observedAt,
+    accepted_stone_hash: acceptedStoneHash, accepted_commit_sha: acceptedCommitSha,
+    drift, drift_reason: driftReason
+  });
+
+  return {
+    ok: true,
+    chain, path, repo, checked_ref: ref,
+    accepted: { stone_hash: acceptedStoneHash, commit_sha: acceptedCommitSha },
+    observed: { commit_sha: resolution.sha, resolved: Boolean(resolution.sha), error: resolution.sha ? undefined : resolution.error },
+    drift, drift_reason: driftReason,
+    observed_at: observedAt
+  };
+}
+
+// Cheap read of the last-recorded freshness check for one (chain,path). No GitHub call.
+async function getSourceFreshnessFromBody(body, env) {
+  requireBindings(env);
+  const chain = requiredString(body.chain, "chain");
+  const path = requiredString(body.path, "path");
+  const row = await env.CAIRNSTONE_DB.prepare(
+    "SELECT * FROM source_freshness WHERE chain = ? AND path = ?"
+  ).bind(chain, path).first();
+  if (!row) return { ok: true, chain, path, checked: false, message: "No freshness check recorded yet for this (chain, path). Call cairnstone_check_source_freshness to check now." };
+  return {
+    ok: true, chain, path, checked: true,
+    repo: `${row.owner}/${row.repo}`, checked_ref: row.checked_ref,
+    accepted: { stone_hash: row.accepted_stone_hash, commit_sha: row.accepted_commit_sha },
+    observed: { commit_sha: row.observed_commit_sha },
+    drift: Boolean(row.drift), drift_reason: row.drift_reason,
+    observed_at: row.observed_at
+  };
+}
+
+// Chain-wide freshness summary. Cheap read only (no GitHub calls) -- shows every path with a
+// recorded freshness check, split into drifted vs in-sync, plus which accepted path_heads have
+// never been checked at all. This is deliberately NOT a live repo walk (that's V6.3's
+// cairnstone_reconcile_repo) -- it only reports on what's already been recorded.
+async function getFreshnessStatusFromBody(body, env) {
+  requireBindings(env);
+  const chain = requiredString(body.chain, "chain");
+
+  const freshnessRows = (await env.CAIRNSTONE_DB.prepare(
+    "SELECT * FROM source_freshness WHERE chain = ? ORDER BY path ASC"
+  ).bind(chain).all()).results || [];
+
+  const pathHeadRows = (await env.CAIRNSTONE_DB.prepare(
+    "SELECT path FROM path_heads WHERE chain = ? ORDER BY path ASC"
+  ).bind(chain).all()).results || [];
+
+  const checkedPaths = new Set(freshnessRows.map(r => r.path));
+  const neverChecked = pathHeadRows.map(r => r.path).filter(p => !checkedPaths.has(p));
+
+  const drifted = freshnessRows.filter(r => r.drift).map(r => ({ path: r.path, drift_reason: r.drift_reason, observed_at: r.observed_at }));
+  const inSync = freshnessRows.filter(r => !r.drift).map(r => ({ path: r.path, observed_at: r.observed_at }));
+
+  return {
+    ok: true,
+    chain,
+    summary: { total_checked: freshnessRows.length, drifted: drifted.length, in_sync: inSync.length, never_checked: neverChecked.length },
+    drifted,
+    in_sync: inSync,
+    never_checked: neverChecked
+  };
+}
+
 async function ftsIndexRefs(env, stoneHash, chain, refs) {
   try {
     for (const ref of refs) {
