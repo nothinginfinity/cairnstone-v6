@@ -20,6 +20,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/stones/github") return json(await createStoneFromGitHubBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/stones/repository") return json(await createRepoStonesFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/fetch/github") return json(await fetchGitHubFileFromBody(await request.json(), env));
+      if (request.method === "POST" && url.pathname === "/v1/find-by-source") return json(await findBySourceFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/search") return json(await searchStonesFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/query-expand") return json(await queryAndExpandFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/expand") return json(await expandRefFromBody(await request.json(), env));
@@ -111,6 +112,7 @@ function routes() {
     "POST /v1/stones/github",
     "POST /v1/stones/repository",
     "POST /v1/fetch/github",
+    "POST /v1/find-by-source",
     "GET /v1/stones/:hash",
     "GET /v1/stones/:hash/lod/:level",
     "POST /v1/search",
@@ -202,6 +204,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_health") return health(env);
   if (name === "cairnstone_list_stones") return listStones(env, { ...args, origin: "mcp://cairnstone" });
   if (name === "cairnstone_fetch_github_file") return fetchGitHubFileFromBody(args, env);
+  if (name === "cairnstone_find_by_source") return findBySourceFromBody(args, env);
   if (name === "cairnstone_create_stone") return createStoneFromBody(args, env);
   if (name === "cairnstone_create_github_file_stone") return createStoneFromGitHubBody(args, env);
   if (name === "cairnstone_create_repo_stones") return createRepoStonesFromBody(args, env);
@@ -253,6 +256,21 @@ function mcpTools() {
           ref: { type: "string", description: "Branch, tag, or commit SHA. Defaults to main." },
           max_bytes: { type: "number", minimum: 1, maximum: MAX_FETCH_BYTES },
           return_content: { type: "boolean", description: "Return raw text content. Defaults to false for safety." }
+        }
+      }
+    },
+    {
+      name: "cairnstone_find_by_source",
+      description: "V6.1: deterministic (repo, path[, commit_sha]) lookup. Resolves directly to the covering stone(s) via structured indexed columns -- no FTS, no fuzzy matching. Omit commit_sha to get every stone ever created for that (repo, path) across all commits, most recent first (multiple stones may legitimately reference the same commit, e.g. a file stone plus a later review). Pass commit_sha for an exact-match lookup against one specific immutable commit.",
+      inputSchema: {
+        type: "object",
+        required: ["owner", "repo", "path"],
+        properties: {
+          owner: { type: "string" },
+          repo: { type: "string" },
+          path: { type: "string" },
+          commit_sha: { type: "string", description: "Full 40-hex commit SHA for an exact match. Omit to list all stones for this (repo, path)." },
+          limit: { type: "number", minimum: 1, maximum: 200 }
         }
       }
     },
@@ -618,8 +636,8 @@ async function createStoneFromBody(body, env) {
   };
 
   await env.CAIRNSTONE_DB.prepare(
-    "INSERT INTO stones (hash,title,author,created_at,repo,commit_sha,parent_hash,chain_hash,raw_key,stone_json) VALUES (?,?,?,?,?,?,?,?,?,?)"
-  ).bind(stoneHash, title, author, created, repo, commit, parent, chain, rawKey, JSON.stringify(stone)).run();
+    "INSERT INTO stones (hash,title,author,created_at,repo,commit_sha,parent_hash,chain_hash,raw_key,stone_json,path) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+  ).bind(stoneHash, title, author, created, repo, commit, parent, chain, rawKey, JSON.stringify(stone), path).run();
 
   for (const ref of refs) {
     await env.CAIRNSTONE_DB.prepare(
@@ -714,6 +732,41 @@ function githubSpecFromBody(body) {
     path: String(path),
     ref: String(body.ref || body.branch || body.sha || DEFAULT_GITHUB_REF),
     maxBytes: clamp(Number(body.max_bytes || MAX_FETCH_BYTES), 1, MAX_FETCH_BYTES)
+  };
+}
+
+// V6.1: deterministic (repo, path[, commit_sha]) lookup against structured indexed columns.
+// Deliberately does NOT use refs_fts or cairnstone_search -- exact structured match only.
+async function findBySourceFromBody(body, env) {
+  requireBindings(env);
+  const owner = requiredString(body.owner, "owner");
+  const repoName = requiredString(body.repo, "repo");
+  const path = requiredString(body.path, "path");
+  const commitSha = body.commit_sha ? String(body.commit_sha) : null;
+  const limit = clamp(Number(body.limit || 50), 1, 200);
+  const repo = `${owner}/${repoName}`;
+
+  const query = commitSha
+    ? "SELECT hash,title,author,created_at,repo,commit_sha,chain_hash,path FROM stones WHERE repo = ? AND path = ? AND commit_sha = ? ORDER BY created_at DESC LIMIT ?"
+    : "SELECT hash,title,author,created_at,repo,commit_sha,chain_hash,path FROM stones WHERE repo = ? AND path = ? ORDER BY created_at DESC LIMIT ?";
+  const bindArgs = commitSha ? [repo, path, commitSha, limit] : [repo, path, limit];
+
+  const result = await env.CAIRNSTONE_DB.prepare(query).bind(...bindArgs).all();
+  const rows = (result && result.results) || [];
+  return {
+    ok: true,
+    repo,
+    path,
+    commit_sha: commitSha,
+    total: rows.length,
+    stones: rows.map(row => ({
+      hash: row.hash,
+      title: row.title,
+      author: row.author,
+      created_at: row.created_at,
+      commit_sha: row.commit_sha,
+      chain: row.chain_hash
+    }))
   };
 }
 
