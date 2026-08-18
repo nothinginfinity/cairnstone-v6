@@ -1,0 +1,11 @@
+{
+  "title": "Example CairnStone",
+  "author": "jared@nothinginfinity",
+  "repo": "nothinginfinity/cairnstone-v5",
+  "commit": "local-dev",
+  "path": "example.txt",
+  "content": "CairnStone v5 stores raw content once, creates searchable refs, and expands exact line windows on demand.\nThis example is intentionally small.\nReal inputs can be repo files, handoffs, logs, tool outputs, docs, or compressed agent memory.",
+  "metadata": {
+    "source": "example"
+  }
+}
