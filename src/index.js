@@ -70,11 +70,11 @@ export default {
 function landing(env, url) {
   return {
     ok: true,
-    name: "cairnstone-v5",
+    name: "cairnstone-v6",
     version: VERSION,
-    protocol: "FSL-CCR Stone v5",
+    protocol: "FSL-CCR Stone v6",
     mcp: `${url.origin}/mcp`,
-    message: "CairnStone v5 is live. Claude and other MCP clients should connect to /mcp. REST clients can use /health, /v1/stones, /v1/stones/github, /v1/search, and /v1/expand.",
+    message: "CairnStone v6 is live. Isolated successor to cairnstone-v5. Claude and other MCP clients should connect to /mcp. REST clients can use /health, /v1/stones, /v1/stones/github, /v1/search, and /v1/expand.",
     base_url: url.origin,
     health: `${url.origin}/health`,
     d1: Boolean(env.CAIRNSTONE_DB),
@@ -88,9 +88,9 @@ function landing(env, url) {
 function health(env) {
   return {
     ok: true,
-    name: "cairnstone-v5",
+    name: "cairnstone-v6",
     version: VERSION,
-    protocol: "FSL-CCR Stone v5",
+    protocol: "FSL-CCR Stone v6",
     mcp_protocol_version: MCP_PROTOCOL_VERSION,
     d1: Boolean(env.CAIRNSTONE_DB),
     r2: Boolean(env.CAIRNSTONE_RAW),
@@ -129,7 +129,7 @@ async function handleMcp(request, env, url) {
   if (request.method === "GET") {
     return json({
       ok: true,
-      name: "cairnstone-v5-mcp",
+      name: "cairnstone-v6-mcp",
       version: VERSION,
       protocol: "MCP JSON-RPC over HTTP",
       endpoint: `${url.origin}/mcp`,
@@ -174,7 +174,7 @@ async function handleMcpRpc(rpc, env) {
       return rpcResult(id, {
         protocolVersion: (typeof params.protocolVersion === "string" && params.protocolVersion) ? params.protocolVersion : MCP_PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: "cairnstone-v5", version: VERSION }
+        serverInfo: { name: "cairnstone-v6", version: VERSION }
       });
     }
 
@@ -225,7 +225,7 @@ function mcpTools() {
   return [
     {
       name: "cairnstone_health",
-      description: "Check CairnStone v5 MCP, D1, R2, and GitHub fetch status.",
+      description: "Check CairnStone v6 MCP, D1, R2, and GitHub fetch status.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false }
     },
     {
@@ -686,7 +686,7 @@ async function fetchGitHubFile(spec, env) {
   const maxBytes = clamp(Number(spec.maxBytes || MAX_FETCH_BYTES), 1, MAX_FETCH_BYTES);
   const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(ref)}/${path.split("/").map(encodeURIComponent).join("/")}`;
   const headers = {
-    "User-Agent": "cairnstone-v5-worker",
+    "User-Agent": "cairnstone-v6-worker",
     "Accept": "text/plain, application/octet-stream;q=0.9, */*;q=0.8"
   };
   if (env.GITHUB_TOKEN) headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`;
@@ -1205,7 +1205,7 @@ function aggregateFlags(refs) {
 function buildReceipt({ content, refs, created }) {
   const originalBytes = utf8Bytes(content);
   const compressedBytes = utf8Bytes(JSON.stringify(refs));
-  return { original_bytes: originalBytes, compressed_bytes: compressedBytes, ratio: compressedBytes > 0 ? Number((originalBytes / compressedBytes).toFixed(2)) : 0, strategy: "cairnstone-v5.server-side-github-fetch-ref-index", created_at: created };
+  return { original_bytes: originalBytes, compressed_bytes: compressedBytes, ratio: compressedBytes > 0 ? Number((originalBytes / compressedBytes).toFixed(2)) : 0, strategy: "cairnstone-v6.server-side-github-fetch-ref-index", created_at: created };
 }
 
 function buildLayers({ title, author, repo, commit, content, refs, receipt, rawKey }) {
