@@ -63,7 +63,12 @@ jobs:
           set -euo pipefail
           BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
 
-          health="$(curl -fsS "$BASE/health")"
+          health=""
+          for attempt in {1..10}; do
+            health="$(curl -fsS "$BASE/health" || true)"
+            if echo "$health" | jq -e '.ok == true and .name == "cairnstone-v6" and ((.mcp_tools | index("cairnstone_set_path_head")) != null) and ((.mcp_tools | index("cairnstone_check_source_freshness")) != null)' >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
           echo "$health" | jq -e '.ok == true and .name == "cairnstone-v6" and ((.mcp_tools | index("cairnstone_set_path_head")) != null) and ((.mcp_tools | index("cairnstone_check_source_freshness")) != null)' >/dev/null
 
           before="$(curl -fsS "$BASE/v2/chains/cairnstone-v6/manifest?detail=compact")"
@@ -97,7 +102,12 @@ jobs:
           set -euo pipefail
           BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
 
-          health="$(curl -fsS "$BASE/health")"
+          health=""
+          for attempt in {1..10}; do
+            health="$(curl -fsS "$BASE/health" || true)"
+            if echo "$health" | jq -e '.ok == true and .name == "cairnstone-v6" and ((.mcp_tools | index("cairnstone_reconcile_repo")) != null)' >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
           echo "$health" | jq -e '.ok == true and .name == "cairnstone-v6" and ((.mcp_tools | index("cairnstone_reconcile_repo")) != null)' >/dev/null
 
           before="$(curl -fsS "$BASE/v2/chains/cairnstone-v6/manifest?detail=compact")"
