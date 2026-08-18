@@ -1,5 +1,8 @@
 import { parse as babelParse } from "@babel/parser";
-import { createRepoStonesFromBody as createRepoStonesRuntimeFromBody } from "./repo-stones-runtime.js";
+import {
+  createRepoStonesFromBody as createRepoStonesRuntimeFromBody,
+  fetchGitHubRepoTree
+} from "./repo-stones-runtime.js";
 
 const VERSION = "0.4.1";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
@@ -24,6 +27,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/check-freshness") return json(await checkSourceFreshnessFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/get-freshness") return json(await getSourceFreshnessFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/freshness-status") return json(await getFreshnessStatusFromBody(await request.json(), env));
+      if (request.method === "POST" && url.pathname === "/v1/reconcile-repo") return json(await reconcileRepoFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/set-path-head") return json(await setPathHeadFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/search") return json(await searchStonesFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/query-expand") return json(await queryAndExpandFromBody(await request.json(), env));
@@ -120,6 +124,7 @@ function routes() {
     "POST /v1/check-freshness",
     "POST /v1/get-freshness",
     "POST /v1/freshness-status",
+    "POST /v1/reconcile-repo",
     "POST /v1/set-path-head",
     "GET /v1/stones/:hash",
     "GET /v1/stones/:hash/lod/:level",
@@ -216,6 +221,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_check_source_freshness") return checkSourceFreshnessFromBody(args, env);
   if (name === "cairnstone_get_source_freshness") return getSourceFreshnessFromBody(args, env);
   if (name === "cairnstone_freshness_status") return getFreshnessStatusFromBody(args, env);
+  if (name === "cairnstone_reconcile_repo") return reconcileRepoFromBody(args, env);
   if (name === "cairnstone_set_path_head") return setPathHeadFromBody(args, env);
   if (name === "cairnstone_create_stone") return createStoneFromBody(args, env);
   if (name === "cairnstone_create_github_file_stone") return createStoneFromGitHubBody(args, env);
@@ -317,6 +323,22 @@ function mcpTools() {
         type: "object",
         required: ["chain"],
         properties: { chain: { type: "string" } }
+      }
+    },
+    {
+      name: "cairnstone_reconcile_repo",
+      description: "V6.3: resolve a repository ref to one immutable commit, walk that exact Git tree once, compare every observed path against accepted per-path CairnStone state, and return structured added/changed/removed/in_sync tuples. Existing accepted stones use stored Git blob identity when available, otherwise their R2 raw content is converted to the equivalent Git blob SHA locally. Reconciliation never writes chain_heads or path_heads and never stones or accepts source automatically.",
+      inputSchema: {
+        type: "object",
+        required: ["chain"],
+        properties: {
+          chain: { type: "string" },
+          owner: { type: "string", description: "GitHub owner. Optional when it can be inferred from accepted stones or a chain formatted as owner/repo." },
+          repo: { type: "string", description: "GitHub repository name. Optional when it can be inferred from accepted stones or a chain formatted as owner/repo." },
+          ref: { type: "string", description: "Branch, tag, or commit SHA. Defaults to main; mutable refs are resolved once before the tree walk." },
+          include_in_sync: { type: "boolean", description: "Include in_sync tuples in the returned tuple list. Defaults to false so drift stays compact." },
+          max_paths: { type: "number", minimum: 1, maximum: 5000, description: "Maximum tuples returned after classification. Summary counts always cover the full tree. Defaults to 1000." }
+        }
       }
     },
     {
@@ -878,12 +900,14 @@ async function fetchGitHubFile(spec, env) {
   }
 
   const sha = await sha256(text);
+  const gitBlobSha = await gitBlobSha1(text);
   const result = {
     ok: true,
     github: { owner, repo, path, ref, raw_url: rawUrl },
     fetch: {
       bytes,
       sha256: sha,
+      git_blob_sha: gitBlobSha,
       content_type: response.headers.get("content-type"),
       etag: response.headers.get("etag"),
       last_modified: response.headers.get("last-modified")
@@ -1395,6 +1419,17 @@ async function logEvent(env, event) {
   ).bind(id, event.stone_hash || null, event.ref_id || null, event.query || null, event.event_type, new Date().toISOString()).run();
 }
 
+async function gitBlobSha1(value) {
+  const encoder = new TextEncoder();
+  const content = encoder.encode(value);
+  const header = encoder.encode(`blob ${content.length}\0`);
+  const payload = new Uint8Array(header.length + content.length);
+  payload.set(header, 0);
+  payload.set(content, header.length);
+  const hash = await crypto.subtle.digest("SHA-1", payload);
+  return [...new Uint8Array(hash)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
 async function sha256(value) {
   const data = new TextEncoder().encode(value);
   const hash = await crypto.subtle.digest("SHA-256", data);
@@ -1674,6 +1709,130 @@ async function getFreshnessStatusFromBody(body, env) {
     drifted,
     in_sync: inSync,
     never_checked: neverChecked
+  };
+}
+
+// V6.3: live repository reconciliation. One immutable Git tree snapshot is compared with the
+// deliberately accepted per-path state. No stone, path head, or chain head is created or moved.
+async function reconcileRepoFromBody(body, env) {
+  requireBindings(env);
+  const chain = requiredString(body.chain, "chain");
+  const requestedRef = safeGitHubRef(body.ref || DEFAULT_GITHUB_REF);
+  const includeInSync = body.include_in_sync === true;
+  const maxPaths = clamp(Number(body.max_paths || 1000), 1, 5000);
+
+  let owner = typeof body.owner === "string" && body.owner.trim() ? safeGitHubPart(body.owner, "owner") : null;
+  let repoName = typeof body.repo === "string" && body.repo.trim() ? safeGitHubPart(body.repo, "repo") : null;
+  if (Boolean(owner) !== Boolean(repoName)) {
+    return { ok: false, error: "repo_identity_incomplete", chain, message: "Provide both owner and repo, or neither so CairnStone can infer them." };
+  }
+
+  const acceptedRows = (await env.CAIRNSTONE_DB.prepare(
+    `SELECT ph.path,ph.head_hash,s.commit_sha,s.raw_key,s.repo,s.stone_json
+     FROM path_heads ph LEFT JOIN stones s ON s.hash = ph.head_hash
+     WHERE ph.chain = ? ORDER BY ph.path ASC`
+  ).bind(chain).all()).results || [];
+
+  if (!owner && !repoName) {
+    const repoCandidates = [...new Set(acceptedRows.map(r => String(r.repo || "").trim()).filter(Boolean))];
+    const candidate = repoCandidates.length === 1 ? repoCandidates[0] : (/^[^/]+\/[^/]+$/.test(chain) ? chain : null);
+    if (!candidate) {
+      return { ok: false, error: "repo_identity_required", chain, repo_candidates: repoCandidates, message: "Could not infer one owner/repo identity from accepted path heads. Provide owner and repo explicitly." };
+    }
+    const parts = candidate.split("/");
+    owner = safeGitHubPart(parts[0], "owner");
+    repoName = safeGitHubPart(parts[1], "repo");
+  }
+
+  const resolution = await resolveGitHubCommit(owner, repoName, requestedRef, env);
+  if (!resolution.sha) {
+    return { ok: false, error: "github_commit_resolution_failed", chain, repo: `${owner}/${repoName}`, requested_ref: requestedRef, detail: resolution.error || "unknown" };
+  }
+
+  const tree = await fetchGitHubRepoTree(
+    { owner, repo: repoName, ref: resolution.sha },
+    env,
+    { safeGitHubPart, safeGitHubRef }
+  );
+  if (!tree.ok) return { ...tree, chain, requested_ref: requestedRef, observed_commit_sha: resolution.sha };
+  if (tree.truncated) {
+    return { ok: false, error: "github_tree_truncated", chain, repo: `${owner}/${repoName}`, requested_ref: requestedRef, observed_commit_sha: resolution.sha, message: "Refusing to classify removals from a truncated Git tree." };
+  }
+
+  const observedByPath = new Map((tree.files || []).map(file => [file.path, file]));
+  const acceptedByPath = new Map();
+  for (const row of acceptedRows) {
+    let metadata = {};
+    try { metadata = (JSON.parse(row.stone_json || "{}").metadata || {}); } catch {}
+    let acceptedBlobSha = null;
+    let acceptedBlobSource = null;
+    if (typeof metadata.fetch?.git_blob_sha === "string" && FULL_SHA_RE.test(metadata.fetch.git_blob_sha)) {
+      acceptedBlobSha = metadata.fetch.git_blob_sha.toLowerCase();
+      acceptedBlobSource = "metadata.fetch.git_blob_sha";
+    } else if (metadata.kind === "repo_file" && typeof metadata.sha === "string" && FULL_SHA_RE.test(metadata.sha)) {
+      acceptedBlobSha = metadata.sha.toLowerCase();
+      acceptedBlobSource = "metadata.repo_file.sha";
+    } else if (row.raw_key) {
+      const raw = await env.CAIRNSTONE_RAW.get(row.raw_key);
+      if (raw) {
+        acceptedBlobSha = await gitBlobSha1(await raw.text());
+        acceptedBlobSource = "r2_raw_recomputed";
+      }
+    }
+    acceptedByPath.set(row.path, {
+      path: row.path,
+      head_hash: row.head_hash,
+      commit_sha: row.commit_sha || null,
+      blob_sha: acceptedBlobSha,
+      blob_source: acceptedBlobSource
+    });
+  }
+
+  const paths = [...new Set([...observedByPath.keys(), ...acceptedByPath.keys()])].sort();
+  const tuples = [];
+  const counts = { added: 0, changed: 0, removed: 0, in_sync: 0, unknown: 0 };
+  for (const path of paths) {
+    const observed = observedByPath.get(path) || null;
+    const accepted = acceptedByPath.get(path) || null;
+    let driftType;
+    let reason = null;
+    if (!accepted && observed) driftType = "added";
+    else if (accepted && !observed) driftType = "removed";
+    else if (!accepted?.blob_sha) {
+      driftType = "unknown";
+      reason = "accepted_blob_identity_unavailable";
+    } else if (accepted.blob_sha === observed.sha) driftType = "in_sync";
+    else driftType = "changed";
+    counts[driftType] += 1;
+    tuples.push({
+      path,
+      current_stone_hash: accepted?.head_hash || null,
+      observed_commit_sha: resolution.sha,
+      drift_type: driftType,
+      accepted_commit_sha: accepted?.commit_sha || null,
+      accepted_blob_sha: accepted?.blob_sha || null,
+      observed_blob_sha: observed?.sha || null,
+      accepted_blob_source: accepted?.blob_source || null,
+      reason
+    });
+  }
+
+  const visible = includeInSync ? tuples : tuples.filter(item => item.drift_type !== "in_sync");
+  const returned = visible.slice(0, maxPaths);
+  return {
+    ok: true,
+    chain,
+    repo: `${owner}/${repoName}`,
+    requested_ref: requestedRef,
+    observed_commit_sha: resolution.sha,
+    snapshot: { immutable: true, tree_truncated: false, observed_files: observedByPath.size, accepted_paths: acceptedByPath.size },
+    summary: { ...counts, total_paths: paths.length, drifted: counts.added + counts.changed + counts.removed + counts.unknown },
+    include_in_sync: includeInSync,
+    tuples: returned,
+    tuples_total: visible.length,
+    tuples_returned: returned.length,
+    tuples_truncated: visible.length > returned.length,
+    read_only: { chain_heads_written: false, path_heads_written: false, stones_written: false }
   };
 }
 
