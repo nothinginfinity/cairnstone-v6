@@ -18,7 +18,7 @@ import {
 // ---------------------------------------------------------------------------
 export async function createRepoStonesFromBody(body, env, deps) {
   const required = [
-    "createStoneFromGitHubBody", "createStoneFromBody", "linkStonesFromBody",
+    "createStoneFromGitHubBody", "createStoneFromBody", "linkStonesFromBody", "upsertPathHead",
     "requireBindings", "requiredString", "safeGitHubPart", "safeGitHubRef", "clamp"
   ];
   for (const name of required) {
@@ -112,6 +112,15 @@ export async function createRepoStonesFromBody(body, env, deps) {
   }
 
   const current = [...created, ...reused];
+
+  // V6.2.1: repository ingestion establishes accepted per-path state for every
+  // successfully current file stone, without conflating that with the chain-level
+  // orientation HEAD. Reused unchanged stones remain the accepted path heads.
+  const pathHeadUpdatedAt = new Date().toISOString();
+  for (const item of current) {
+    await deps.upsertPathHead(env, chain, item.path, item.stone_hash, pathHeadUpdatedAt);
+  }
+
   const langBreakdown = buildLanguageBreakdown(candidates);
   const arch = detectArchitecture(treeResult.files);
 
