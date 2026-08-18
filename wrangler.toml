@@ -1,4 +1,4 @@
-name = "cairnstone-v5"
+name = "cairnstone-v6"
 main = "src/index.js"
 compatibility_date = "2026-06-21"
 
@@ -7,9 +7,9 @@ enabled = true
 
 [[d1_databases]]
 binding = "CAIRNSTONE_DB"
-database_name = "cairnstone-v5"
-database_id = "60b8210c-7d5a-4d54-b0aa-7411fb4b9b95"
+database_name = "cairnstone-v6"
+database_id = "7c4ae99e-4ab0-44c3-afa3-3f1a2d64d319"
 
 [[r2_buckets]]
 binding = "CAIRNSTONE_RAW"
-bucket_name = "cairnstone-v5-raw"
+bucket_name = "cairnstone-v6-raw"
