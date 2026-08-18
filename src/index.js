@@ -4,7 +4,7 @@ import {
   fetchGitHubRepoTree
 } from "./repo-stones-runtime.js";
 
-const VERSION = "0.4.1";
+const VERSION = "0.4.2";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -45,6 +45,14 @@ export default {
       const stoneV2Match = url.pathname.match(/^\/v2\/stones\/([^/]+)$/);
       if (request.method === "GET" && stoneV2Match) {
         return json(await stoneV2FromBody({ hash: decodeURIComponent(stoneV2Match[1]), level: url.searchParams.get("level") || undefined }, env));
+      }
+
+      // V6.4: deterministic one-call chain resume/orientation. Read-only -- see resumeChainFromBody.
+      const resumeV2Match = url.pathname.match(/^\/v2\/chains\/([^/]+)\/resume$/);
+      if (request.method === "GET" && resumeV2Match) {
+        const chain = decodeURIComponent(resumeV2Match[1]);
+        if (!chain) return json({ ok: false, error: "missing_chain", route: "/v2/chains/:chain/resume" }, 400);
+        return json(await resumeChainFromBody({ chain }, env));
       }
 
       const stoneMatch = url.pathname.match(/^\/v1\/stones\/([^/]+)$/);
@@ -136,7 +144,8 @@ function routes() {
     "POST /v2/commit",
     "POST /v2/find",
     "GET /v2/chains/:chain/manifest?detail=summary|compact|full&since=ISO",
-    "GET /v2/stones/:hash?level=lod1-5"
+    "GET /v2/stones/:hash?level=lod1-5",
+    "GET /v2/chains/:chain/resume"
   ];
 }
 
@@ -236,6 +245,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_set_head") return setHeadFromBody(args, env);
   if (name === "cairnstone_get_chain_manifest") return getChainManifest(env, requiredString(args.chain, "chain"));
   if (name === "cairnstone_manifest_v2") return getChainManifestV2(env, requiredString(args.chain, "chain"), args);
+  if (name === "cairnstone_resume_chain") return resumeChainFromBody(args, env);
   if (name === "cairnstone_find_v2") return findV2FromBody(args, env);
   if (name === "cairnstone_commit_v2") return commitV2FromBody(args, env);
   if (name === "cairnstone_stone_v2") return stoneV2FromBody(args, env);
