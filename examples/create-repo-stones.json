@@ -1,0 +1,13 @@
+{
+  "owner": "nothinginfinity",
+  "repo": "cairngraph",
+  "ref": "main",
+  "author": "Jared + GPT-5.5 Thinking",
+  "chain": "cairngraph",
+  "max_files": 200,
+  "max_file_bytes": 900000,
+  "create_orientation": true,
+  "auto_link": true,
+  "set_head": true,
+  "lint": true
+}
