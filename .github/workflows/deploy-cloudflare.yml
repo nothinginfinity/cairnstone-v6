@@ -53,7 +53,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BASE="https://cairnstone-v6.workers.dev"
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
 
           health="$(curl -fsS "$BASE/health")"
           echo "$health" | jq -e '.ok == true and .name == "cairnstone-v6" and ((.mcp_tools | index("cairnstone_set_path_head")) != null) and ((.mcp_tools | index("cairnstone_check_source_freshness")) != null)' >/dev/null
