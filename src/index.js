@@ -4,7 +4,7 @@ import {
   fetchGitHubRepoTree
 } from "./repo-stones-runtime.js";
 
-const VERSION = "0.4.2";
+const VERSION = "0.4.3";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -565,7 +565,7 @@ function mcpTools() {
     },
     {
       name: "cairnstone_find_v2",
-      description: "Vault-wide full-text search (FTS5 + bm25) over all ref keywords and previews, with optional chain or stone filter and optional inline expansion of top hits. Replaces cairnstone_search and vault-wide use of cairnstone_query_and_expand: one call to find and read.",
+      description: "Vault-wide full-text search (FTS5 + bm25) over all ref keywords and previews, with optional chain or stone filter and optional inline expansion of top hits. Replaces cairnstone_search and vault-wide use of cairnstone_query_and_expand: one call to find and read. V6.5: identifier tokens with underscores (e.g. chain_heads) now index and match as single tokens; bm25 ranking weights keywords highest, then path, then preview; match_mode controls multi-word handling -- 'any' (default) matches refs containing any query term, 'all' requires every term to appear, 'phrase' requires the exact adjacent sequence. A query fully wrapped in double quotes is always treated as an exact phrase regardless of match_mode.",
       inputSchema: {
         type: "object",
         required: ["query"],
@@ -574,6 +574,7 @@ function mcpTools() {
           chain: { type: "string", description: "Restrict to one chain" },
           stone_hash: { type: "string", description: "Restrict to one stone (full or >=8-char short hash)" },
           top_k: { type: "number", description: "Max matches, default 5" },
+          match_mode: { type: "string", enum: ["any", "all", "phrase"], description: "Default 'any' (OR across terms). 'all' requires every term present. 'phrase' requires the exact adjacent sequence. A fully-quoted query is always treated as a phrase." },
           expand: { type: "boolean", description: "If true, expand the top hits' raw content inline (max 3)" },
           context_lines: { type: "number", description: "Context lines around expanded refs, default 20" }
         }
@@ -2055,6 +2056,36 @@ async function resumeChainFromBody(body, env) {
   };
 }
 
+// V6.5: builds the FTS5 MATCH expression for a query + match_mode.
+// - A query fully wrapped in double quotes is always an exact phrase, regardless of match_mode.
+// - match_mode "phrase" treats the whole (unquoted) query as one exact adjacent-token phrase.
+// - match_mode "all" requires every tokenized term to appear (FTS5 AND).
+// - match_mode "any" (default) matches refs containing any tokenized term (FTS5 OR) -- unchanged
+//   default behavior from the pre-V6.5 implementation, preserved for backward compatibility.
+function buildMatchExpr(query, matchMode) {
+  const trimmed = String(query || "").trim();
+  const isFullyQuoted = trimmed.length > 2 && trimmed.startsWith('"') && trimmed.endsWith('"');
+  if (isFullyQuoted || matchMode === "phrase") {
+    const phraseText = (isFullyQuoted ? trimmed.slice(1, -1) : trimmed).trim();
+    if (!phraseText) return { ok: false, error: "empty_query_terms" };
+    return { ok: true, matchExpr: `"${phraseText.replaceAll('"', '""')}"`, mode: "phrase" };
+  }
+  const terms = tokenizeQuery(trimmed);
+  if (!terms.length) return { ok: false, error: "empty_query_terms" };
+  const quotedTerms = terms.map(term => `"${String(term).replaceAll('"', '""')}"`);
+  if (matchMode === "all") return { ok: true, matchExpr: quotedTerms.join(" AND "), mode: "all" };
+  return { ok: true, matchExpr: quotedTerms.join(" OR "), mode: "any" };
+}
+
+// V6.5: bm25 column weights, in refs_fts column declaration order (ref_id, stone_hash,
+// chain, path, keywords, preview). The first three are required 0-weight placeholders for
+// the UNINDEXED columns -- bm25's weight arguments map 1:1 to ALL table columns, not just
+// indexed ones, and supplying too few silently defaults the remaining columns to weight 1.0
+// (verified live against D1 before shipping). keywords (curated top-12 terms per ref)
+// outweighs raw preview text; path gets a modest boost since filename/directory is often
+// meaningful on its own.
+const FTS_BM25_WEIGHTS = "0, 0, 0, 2.0, 4.0, 1.0";
+
 async function findV2FromBody(body, env) {
   requireBindings(env);
   const query = requiredString(body.query, "query");
@@ -2062,6 +2093,7 @@ async function findV2FromBody(body, env) {
   const topK = clamp(Number(body.top_k || 5), 1, 25);
   const doExpand = body.expand === true;
   const context = clamp(optionalNumber(body.context_lines, 20), 0, 200);
+  const matchMode = ["any", "all", "phrase"].includes(body.match_mode) ? body.match_mode : "any";
 
   let stoneFilter = null;
   if (typeof body.stone_hash === "string" && body.stone_hash) {
@@ -2070,18 +2102,18 @@ async function findV2FromBody(body, env) {
     stoneFilter = resolved.hash;
   }
 
-  const terms = tokenizeQuery(query);
-  if (!terms.length) return { ok: false, error: "empty_query_terms" };
-  const matchExpr = terms.map(term => `"${String(term).replaceAll('"', "")}"`).join(" OR ");
+  const built = buildMatchExpr(query, matchMode);
+  if (!built.ok) return built;
+  const matchExpr = built.matchExpr;
 
   let results = [];
   let mode = "fts";
   try {
-    let sql = "SELECT ref_id, stone_hash, chain, path, preview, bm25(refs_fts) AS score FROM refs_fts WHERE refs_fts MATCH ?";
+    let sql = `SELECT ref_id, stone_hash, chain, path, preview, bm25(refs_fts, ${FTS_BM25_WEIGHTS}) AS score FROM refs_fts WHERE refs_fts MATCH ?`;
     const binds = [matchExpr];
     if (chain) { sql += " AND chain = ?"; binds.push(chain); }
     if (stoneFilter) { sql += " AND stone_hash = ?"; binds.push(stoneFilter); }
-    sql += " ORDER BY bm25(refs_fts) LIMIT ?";
+    sql += ` ORDER BY bm25(refs_fts, ${FTS_BM25_WEIGHTS}) LIMIT ?`;
     binds.push(topK);
     results = (await env.CAIRNSTONE_DB.prepare(sql).bind(...binds).all()).results || [];
   } catch {
@@ -2107,7 +2139,7 @@ async function findV2FromBody(body, env) {
     preview: String(row.preview || "").slice(0, 160)
   }));
 
-  const out = { ok: true, query, mode, total: matches.length, matches };
+  const out = { ok: true, query, mode, match_mode: built.mode, total: matches.length, matches };
 
   if (doExpand && results.length) {
     const expanded = [];
