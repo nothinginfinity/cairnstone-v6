@@ -1,4 +1,4 @@
-name: Deploy CairnStone v5
+name: Deploy CairnStone v6
 
 on:
   workflow_dispatch:
@@ -35,7 +35,7 @@ jobs:
 
       - name: Apply D1 migrations
         if: github.event.inputs.apply_migrations == 'true'
-        run: npx wrangler d1 migrations apply cairnstone-v5 --remote --config wrangler.toml
+        run: npx wrangler d1 migrations apply cairnstone-v6 --remote --config wrangler.toml
 
       - name: Deploy Worker
         run: npx wrangler deploy --config wrangler.toml
