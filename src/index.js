@@ -21,6 +21,9 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/stones/repository") return json(await createRepoStonesFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/fetch/github") return json(await fetchGitHubFileFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/find-by-source") return json(await findBySourceFromBody(await request.json(), env));
+      if (request.method === "POST" && url.pathname === "/v1/check-freshness") return json(await checkSourceFreshnessFromBody(await request.json(), env));
+      if (request.method === "POST" && url.pathname === "/v1/get-freshness") return json(await getSourceFreshnessFromBody(await request.json(), env));
+      if (request.method === "POST" && url.pathname === "/v1/freshness-status") return json(await getFreshnessStatusFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/search") return json(await searchStonesFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/query-expand") return json(await queryAndExpandFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/expand") return json(await expandRefFromBody(await request.json(), env));
@@ -113,6 +116,9 @@ function routes() {
     "POST /v1/stones/repository",
     "POST /v1/fetch/github",
     "POST /v1/find-by-source",
+    "POST /v1/check-freshness",
+    "POST /v1/get-freshness",
+    "POST /v1/freshness-status",
     "GET /v1/stones/:hash",
     "GET /v1/stones/:hash/lod/:level",
     "POST /v1/search",
@@ -205,6 +211,9 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_list_stones") return listStones(env, { ...args, origin: "mcp://cairnstone" });
   if (name === "cairnstone_fetch_github_file") return fetchGitHubFileFromBody(args, env);
   if (name === "cairnstone_find_by_source") return findBySourceFromBody(args, env);
+  if (name === "cairnstone_check_source_freshness") return checkSourceFreshnessFromBody(args, env);
+  if (name === "cairnstone_get_source_freshness") return getSourceFreshnessFromBody(args, env);
+  if (name === "cairnstone_freshness_status") return getFreshnessStatusFromBody(args, env);
   if (name === "cairnstone_create_stone") return createStoneFromBody(args, env);
   if (name === "cairnstone_create_github_file_stone") return createStoneFromGitHubBody(args, env);
   if (name === "cairnstone_create_repo_stones") return createRepoStonesFromBody(args, env);
@@ -272,6 +281,39 @@ function mcpTools() {
           commit_sha: { type: "string", description: "Full 40-hex commit SHA for an exact match. Omit to list all stones for this (repo, path)." },
           limit: { type: "number", minimum: 1, maximum: 200 }
         }
+      }
+    },
+    {
+      name: "cairnstone_check_source_freshness",
+      description: "V6.2: live-check whether a chain's accepted path_head is still in sync with the current GitHub source at (owner, repo, path, ref). Resolves the current commit via the GitHub API, compares against the accepted stone's commit_sha, and RECORDS the result -- it never advances path_heads/chain_heads. Drift is surfaced, not auto-resolved; use cairnstone_set_head or re-stone the file if you want to accept the new source.",
+      inputSchema: {
+        type: "object",
+        required: ["chain", "path", "owner", "repo"],
+        properties: {
+          chain: { type: "string" },
+          path: { type: "string" },
+          owner: { type: "string" },
+          repo: { type: "string" },
+          ref: { type: "string", description: "Branch, tag, or commit SHA to check against. Defaults to main." }
+        }
+      }
+    },
+    {
+      name: "cairnstone_get_source_freshness",
+      description: "V6.2: read the last-recorded freshness check for one (chain, path). No GitHub call -- cheap read of what cairnstone_check_source_freshness last found. Returns checked:false if it's never been checked.",
+      inputSchema: {
+        type: "object",
+        required: ["chain", "path"],
+        properties: { chain: { type: "string" }, path: { type: "string" } }
+      }
+    },
+    {
+      name: "cairnstone_freshness_status",
+      description: "V6.2: chain-wide freshness summary from recorded checks only (no live GitHub calls -- not a repo walk, that's V6.3's cairnstone_reconcile_repo). Splits paths into drifted vs in-sync, and flags accepted path_heads that have never been checked at all.",
+      inputSchema: {
+        type: "object",
+        required: ["chain"],
+        properties: { chain: { type: "string" } }
       }
     },
     {
