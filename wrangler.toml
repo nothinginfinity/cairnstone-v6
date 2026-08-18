@@ -1,6 +1,7 @@
 name = "cairnstone-v6"
 main = "src/index.js"
 compatibility_date = "2026-06-21"
+keep_vars = true
 
 [observability]
 enabled = true
