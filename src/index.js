@@ -526,22 +526,61 @@ async function createRepoStonesFromBody(body, env) {
 async function createStoneFromGitHubBody(body, env) {
   const fetched = await fetchGitHubFileFromBody({ ...body, return_content: true }, env);
   if (!fetched.ok) return fetched;
-  const title = body.title || `${fetched.github.owner}/${fetched.github.repo}/${fetched.github.path}@${fetched.github.ref}`;
+  // V6.1: resolve the requested ref (branch/tag/short-sha) to a real, immutable commit SHA
+  // for structured provenance. requested_ref stays available in metadata so the original
+  // ask ("main") is never lost, but border.commit is always either a real commit SHA or
+  // explicitly flagged unresolved -- never a mutable branch name masquerading as a commit.
+  const resolution = await resolveGitHubCommit(fetched.github.owner, fetched.github.repo, fetched.github.ref, env);
+  const title = body.title || `${fetched.github.owner}/${fetched.github.repo}/${fetched.github.path}@${resolution.sha || fetched.github.ref}`;
   const stoneBody = {
     ...body,
     title,
     content: fetched.content,
     path: fetched.github.path,
     repo: `${fetched.github.owner}/${fetched.github.repo}`,
-    commit: fetched.github.ref,
+    commit: resolution.sha || fetched.github.ref,
     metadata: {
       ...(isObject(body.metadata) ? body.metadata : {}),
       source_type: "github_file",
-      github: fetched.github,
+      github: {
+        ...fetched.github,
+        requested_ref: fetched.github.ref,
+        commit_resolved: Boolean(resolution.sha),
+        commit_resolution_error: resolution.sha ? undefined : resolution.error
+      },
       fetch: fetched.fetch
     }
   };
   return createStoneFromBody(stoneBody, env);
+}
+
+// V6.1: resolve a branch/tag/short-ref to a real 40-hex commit SHA via the GitHub REST API.
+// If the ref is already a full 40-hex SHA, it's returned as-is with no API call (it's already
+// a real commit identifier). On failure, returns { sha: null, error } rather than throwing --
+// callers explicitly flag unresolved provenance instead of silently treating a branch name as
+// a commit, or hard-failing stone creation over a transient GitHub API hiccup.
+const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
+async function resolveGitHubCommit(owner, repo, ref, env) {
+  if (FULL_SHA_RE.test(String(ref || ""))) return { sha: String(ref).toLowerCase(), already_resolved: true };
+  const apiUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(ref)}`;
+  const headers = {
+    "User-Agent": "cairnstone-v6-worker",
+    "Accept": "application/vnd.github+json"
+  };
+  if (env.GITHUB_TOKEN) headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`;
+  try {
+    const response = await fetch(apiUrl, { headers });
+    if (!response.ok) {
+      return { sha: null, error: `github_commit_lookup_failed:${response.status}` };
+    }
+    const data = await response.json();
+    if (data && typeof data.sha === "string" && FULL_SHA_RE.test(data.sha)) {
+      return { sha: data.sha };
+    }
+    return { sha: null, error: "github_commit_lookup_malformed_response" };
+  } catch (error) {
+    return { sha: null, error: `github_commit_lookup_exception:${String(error && error.message ? error.message : error)}` };
+  }
 }
 
 async function createStoneFromBody(body, env) {
