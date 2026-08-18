@@ -108,9 +108,10 @@ jobs:
           test "$before_head" != "null"
           test -n "$before_paths"
 
-          reconcile="$(curl -fsS -X POST "$BASE/v1/reconcile-repo" \
+          reconcile="$(curl -sS -X POST "$BASE/v1/reconcile-repo" \
             -H 'content-type: application/json' \
             --data '{"chain":"cairnstone-v6","owner":"nothinginfinity","repo":"cairnstone-v6","ref":"main","include_in_sync":true,"max_paths":5000}')"
+          echo "$reconcile" | jq .
 
           echo "$reconcile" | jq -e '
             .ok == true and
