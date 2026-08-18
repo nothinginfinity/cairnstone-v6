@@ -538,7 +538,7 @@ function mcpTools() {
     },
     {
       name: "cairnstone_commit_v2",
-      description: "One-call write path: create a stone (inline content OR server-side GitHub fetch via owner/repo/path/ref), dedupe by content within the chain (identical content returns the existing stone instead of a duplicate), set the per-path head automatically, optionally set the chain head, and create typed edges - all in one call. Edges accept short (>=8 char) target hashes. Replaces create_stone + create_github_file_stone + link_stones + set_head sequences.",
+      description: "One-call write path: create a stone (inline content OR server-side GitHub fetch via owner/repo/path/ref), dedupe identical content only within the same (chain,path), set the per-path head automatically, optionally set the chain head, and create typed edges - all in one call. GitHub-backed writes fail closed unless the requested ref resolves to an immutable 40-hex commit SHA. Edges accept short (>=8 char) target hashes.",
       inputSchema: {
         type: "object",
         required: ["chain", "author"],
@@ -1848,16 +1848,27 @@ async function commitV2FromBody(body, env) {
     const fetched = await fetchGitHubFileFromBody({ ...body, return_content: true }, env);
     if (!fetched.ok) return fetched;
     const resolution = await resolveGitHubCommit(fetched.github.owner, fetched.github.repo, fetched.github.ref, env);
+    if (!resolution.sha) {
+      return {
+        ok: false,
+        error: "github_commit_resolution_failed",
+        owner: fetched.github.owner,
+        repo: fetched.github.repo,
+        path: fetched.github.path,
+        requested_ref: fetched.github.ref,
+        detail: resolution.error || "unknown"
+      };
+    }
     content = fetched.content;
     stoneBody = {
       ...body,
       chain,
       author,
-      title: body.title || `${fetched.github.owner}/${fetched.github.repo}/${fetched.github.path}@${resolution.sha || fetched.github.ref}`,
+      title: body.title || `${fetched.github.owner}/${fetched.github.repo}/${fetched.github.path}@${resolution.sha}`,
       content,
       path: fetched.github.path,
       repo: `${fetched.github.owner}/${fetched.github.repo}`,
-      commit: resolution.sha || fetched.github.ref,
+      commit: resolution.sha,
       metadata: {
         ...(isObject(body.metadata) ? body.metadata : {}),
         source_type: "github_file",
