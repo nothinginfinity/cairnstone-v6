@@ -1,9 +1,9 @@
 {
-  "name": "cairnstone-v5",
-  "version": "0.2.0",
+  "name": "cairnstone-v6",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "FSL CCR Stone v5 runtime for Cloudflare Workers.",
+  "description": "FSL CCR Stone v6 runtime for Cloudflare Workers. Isolated successor to cairnstone-v5.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
