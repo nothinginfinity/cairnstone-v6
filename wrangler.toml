@@ -1,0 +1,15 @@
+name = "cairnstone-v5"
+main = "src/index.js"
+compatibility_date = "2026-06-21"
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "CAIRNSTONE_DB"
+database_name = "cairnstone-v5"
+database_id = "60b8210c-7d5a-4d54-b0aa-7411fb4b9b95"
+
+[[r2_buckets]]
+binding = "CAIRNSTONE_RAW"
+bucket_name = "cairnstone-v5-raw"
