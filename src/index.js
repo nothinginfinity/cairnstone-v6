@@ -1945,6 +1945,116 @@ async function getChainManifestV2(env, chain, options = {}) {
   return out;
 }
 
+// V6.4: deterministic chain resume/orientation. One call returns the exact accepted
+// canonical state for `chain` -- HEAD resolved directly from chain_heads (never from
+// created_at ordering), the HEAD stone's structured provenance/metadata read from stored
+// columns and JSON (never parsed out of lod5/lod4 prose), every accepted path_head, and
+// every graph edge touching HEAD in either direction. Strictly read-only: no INSERT/UPDATE
+// of any kind. Fails closed with explicit error codes rather than degrading into a vague
+// orientation on a corrupt or incomplete canonical state.
+async function resumeChainFromBody(body, env) {
+  requireBindings(env);
+  const chain = requiredString(body.chain, "chain");
+
+  const headRow = await env.CAIRNSTONE_DB.prepare(
+    "SELECT head_hash, updated_at FROM chain_heads WHERE chain = ?"
+  ).bind(chain).first();
+
+  if (!headRow) {
+    const anyStone = await env.CAIRNSTONE_DB.prepare(
+      "SELECT hash FROM stones WHERE chain_hash = ? LIMIT 1"
+    ).bind(chain).first();
+    if (!anyStone) return { ok: false, error: "chain_not_found", chain };
+    return { ok: false, error: "chain_head_missing", chain, detail: "chain has stones but no chain_heads row -- no HEAD has ever been set" };
+  }
+
+  const headStoneRow = await env.CAIRNSTONE_DB.prepare(
+    "SELECT hash,title,author,created_at,repo,path,commit_sha,chain_hash,stone_json FROM stones WHERE hash = ?"
+  ).bind(headRow.head_hash).first();
+  if (!headStoneRow) {
+    return { ok: false, error: "head_stone_missing", chain, head_hash: headRow.head_hash, detail: "dangling HEAD: chain_heads points at a hash with no matching row in stones" };
+  }
+  if (headStoneRow.chain_hash !== chain) {
+    return { ok: false, error: "head_chain_mismatch", chain, stone_chain: headStoneRow.chain_hash, head_hash: headRow.head_hash };
+  }
+
+  let stoneJson;
+  try {
+    stoneJson = JSON.parse(headStoneRow.stone_json || "{}");
+  } catch {
+    return { ok: false, error: "head_stone_json_corrupt", chain, head_hash: headRow.head_hash };
+  }
+  const metadata = isObject(stoneJson.metadata) ? stoneJson.metadata : {};
+
+  const pathHeadsResult = await env.CAIRNSTONE_DB.prepare(
+    `SELECT ph.path AS path, ph.head_hash AS stone_hash, ph.updated_at AS updated_at,
+            s.repo AS repo, s.commit_sha AS commit_sha
+     FROM path_heads ph
+     LEFT JOIN stones s ON s.hash = ph.head_hash
+     WHERE ph.chain = ?
+     ORDER BY ph.path ASC`
+  ).bind(chain).all();
+  const path_heads = (pathHeadsResult.results || []).map(row => ({
+    path: row.path,
+    stone_hash: row.stone_hash,
+    repo: row.repo || null,
+    commit_sha: row.commit_sha || null,
+    updated_at: row.updated_at
+  }));
+
+  const edgeSortKey = edge => `${edge.edge_type}|${edge.from_hash}|${edge.to_hash}`;
+  const sortEdges = rows => (rows || [])
+    .map(edge => ({ from_hash: edge.from_hash, to_hash: edge.to_hash, edge_type: edge.edge_type, note: edge.note || null }))
+    .sort((a, b) => {
+      const ka = edgeSortKey(a);
+      const kb = edgeSortKey(b);
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    });
+
+  const [outboundRows, inboundRows] = await Promise.all([
+    env.CAIRNSTONE_DB.prepare(
+      "SELECT from_hash, to_hash, edge_type, note FROM stone_edges WHERE from_hash = ?"
+    ).bind(headStoneRow.hash).all(),
+    env.CAIRNSTONE_DB.prepare(
+      "SELECT from_hash, to_hash, edge_type, note FROM stone_edges WHERE to_hash = ?"
+    ).bind(headStoneRow.hash).all()
+  ]);
+  const outbound = sortEdges(outboundRows.results);
+  const inbound = sortEdges(inboundRows.results);
+
+  const canonical_head = {
+    hash: headStoneRow.hash,
+    title: headStoneRow.title,
+    author: headStoneRow.author,
+    created_at: headStoneRow.created_at,
+    path: headStoneRow.path || null,
+    repo: headStoneRow.repo || null,
+    commit_sha: headStoneRow.commit_sha || null,
+    metadata
+  };
+
+  const provenance = {
+    repo: headStoneRow.repo || null,
+    path: headStoneRow.path || null,
+    commit_sha: headStoneRow.commit_sha || null,
+    source_type: metadata.source_type || (isObject(metadata.github) ? "github_file" : null)
+  };
+
+  return {
+    ok: true,
+    chain,
+    canonical_head,
+    provenance,
+    path_heads,
+    edges: { outbound, inbound },
+    graph_complete: true,
+    resume: {
+      canonical_source: "chain_head",
+      timestamp_ordering_used: false
+    }
+  };
+}
+
 async function findV2FromBody(body, env) {
   requireBindings(env);
   const query = requiredString(body.query, "query");
