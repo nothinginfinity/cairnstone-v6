@@ -19,6 +19,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v63_acceptance:
+        description: "Run V6.3 live repository reconciliation acceptance after deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   deploy:
@@ -59,7 +67,7 @@ jobs:
           echo "$health" | jq -e '.ok == true and .name == "cairnstone-v6" and ((.mcp_tools | index("cairnstone_set_path_head")) != null) and ((.mcp_tools | index("cairnstone_check_source_freshness")) != null)' >/dev/null
 
           before="$(curl -fsS "$BASE/v2/chains/cairnstone-v6/manifest?detail=compact")"
-          before_head="$(echo "$before" | jq -r '.head_hash')"
+          before_head="$(echo "$before" | jq -r '.head')"
           before_path="$(echo "$before" | jq -r '.path_heads[] | select(.path == "wrangler.toml") | .head')"
           test -n "$before_head"
           test -n "$before_path"
@@ -75,9 +83,55 @@ jobs:
           echo "$cached" | jq -e '.ok == true and .checked == true and .drift == false and .accepted.content_sha256 == .observed.content_sha256' >/dev/null
 
           after="$(curl -fsS "$BASE/v2/chains/cairnstone-v6/manifest?detail=compact")"
-          after_head="$(echo "$after" | jq -r '.head_hash')"
+          after_head="$(echo "$after" | jq -r '.head')"
           after_path="$(echo "$after" | jq -r '.path_heads[] | select(.path == "wrangler.toml") | .head')"
           test "$before_head" = "$after_head"
           test "$before_path" = "$after_path"
 
           echo "V6.2.1 live acceptance passed: unchanged path stayed in_sync across unrelated repo commits and freshness check did not mutate chain/path HEAD."
+
+      - name: V6.3 live repository reconciliation acceptance
+        if: github.event.inputs.run_v63_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+
+          health="$(curl -fsS "$BASE/health")"
+          echo "$health" | jq -e '.ok == true and .name == "cairnstone-v6" and ((.mcp_tools | index("cairnstone_reconcile_repo")) != null)' >/dev/null
+
+          before="$(curl -fsS "$BASE/v2/chains/cairnstone-v6/manifest?detail=compact")"
+          before_head="$(echo "$before" | jq -r '.head')"
+          before_stones="$(echo "$before" | jq -r '.stones')"
+          before_paths="$(echo "$before" | jq -c '.path_heads')"
+          test -n "$before_head"
+          test "$before_head" != "null"
+          test -n "$before_paths"
+
+          reconcile="$(curl -fsS -X POST "$BASE/v1/reconcile-repo" \
+            -H 'content-type: application/json' \
+            --data '{"chain":"cairnstone-v6","owner":"nothinginfinity","repo":"cairnstone-v6","ref":"main","include_in_sync":true,"max_paths":5000}')"
+
+          echo "$reconcile" | jq -e '
+            .ok == true and
+            .repo == "nothinginfinity/cairnstone-v6" and
+            .snapshot.immutable == true and
+            .snapshot.tree_truncated == false and
+            (.observed_commit_sha | test("^[0-9a-f]{40}$")) and
+            .summary.in_sync >= 1 and
+            .summary.added >= 1 and
+            .read_only.chain_heads_written == false and
+            .read_only.path_heads_written == false and
+            .read_only.stones_written == false and
+            (any(.tuples[]; .path == "wrangler.toml" and .drift_type == "in_sync" and (.current_stone_hash | type) == "string" and .accepted_blob_sha == .observed_blob_sha))
+          ' >/dev/null
+
+          after="$(curl -fsS "$BASE/v2/chains/cairnstone-v6/manifest?detail=compact")"
+          after_head="$(echo "$after" | jq -r '.head')"
+          after_stones="$(echo "$after" | jq -r '.stones')"
+          after_paths="$(echo "$after" | jq -c '.path_heads')"
+          test "$before_head" = "$after_head"
+          test "$before_stones" = "$after_stones"
+          test "$before_paths" = "$after_paths"
+
+          echo "V6.3 live acceptance passed: one immutable repo snapshot classified added/in_sync paths and reconciliation left chain HEAD, every path HEAD, and stone count unchanged."
