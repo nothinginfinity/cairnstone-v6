@@ -11,6 +11,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v621_acceptance:
+        description: "Run V6.2.1 live correctness acceptance after deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   deploy:
@@ -39,3 +47,37 @@ jobs:
 
       - name: Deploy Worker
         run: npx wrangler deploy --config wrangler.toml
+
+      - name: V6.2.1 live correctness acceptance
+        if: github.event.inputs.run_v621_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://cairnstone-v6.workers.dev"
+
+          health="$(curl -fsS "$BASE/health")"
+          echo "$health" | jq -e '.ok == true and .name == "cairnstone-v6" and ((.mcp_tools | index("cairnstone_set_path_head")) != null) and ((.mcp_tools | index("cairnstone_check_source_freshness")) != null)' >/dev/null
+
+          before="$(curl -fsS "$BASE/v2/chains/cairnstone-v6/manifest?detail=compact")"
+          before_head="$(echo "$before" | jq -r '.head_hash')"
+          before_path="$(echo "$before" | jq -r '.path_heads[] | select(.path == "wrangler.toml") | .head')"
+          test -n "$before_head"
+          test -n "$before_path"
+
+          fresh="$(curl -fsS -X POST "$BASE/v1/check-freshness" \
+            -H 'content-type: application/json' \
+            --data '{"chain":"cairnstone-v6","path":"wrangler.toml","owner":"nothinginfinity","repo":"cairnstone-v6","ref":"main"}')"
+          echo "$fresh" | jq -e '.ok == true and .drift == false and ((.accepted.content_sha256 | type) == "string") and .accepted.content_sha256 == .observed.content_sha256 and .accepted.commit_sha != .observed.commit_sha' >/dev/null
+
+          cached="$(curl -fsS -X POST "$BASE/v1/get-freshness" \
+            -H 'content-type: application/json' \
+            --data '{"chain":"cairnstone-v6","path":"wrangler.toml"}')"
+          echo "$cached" | jq -e '.ok == true and .checked == true and .drift == false and .accepted.content_sha256 == .observed.content_sha256' >/dev/null
+
+          after="$(curl -fsS "$BASE/v2/chains/cairnstone-v6/manifest?detail=compact")"
+          after_head="$(echo "$after" | jq -r '.head_hash')"
+          after_path="$(echo "$after" | jq -r '.path_heads[] | select(.path == "wrangler.toml") | .head')"
+          test "$before_head" = "$after_head"
+          test "$before_path" = "$after_path"
+
+          echo "V6.2.1 live acceptance passed: unchanged path stayed in_sync across unrelated repo commits and freshness check did not mutate chain/path HEAD."
