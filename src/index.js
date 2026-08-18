@@ -24,6 +24,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/check-freshness") return json(await checkSourceFreshnessFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/get-freshness") return json(await getSourceFreshnessFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/freshness-status") return json(await getFreshnessStatusFromBody(await request.json(), env));
+      if (request.method === "POST" && url.pathname === "/v1/set-path-head") return json(await setPathHeadFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/search") return json(await searchStonesFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/query-expand") return json(await queryAndExpandFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/expand") return json(await expandRefFromBody(await request.json(), env));
@@ -119,6 +120,7 @@ function routes() {
     "POST /v1/check-freshness",
     "POST /v1/get-freshness",
     "POST /v1/freshness-status",
+    "POST /v1/set-path-head",
     "GET /v1/stones/:hash",
     "GET /v1/stones/:hash/lod/:level",
     "POST /v1/search",
@@ -214,6 +216,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_check_source_freshness") return checkSourceFreshnessFromBody(args, env);
   if (name === "cairnstone_get_source_freshness") return getSourceFreshnessFromBody(args, env);
   if (name === "cairnstone_freshness_status") return getFreshnessStatusFromBody(args, env);
+  if (name === "cairnstone_set_path_head") return setPathHeadFromBody(args, env);
   if (name === "cairnstone_create_stone") return createStoneFromBody(args, env);
   if (name === "cairnstone_create_github_file_stone") return createStoneFromGitHubBody(args, env);
   if (name === "cairnstone_create_repo_stones") return createRepoStonesFromBody(args, env);
@@ -285,7 +288,7 @@ function mcpTools() {
     },
     {
       name: "cairnstone_check_source_freshness",
-      description: "V6.2: live-check whether a chain's accepted path_head is still in sync with the current GitHub source at (owner, repo, path, ref). Resolves the current commit via the GitHub API, compares against the accepted stone's commit_sha, and RECORDS the result -- it never advances path_heads/chain_heads. Drift is surfaced, not auto-resolved; use cairnstone_set_head or re-stone the file if you want to accept the new source.",
+      description: "V6.2.1: live-check whether a chain's accepted path_head is still in sync with the current GitHub file at (owner, repo, path, ref). Compares the accepted stone's exact content identity against the observed file content, while recording the repository commit SHA only as provenance/context. Unrelated commits elsewhere in the repo do not create false drift. A missing observed path is reported as removed. The check never advances path_heads/chain_heads.",
       inputSchema: {
         type: "object",
         required: ["chain", "path", "owner", "repo"],
@@ -314,6 +317,19 @@ function mcpTools() {
         type: "object",
         required: ["chain"],
         properties: { chain: { type: "string" } }
+      }
+    },
+    {
+      name: "cairnstone_set_path_head",
+      description: "V6.2.1: explicitly accept one stone as the canonical per-path state for (chain, path). This updates path_heads only; it never changes the chain-level HEAD. The stone must already belong to the same chain and path.",
+      inputSchema: {
+        type: "object",
+        required: ["chain", "path", "hash"],
+        properties: {
+          chain: { type: "string" },
+          path: { type: "string" },
+          hash: { type: "string", description: "Full or >=8-character CairnStone hash." }
+        }
       }
     },
     {
@@ -356,13 +372,13 @@ function mcpTools() {
           chain: { type: "string" },
           related: { type: "array", items: { type: "string" } },
           metadata: { type: "object" },
-          set_as_head: { type: "boolean", description: "Mark this stone as the chain's current HEAD on creation. Defaults to false - opt in explicitly when this is meant to be the new canonical version of the file." }
+          set_as_head: { type: "boolean", description: "Mark this stone as the chain-level HEAD on creation. This does NOT set the per-path head; use cairnstone_commit_v2 or cairnstone_set_path_head for per-file acceptance." }
         }
       }
     },
     {
       name: "cairnstone_create_repo_stones",
-      description: "Walk a GitHub repository, create CairnStones for accepted files, generate an orientation stone, link it to file stones, and set it as chain HEAD.",
+      description: "Walk a GitHub repository, create CairnStones for accepted files, populate per-path accepted heads for those files, generate an orientation stone, link it to file stones, and optionally set the orientation as chain HEAD.",
       inputSchema: {
         type: "object",
         required: ["owner", "repo", "author"],
@@ -470,7 +486,7 @@ function mcpTools() {
     },
     {
       name: "cairnstone_set_head",
-      description: "Mark a stone as the current HEAD for its chain - the canonical, up-to-date version. Use this after stoning a new revision of a file you want future chats to treat as authoritative, instead of making them guess from created_at timestamps.",
+      description: "Mark a stone as the chain-level canonical HEAD. This is semantic/orientation state and does NOT change any per-path head. Use cairnstone_set_path_head (or cairnstone_commit_v2) to accept a specific file version.",
       inputSchema: {
         type: "object",
         required: ["chain", "hash"],
@@ -579,7 +595,8 @@ async function createRepoStonesFromBody(body, env) {
     requiredString,
     safeGitHubPart,
     safeGitHubRef,
-    clamp
+    clamp,
+    upsertPathHead
   });
 }
 
@@ -1489,22 +1506,42 @@ async function upsertPathHead(env, chain, path, hash, updated) {
   ).bind(chain, path, hash, updated).run();
 }
 
+async function setPathHeadFromBody(body, env) {
+  requireBindings(env);
+  const chain = requiredString(body.chain, "chain");
+  const path = requiredString(body.path, "path");
+  const resolved = await resolveStoneHash(env, body.hash);
+  if (!resolved.ok) return resolved;
+  const row = await env.CAIRNSTONE_DB.prepare(
+    "SELECT chain_hash,path FROM stones WHERE hash = ?"
+  ).bind(resolved.hash).first();
+  if (!row) return { ok: false, error: "stone_not_found", hash: resolved.hash };
+  if (row.chain_hash !== chain) return { ok: false, error: "stone_chain_mismatch", chain, stone_chain: row.chain_hash, hash: resolved.hash };
+  if (row.path !== path) return { ok: false, error: "stone_path_mismatch", path, stone_path: row.path, hash: resolved.hash };
+  const updatedAt = new Date().toISOString();
+  await upsertPathHead(env, chain, path, resolved.hash, updatedAt);
+  return { ok: true, chain, path, head_hash: resolved.hash, updated_at: updatedAt };
+}
+
 // V6.2: accepted-state (path_heads, semantic/curated) vs observed-source (live GitHub) freshness.
 // This NEVER writes to path_heads/chain_heads -- reconciliation is read-only with respect to
 // HEAD by design. It only records what was observed and whether it differs from what's accepted.
 async function upsertSourceFreshness(env, row) {
   await env.CAIRNSTONE_DB.prepare(
     `INSERT INTO source_freshness
-       (chain,path,owner,repo,checked_ref,observed_commit_sha,observed_at,accepted_stone_hash,accepted_commit_sha,drift,drift_reason)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)
+       (chain,path,owner,repo,checked_ref,observed_commit_sha,observed_at,accepted_stone_hash,accepted_commit_sha,accepted_content_sha256,observed_content_sha256,drift,drift_reason)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(chain,path) DO UPDATE SET
        owner=excluded.owner, repo=excluded.repo, checked_ref=excluded.checked_ref,
        observed_commit_sha=excluded.observed_commit_sha, observed_at=excluded.observed_at,
        accepted_stone_hash=excluded.accepted_stone_hash, accepted_commit_sha=excluded.accepted_commit_sha,
+       accepted_content_sha256=excluded.accepted_content_sha256, observed_content_sha256=excluded.observed_content_sha256,
        drift=excluded.drift, drift_reason=excluded.drift_reason`
   ).bind(
     row.chain, row.path, row.owner, row.repo, row.checked_ref, row.observed_commit_sha,
-    row.observed_at, row.accepted_stone_hash, row.accepted_commit_sha, row.drift ? 1 : 0, row.drift_reason
+    row.observed_at, row.accepted_stone_hash, row.accepted_commit_sha,
+    row.accepted_content_sha256, row.observed_content_sha256,
+    row.drift ? 1 : 0, row.drift_reason
   ).run();
 }
 
@@ -1521,7 +1558,9 @@ async function checkSourceFreshnessFromBody(body, env) {
   const repo = `${owner}/${repoName}`;
   const observedAt = new Date().toISOString();
 
+  // Repository commit is provenance/context only. Path drift is decided by exact file content.
   const resolution = await resolveGitHubCommit(owner, repoName, ref, env);
+  const observedFile = await fetchGitHubFile({ owner, repo: repoName, path, ref, maxBytes: MAX_FETCH_BYTES, returnContent: false }, env);
 
   const pathHeadRow = await env.CAIRNSTONE_DB.prepare(
     "SELECT head_hash FROM path_heads WHERE chain = ? AND path = ?"
@@ -1529,38 +1568,59 @@ async function checkSourceFreshnessFromBody(body, env) {
   const acceptedStoneHash = pathHeadRow ? pathHeadRow.head_hash : null;
 
   let acceptedCommitSha = null;
+  let acceptedContentSha256 = null;
   if (acceptedStoneHash) {
     const stoneRow = await env.CAIRNSTONE_DB.prepare(
-      "SELECT commit_sha FROM stones WHERE hash = ?"
+      "SELECT commit_sha,raw_key FROM stones WHERE hash = ?"
     ).bind(acceptedStoneHash).first();
     acceptedCommitSha = stoneRow ? stoneRow.commit_sha : null;
+    if (stoneRow && typeof stoneRow.raw_key === "string" && /^raw\/[0-9a-f]{64}\.txt$/i.test(stoneRow.raw_key)) {
+      acceptedContentSha256 = stoneRow.raw_key.slice(4, -4).toLowerCase();
+    }
   }
+
+  const observedContentSha256 = observedFile && observedFile.ok ? observedFile.fetch?.sha256 || null : null;
+  const observedMissing = observedFile && observedFile.ok === false && observedFile.status === 404;
 
   let drift = false;
   let driftReason = null;
-  if (!resolution.sha) {
+  if (!acceptedStoneHash) {
     drift = true;
-    driftReason = `observation_failed:${resolution.error || "unknown"}`;
-  } else if (!acceptedStoneHash) {
+    driftReason = observedMissing ? "no_accepted_stone_and_missing_source" : "no_accepted_stone";
+  } else if (observedMissing) {
     drift = true;
-    driftReason = "no_accepted_stone";
-  } else if (acceptedCommitSha !== resolution.sha) {
+    driftReason = "removed";
+  } else if (!observedFile || observedFile.ok === false) {
     drift = true;
-    driftReason = "commit_mismatch";
+    driftReason = `observation_failed:${observedFile?.error || resolution.error || "unknown"}`;
+  } else if (!acceptedContentSha256) {
+    drift = true;
+    driftReason = "accepted_content_identity_missing";
+  } else if (acceptedContentSha256 !== observedContentSha256) {
+    drift = true;
+    driftReason = "content_mismatch";
   }
 
   await upsertSourceFreshness(env, {
     chain, path, owner, repo: repoName, checked_ref: ref,
     observed_commit_sha: resolution.sha, observed_at: observedAt,
     accepted_stone_hash: acceptedStoneHash, accepted_commit_sha: acceptedCommitSha,
+    accepted_content_sha256: acceptedContentSha256,
+    observed_content_sha256: observedContentSha256,
     drift, drift_reason: driftReason
   });
 
   return {
     ok: true,
     chain, path, repo, checked_ref: ref,
-    accepted: { stone_hash: acceptedStoneHash, commit_sha: acceptedCommitSha },
-    observed: { commit_sha: resolution.sha, resolved: Boolean(resolution.sha), error: resolution.sha ? undefined : resolution.error },
+    accepted: { stone_hash: acceptedStoneHash, commit_sha: acceptedCommitSha, content_sha256: acceptedContentSha256 },
+    observed: {
+      commit_sha: resolution.sha,
+      content_sha256: observedContentSha256,
+      exists: !observedMissing,
+      resolved: Boolean(resolution.sha),
+      error: observedFile && observedFile.ok === false && !observedMissing ? observedFile.error : (resolution.sha ? undefined : resolution.error)
+    },
     drift, drift_reason: driftReason,
     observed_at: observedAt
   };
@@ -1578,8 +1638,8 @@ async function getSourceFreshnessFromBody(body, env) {
   return {
     ok: true, chain, path, checked: true,
     repo: `${row.owner}/${row.repo}`, checked_ref: row.checked_ref,
-    accepted: { stone_hash: row.accepted_stone_hash, commit_sha: row.accepted_commit_sha },
-    observed: { commit_sha: row.observed_commit_sha },
+    accepted: { stone_hash: row.accepted_stone_hash, commit_sha: row.accepted_commit_sha, content_sha256: row.accepted_content_sha256 },
+    observed: { commit_sha: row.observed_commit_sha, content_sha256: row.observed_content_sha256 },
     drift: Boolean(row.drift), drift_reason: row.drift_reason,
     observed_at: row.observed_at
   };
@@ -1787,20 +1847,26 @@ async function commitV2FromBody(body, env) {
   } else {
     const fetched = await fetchGitHubFileFromBody({ ...body, return_content: true }, env);
     if (!fetched.ok) return fetched;
+    const resolution = await resolveGitHubCommit(fetched.github.owner, fetched.github.repo, fetched.github.ref, env);
     content = fetched.content;
     stoneBody = {
       ...body,
       chain,
       author,
-      title: body.title || `${fetched.github.owner}/${fetched.github.repo}/${fetched.github.path}@${fetched.github.ref}`,
+      title: body.title || `${fetched.github.owner}/${fetched.github.repo}/${fetched.github.path}@${resolution.sha || fetched.github.ref}`,
       content,
       path: fetched.github.path,
       repo: `${fetched.github.owner}/${fetched.github.repo}`,
-      commit: fetched.github.ref,
+      commit: resolution.sha || fetched.github.ref,
       metadata: {
         ...(isObject(body.metadata) ? body.metadata : {}),
         source_type: "github_file",
-        github: fetched.github,
+        github: {
+          ...fetched.github,
+          requested_ref: fetched.github.ref,
+          commit_resolved: Boolean(resolution.sha),
+          commit_resolution_error: resolution.sha ? undefined : resolution.error
+        },
         fetch: fetched.fetch
       }
     };
@@ -1816,8 +1882,8 @@ async function commitV2FromBody(body, env) {
   let refsCount = null;
   if (dedupe) {
     const existing = await env.CAIRNSTONE_DB.prepare(
-      "SELECT hash FROM stones WHERE chain_hash = ? AND raw_key = ? ORDER BY created_at DESC LIMIT 1"
-    ).bind(chain, rawKey).first();
+      "SELECT hash FROM stones WHERE chain_hash = ? AND path = ? AND raw_key = ? ORDER BY created_at DESC LIMIT 1"
+    ).bind(chain, stoneBody.path || "content.txt", rawKey).first();
     if (existing) {
       stoneHash = existing.hash;
       deduped = true;
