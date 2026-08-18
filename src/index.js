@@ -553,6 +553,17 @@ function mcpTools() {
       }
     },
     {
+      name: "cairnstone_resume_chain",
+      description: "V6.4: deterministic one-call chain resume/orientation. Returns the exact accepted canonical state for a chain in a single response -- chain-level HEAD (resolved directly from chain_heads, never inferred from timestamps), the HEAD stone's structured GitHub provenance and metadata, every accepted path_head, and every graph edge (inbound and outbound) directly connected to HEAD. Read-only: never creates stones, never moves chain_heads or path_heads, never reconciles or accepts source. Use this as the first call when resuming work on a chain instead of separately fetching the manifest, guessing HEAD from timestamps, and parsing lod5 prose.",
+      inputSchema: {
+        type: "object",
+        required: ["chain"],
+        properties: {
+          chain: { type: "string" }
+        }
+      }
+    },
+    {
       name: "cairnstone_find_v2",
       description: "Vault-wide full-text search (FTS5 + bm25) over all ref keywords and previews, with optional chain or stone filter and optional inline expansion of top hits. Replaces cairnstone_search and vault-wide use of cairnstone_query_and_expand: one call to find and read.",
       inputSchema: {
