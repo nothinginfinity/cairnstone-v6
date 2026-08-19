@@ -17,15 +17,7 @@ export async function importV5BundleFromBody(body, env) {
     });
   }
 
-  let normalized;
-  try {
-    normalized = await validateBundle(body.bundle);
-  } catch (error) {
-    return fail("invalid_bundle", {
-      message: String(error && error.message ? error.message : error),
-      fail_closed: true
-    });
-  }
+  const normalized = await validateV5TransferBundle(body.bundle);
   if (!normalized.ok) return normalized;
 
   const preflight = await inspectDestination(normalized, env);
@@ -46,6 +38,17 @@ export async function importV5BundleFromBody(body, env) {
     idempotent_replay: applied.writes.total === 0,
     destination: applied.destination
   };
+}
+
+export async function validateV5TransferBundle(bundle) {
+  try {
+    return await validateBundle(bundle);
+  } catch (error) {
+    return fail("invalid_bundle", {
+      message: String(error && error.message ? error.message : error),
+      fail_closed: true
+    });
+  }
 }
 
 async function validateBundle(bundle) {
