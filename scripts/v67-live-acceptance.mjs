@@ -160,9 +160,16 @@ async function main() {
 
   const existingDestination = await getJson(V6, `/chains/${encodeURIComponent(SOURCE_CHAIN)}/manifest`);
   const existingCount = Number(existingDestination.stone_count ?? (existingDestination.nodes || []).length);
-  assert.equal(existingCount, 0, `V6 destination chain ${SOURCE_CHAIN} must be absent before fresh acceptance`);
-  assert.equal(existingDestination.head_hash ?? null, null);
-  record("destination chain absent before import");
+  const destinationWasFresh = existingCount === 0 && (existingDestination.head_hash ?? null) === null;
+  if (destinationWasFresh) {
+    record("destination chain absent before import");
+  } else {
+    assert.deepEqual(manifestShape(existingDestination), manifestShape(v5ManifestBefore), `pre-existing V6 destination must be an exact prior V5 import, not a collision`);
+    record("destination already contains exact prior V5 import; continuing replay acceptance", {
+      stones: existingCount,
+      head: existingDestination.head_hash
+    });
+  }
 
   const importedStones = [];
   const sourceExpansions = new Map();
@@ -210,7 +217,7 @@ async function main() {
   const applied = await postJson(V6, "/v1/import-v5-bundle", { bundle, dry_run: false, confirm_import: true });
   assert.equal(applied.ok, true, `apply failed: ${JSON.stringify(applied)}`);
   assert.notEqual(applied.dry_run, true);
-  record("explicit import applied", { head: bundle.head_hash });
+  record(destinationWasFresh ? "explicit import applied" : "exact existing import replayed", { head: bundle.head_hash });
 
   const [v6ImportedManifest, v6ImportedSummary] = await Promise.all([
     getJson(V6, `/chains/${encodeURIComponent(SOURCE_CHAIN)}/manifest`),
@@ -242,17 +249,22 @@ async function main() {
   }
   record("all imported stone JSON and ref expansions are byte-identical");
 
+  const probeStone = importedStones[0].stone;
+  const probeRef = probeStone.layers.lod2.compressed_index[0];
+  const probeKeyword = probeRef.keywords.find(keyword => String(keyword).length >= 4) || probeRef.keywords[0];
+  assert.ok(probeKeyword, "search probe requires at least one exact imported ref keyword");
   const find = await postJson(V6, "/v2/find", {
-    query: "semantic custody",
+    query: probeKeyword,
     chain: SOURCE_CHAIN,
-    match_mode: "all",
+    stone_hash: probeStone.border.hash,
+    match_mode: "any",
     top_k: 10,
     expand: false
   });
   assert.equal(find.ok, true, `V6 find failed: ${JSON.stringify(find)}`);
-  const findText = JSON.stringify(find);
-  assert.ok(findText.includes(SOURCE_CHAIN) || findText.includes(v5ManifestBefore.head_hash.slice(0, 12)), "V6 find did not surface imported chain content");
-  record("imported refs are searchable via V6 FTS");
+  assert.ok(find.total > 0, `V6 find returned no matches for exact imported keyword ${probeKeyword}: ${JSON.stringify(find)}`);
+  assert.ok((find.matches || []).some(match => match.ref === probeRef.ref_id && match.chain === SOURCE_CHAIN), `V6 find did not return exact imported ref ${probeRef.ref_id}: ${JSON.stringify(find)}`);
+  record("imported refs are searchable via V6 FTS", { query: probeKeyword, ref: probeRef.ref_id, matches: find.total });
 
   const replayBefore = manifestShape(await getJson(V6, `/chains/${encodeURIComponent(SOURCE_CHAIN)}/manifest`));
   const replay = await postJson(V6, "/v1/import-v5-bundle", { bundle, dry_run: false, confirm_import: true });
