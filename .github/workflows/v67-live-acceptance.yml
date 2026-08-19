@@ -1,0 +1,39 @@
+name: V6.7 Live V5 Import Acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  accept:
+    name: V6.7 live acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        run: npm install
+
+      - name: Regression gate
+        run: npm run check
+
+      - name: Live V5 import acceptance
+        run: node scripts/v67-live-acceptance.mjs
+
+      - name: Upload acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v67-live-acceptance
+          path: artifacts/v67-live-acceptance.json
+          if-no-files-found: warn
+          retention-days: 30
