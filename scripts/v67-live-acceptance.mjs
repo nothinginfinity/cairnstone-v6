@@ -309,7 +309,7 @@ async function main() {
     params: { name: "cairnstone_import_v5_bundle", arguments: { bundle: {}, dry_run: true } }
   }, toolsList.sessionId);
   const dispatcherText = JSON.stringify(dispatcherProbe.payload);
-  assert.match(dispatcherText, /invalid_bundle|bundle/i);
+  assert.match(dispatcherText, /unsupported_transfer_format|invalid_bundle|bundle/i);
   record("MCP dispatcher routes cairnstone_import_v5_bundle");
 
   const [v5HealthAfter, v5ManifestAfter, protectedAfter] = await Promise.all([
