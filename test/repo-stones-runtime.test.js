@@ -35,12 +35,15 @@ function makeDeps(calls) {
     async linkStonesFromBody(body) {
       calls.edges.push(body);
       return { ok: true };
+    },
+    async upsertPathHead(env, chain, path, stoneHash, updatedAt) {
+      calls.pathHeads.push({ chain, path, stone_hash: stoneHash, updated_at: updatedAt });
     }
   };
 }
 
 test("createRepoStonesFromBody stones accepted files and creates orientation edges", async () => {
-  const calls = { fileStones: [], edges: [], orientation: null };
+  const calls = { fileStones: [], edges: [], pathHeads: [], orientation: null };
   const deps = makeDeps(calls);
   const originalFetch = globalThis.fetch;
 
@@ -74,6 +77,8 @@ test("createRepoStonesFromBody stones accepted files and creates orientation edg
     assert.equal(result.orientation_hash, "orientation-hash");
     assert.equal(calls.fileStones.length, 2);
     assert.equal(calls.edges.length, 2);
+    assert.equal(calls.pathHeads.length, 2);
+    assert.deepEqual(calls.pathHeads.map((item) => item.path).sort(), ["README.md", "src/index.js"]);
     assert.equal(calls.orientation.set_as_head, true);
   } finally {
     globalThis.fetch = originalFetch;
@@ -81,7 +86,7 @@ test("createRepoStonesFromBody stones accepted files and creates orientation edg
 });
 
 test("createRepoStonesFromBody respects max_files", async () => {
-  const calls = { fileStones: [], edges: [], orientation: null };
+  const calls = { fileStones: [], edges: [], pathHeads: [], orientation: null };
   const deps = makeDeps(calls);
   const originalFetch = globalThis.fetch;
 
@@ -107,6 +112,8 @@ test("createRepoStonesFromBody respects max_files", async () => {
     }, {}, deps);
 
     assert.equal(result.created_count, 1);
+    assert.equal(calls.pathHeads.length, 1);
+    assert.equal(calls.pathHeads[0].path, "README.md");
     assert.equal(result.skipped.some((item) => item.reason === "max_files_exceeded"), true);
   } finally {
     globalThis.fetch = originalFetch;
