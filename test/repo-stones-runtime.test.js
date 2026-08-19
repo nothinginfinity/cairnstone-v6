@@ -65,7 +65,10 @@ test("createRepoStonesFromBody stones accepted files and creates orientation edg
     const result = await createRepoStonesFromBody({
       owner: "nothinginfinity",
       repo: "cairngraph",
-      author: "tester"
+      author: "tester",
+      create_architecture: false,
+      create_lint: false,
+      create_review: false
     }, {}, deps);
 
     assert.equal(result.ok, true);
