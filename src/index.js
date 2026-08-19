@@ -3,8 +3,9 @@ import {
   createRepoStonesFromBody as createRepoStonesRuntimeFromBody,
   fetchGitHubRepoTree
 } from "./repo-stones-runtime.js";
+import { importV5BundleFromBody } from "./v5-import.js";
 
-const VERSION = "0.4.3";
+const VERSION = "0.4.4";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -29,6 +30,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/freshness-status") return json(await getFreshnessStatusFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/reconcile-repo") return json(await reconcileRepoFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/set-path-head") return json(await setPathHeadFromBody(await request.json(), env));
+      if (request.method === "POST" && url.pathname === "/v1/import-v5-bundle") return json(await importV5BundleFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/search") return json(await searchStonesFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/query-expand") return json(await queryAndExpandFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/expand") return json(await expandRefFromBody(await request.json(), env));
@@ -134,6 +136,7 @@ function routes() {
     "POST /v1/freshness-status",
     "POST /v1/reconcile-repo",
     "POST /v1/set-path-head",
+    "POST /v1/import-v5-bundle",
     "GET /v1/stones/:hash",
     "GET /v1/stones/:hash/lod/:level",
     "POST /v1/search",
@@ -232,6 +235,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_freshness_status") return getFreshnessStatusFromBody(args, env);
   if (name === "cairnstone_reconcile_repo") return reconcileRepoFromBody(args, env);
   if (name === "cairnstone_set_path_head") return setPathHeadFromBody(args, env);
+  if (name === "cairnstone_import_v5_bundle") return importV5BundleFromBody(args, env);
   if (name === "cairnstone_create_stone") return createStoneFromBody(args, env);
   if (name === "cairnstone_create_github_file_stone") return createStoneFromGitHubBody(args, env);
   if (name === "cairnstone_create_repo_stones") return createRepoStonesFromBody(args, env);
@@ -613,6 +617,20 @@ function mcpTools() {
             }
           }
         }
+      }
+    },
+    {
+      name: "cairnstone_import_v5_bundle",
+      description: "V6.7: explicitly preview or import one complete CairnStone V5 chain snapshot without mutating V5. Preserves exact V5 stone hashes, raw/ref identity, receipts, typed edge IDs, path heads, and canonical chain HEAD. Dry-run is the default. Apply requires dry_run:false plus confirm_import:true. Destination collisions fail closed and there is no override mode; canonical HEAD is written last.",
+      inputSchema: {
+        type: "object",
+        required: ["bundle"],
+        properties: {
+          bundle: { type: "object", description: "Portable cairnstone-v5-transfer-v1 full-chain bundle: source identity, graph-complete source_manifest, exact head, path_heads, stones as {stone,raw_content}, and typed edges." },
+          dry_run: { type: "boolean", description: "Defaults true. Validate identity and destination collisions and return a write preview without changing V6." },
+          confirm_import: { type: "boolean", description: "Required true when dry_run=false. Explicit opt-in guard; ignored for preview." }
+        },
+        additionalProperties: false
       }
     },
     {
