@@ -17,7 +17,15 @@ export async function importV5BundleFromBody(body, env) {
     });
   }
 
-  const normalized = await validateBundle(body.bundle);
+  let normalized;
+  try {
+    normalized = await validateBundle(body.bundle);
+  } catch (error) {
+    return fail("invalid_bundle", {
+      message: String(error && error.message ? error.message : error),
+      fail_closed: true
+    });
+  }
   if (!normalized.ok) return normalized;
 
   const preflight = await inspectDestination(normalized, env);
@@ -142,9 +150,22 @@ async function validateBundle(bundle) {
 
     const receipt = layers.lod2.receipt;
     if (!isObject(receipt)) return fail("missing_receipt", { hash: stoneHash });
-    if (Number(receipt.original_bytes) !== utf8Bytes(item.raw_content)) {
-      return fail("receipt_original_bytes_mismatch", { hash: stoneHash });
+    const originalBytes = utf8Bytes(item.raw_content);
+    if (Number(receipt.original_bytes) !== originalBytes) {
+      return fail("receipt_original_bytes_mismatch", { hash: stoneHash, expected: originalBytes, actual: Number(receipt.original_bytes) });
     }
+    const compressedBytes = utf8Bytes(JSON.stringify(refs));
+    if (Number(receipt.compressed_bytes) !== compressedBytes) {
+      return fail("receipt_compressed_bytes_mismatch", { hash: stoneHash, expected: compressedBytes, actual: Number(receipt.compressed_bytes) });
+    }
+    const expectedRatio = compressedBytes > 0 ? Number((originalBytes / compressedBytes).toFixed(2)) : 0;
+    if (Number(receipt.ratio) !== expectedRatio) {
+      return fail("receipt_ratio_mismatch", { hash: stoneHash, expected: expectedRatio, actual: Number(receipt.ratio) });
+    }
+    if (requiredString(receipt.created_at, `stone ${stoneHash} receipt.created_at`) !== border.created) {
+      return fail("receipt_created_at_mismatch", { hash: stoneHash, expected: border.created, actual: receipt.created_at ?? null });
+    }
+    requiredString(receipt.strategy, `stone ${stoneHash} receipt.strategy`);
     const receiptId = await sha256(`${stoneHash}:${border.created}:receipt`);
 
     preparedStones.push({
