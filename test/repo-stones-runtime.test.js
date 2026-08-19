@@ -69,7 +69,7 @@ test("createRepoStonesFromBody stones accepted files and creates orientation edg
     }, {}, deps);
 
     assert.equal(result.ok, true);
-    assert.equal(result.chain, "cairngraph");
+    assert.equal(result.chain, "nothinginfinity/cairngraph");
     assert.equal(result.created_count, 2);
     assert.equal(result.skipped_count, 1);
     assert.equal(result.failed_count, 0);
