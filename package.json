@@ -10,7 +10,7 @@
     "db:migrate:local": "wrangler d1 migrations apply CAIRNSTONE_DB --local",
     "db:migrate:remote": "wrangler d1 migrations apply CAIRNSTONE_DB --remote",
     "test": "node --test",
-    "check": "node --check src/index.js && node --check src/v5-import.js && node --test"
+    "check": "node --check src/index.js && node --check src/v5-import.js && node --check src/correspondence.js && node --test"
   },
   "dependencies": {
     "@babel/parser": "^8.0.0"

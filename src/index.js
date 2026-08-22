@@ -4,6 +4,11 @@ import {
   fetchGitHubRepoTree
 } from "./repo-stones-runtime.js";
 import { importV5BundleFromBody } from "./v5-import.js";
+import {
+  getInboxFromBody,
+  readMessageFromBody,
+  sendMessageFromBody
+} from "./correspondence.js";
 
 const VERSION = "0.4.4";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
@@ -227,6 +232,9 @@ async function handleMcpRpc(rpc, env) {
 
 async function callMcpTool(name, args, env) {
   if (name === "cairnstone_health") return health(env);
+  if (name === "cairnstone_send_message") return sendMessageFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
+  if (name === "cairnstone_get_inbox") return getInboxFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
+  if (name === "cairnstone_read_message") return readMessageFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   if (name === "cairnstone_list_stones") return listStones(env, { ...args, origin: "mcp://cairnstone" });
   if (name === "cairnstone_fetch_github_file") return fetchGitHubFileFromBody(args, env);
   if (name === "cairnstone_find_by_source") return findBySourceFromBody(args, env);
@@ -366,6 +374,57 @@ function mcpTools() {
           path: { type: "string" },
           hash: { type: "string", description: "Full or >=8-character CairnStone hash." }
         }
+      }
+    },
+    {
+      name: "cairnstone_send_message",
+      description: "AC1: create one immutable correspondence Stone and recipient delivery state. Correspondence transports intent but grants no execution authority.",
+      inputSchema: {
+        type: "object",
+        required: ["from", "to", "content"],
+        properties: {
+          from: { type: "string" },
+          to: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 25 },
+          content: { type: "string" },
+          message_id: { type: "string" },
+          thread_id: { type: "string" },
+          intent: { type: "string", enum: ["message", "handoff", "task_request", "task_result", "ack"] },
+          priority: { type: "string", enum: ["low", "normal", "high", "urgent"] },
+          subject: { type: "string" }
+        },
+        additionalProperties: false
+      }
+    },
+    {
+      name: "cairnstone_get_inbox",
+      description: "AC1: list compact correspondence metadata and LOD5 for one recipient without mutating message Stones.",
+      inputSchema: {
+        type: "object",
+        required: ["recipient_id"],
+        properties: {
+          recipient_id: { type: "string" },
+          status: { type: "string", enum: ["queued", "delivered", "read", "acked", "archived"] },
+          limit: { type: "number", minimum: 1, maximum: 200 }
+        },
+        additionalProperties: false
+      }
+    },
+    {
+      name: "cairnstone_read_message",
+      description: "AC1: read one recipient message by message_id or stone_hash and mark only its delivery state as read.",
+      inputSchema: {
+        type: "object",
+        required: ["recipient_id"],
+        properties: {
+          recipient_id: { type: "string" },
+          message_id: { type: "string" },
+          stone_hash: { type: "string" }
+        },
+        oneOf: [
+          { required: ["message_id"] },
+          { required: ["stone_hash"] }
+        ],
+        additionalProperties: false
       }
     },
     {
