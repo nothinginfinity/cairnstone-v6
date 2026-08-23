@@ -122,3 +122,25 @@ the starting point for v6's own schema rather than reinvented from scratch.
 - Progressive loading is mandatory: boot with `core.orient`, then load only the smallest relevant skill set for the current task; do not inject the full catalog.
 - Seed three foundational skills (`core.orient`, `core.choose-tools`, `core.verify-live-state`) and migrate the two existing field-tested AFO GitHub runtime skills (`actions-triage`, `actions-job-logs`) into Git-versioned canonical skill files.
 - Keep a future Skills Sub-Agent above the deterministic resolver as an ambiguity/fallback layer only; it must never become authority for which skill version is accepted.
+
+## V6.9.1 — Canonical skill distribution + first external consumer
+
+- Add `cairnstone_get_skill_bundle` as the provenance-bearing distribution boundary: accepted manifest HEAD → accepted skill path HEADs → immutable Git bodies → content-identified bundle.
+- Let downstream MCPs cache only validated accepted bundles; live CairnStone accepted state remains authority, with last-known validated bundle as the only outage fallback.
+- Demote consumer-local `upsert_skill` behavior to draft/experimental/staging so it cannot override canonical accepted IDs.
+- Prove the first consumer in AFO GitHub API MCP with the Actions triage/job-log flow and explicit rejection of unrelated GitHub Pages deployment endpoints.
+
+## V6.9.2 — Skill QA/lint + deliberate catalog growth
+
+- Add deterministic skill-catalog QA shared by CI candidate validation and live accepted-state linting (`cairnstone_lint_skills`).
+- Hard-check duplicate IDs/paths, semantic versions, canonical paths, missing dependencies, dependency cycles, invalid tool references, boot integrity, accepted path HEAD completeness, and hard body-size limits; surface trigger/soft size collisions as warnings.
+- Add a manifest `tool_registry` so `requires_tools` can be checked against declared production tool vocabulary.
+- Make `npm run lint:skills` part of `npm run check`, blocking deployment/acceptance of malformed candidate catalogs.
+- Require staged acceptance: changed/new skill path HEADs first at one immutable Git commit; manifest path HEAD and chain HEAD last.
+- Grow the accepted catalog deliberately from 5 to 15 operational skills across GitHub and CairnStone workflows; do not create filler skills merely to raise the count.
+
+## V6.10 — Skills Sub-Agent (deferred until justified)
+
+- Add a Skills Sub-Agent only after the deterministic 15+ skill corpus is healthy and real routing ambiguity warrants model-assisted selection.
+- The sub-agent may rank or explain candidate skills, but accepted manifest/path HEAD state remains authority and deterministic resolver output remains available as the safe baseline/fallback.
+- Do not let the sub-agent select mutable/unaccepted skill versions, bypass skill QA, or grant mutation authority.
