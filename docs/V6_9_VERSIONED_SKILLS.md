@@ -17,9 +17,9 @@ A client starts with the operating guide and the boot skill (`core.orient`). It 
 
 This keeps 50+ possible skills cheap: catalog metadata stays compact while full skill bodies are disclosed only when useful.
 
-## Initial catalog
+## Accepted catalog evolution
 
-The first accepted catalog contains three foundational CairnStone skills plus two migrated AFO GitHub skills:
+The first V6.9 accepted catalog contained three foundational CairnStone skills plus two migrated AFO GitHub skills:
 
 - `core.orient`
 - `core.choose-tools`
@@ -27,12 +27,40 @@ The first accepted catalog contains three foundational CairnStone skills plus tw
 - `github.actions-triage`
 - `github.actions-job-logs`
 
-The two GitHub skills preserve the field-tested guidance already stored in the AFO GitHub MCP's mutable R2 skill document, but Git + CairnStone now become the canonical versioned source.
+V6.9.2 grows that catalog deliberately to 15 accepted skills. The additional ten are:
+
+- `github.repo-file-read`
+- `github.pull-request-triage`
+- `github.commit-evidence`
+- `github.release-inspection`
+- `github.branch-protection-inspection`
+- `github.workflow-dispatch-safety`
+- `cairnstone.source-freshness`
+- `cairnstone.repo-reconcile`
+- `cairnstone.skill-acceptance`
+- `cairnstone.project-handoff`
+
+The two original GitHub Actions skills preserve field-tested guidance from the AFO GitHub MCP, while Git + CairnStone remain the canonical versioned source for the full catalog.
 
 ## MCP surface
 
 - `cairnstone_list_skills` — compact catalog metadata only.
 - `cairnstone_get_skill` — load one accepted skill at its immutable Git commit.
+- `cairnstone_get_skill_bundle` — V6.9.1 provenance-bearing distribution bundle for accepted skills and downstream caches.
+- `cairnstone_lint_skills` — V6.9.2 accepted-state catalog QA; read-only and deterministic.
 - `cairnstone_resolve_skills` — deterministic task-to-skill recommendations; no execution authority.
 
-A future Skills Sub-Agent can sit above this deterministic resolver for ambiguous tasks. It should not replace accepted-state selection or become authority for skill versions.
+## V6.9.2 QA and acceptance protocol
+
+The same pure catalog linter is used in two contexts:
+
+1. **Candidate Git QA:** `npm run lint:skills` reads `skills/manifest.json` and every referenced `SKILL.md` before deployment/acceptance. Hard errors fail CI.
+2. **Accepted-state QA:** `cairnstone_lint_skills` reads the accepted manifest/path HEAD state and verifies immutable accepted source plus catalog invariants.
+
+The linter checks duplicate IDs/paths, semantic versions, canonical paths, dependencies/cycles, declared tool references, boot integrity, file/body size budgets, trigger collisions, and accepted path HEAD completeness. Manifest v2 includes a `tool_registry` for deterministic `requires_tools` validation.
+
+Catalog activation is deliberately staged: commit one immutable candidate; accept every changed/new skill path HEAD first; verify them; move `skills/manifest.json` last. If work stops before the final manifest move, the old accepted catalog remains canonical.
+
+## V6.10 boundary
+
+The Skills Sub-Agent remains deferred until a healthy deterministic corpus demonstrates real routing ambiguity. It may later sit above the deterministic resolver as an ambiguity/fallback layer, but it must never replace accepted-state selection, bypass QA, select mutable/unaccepted skill versions, or grant execution authority.
