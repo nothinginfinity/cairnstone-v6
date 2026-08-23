@@ -112,3 +112,13 @@ the starting point for v6's own schema rather than reinvented from scratch.
 - Only after this phase does v6 become a candidate to be treated as
   canonical for new work — v5 remains authoritative until an explicit,
   separate decision is made to shift default usage.
+
+## V6.9 — Version-controlled skills + progressive skill resolution
+
+- Store provider-agnostic skill source in Git under `skills/`, with a compact `skills/manifest.json` discovery layer.
+- Use dedicated CairnStone chain `cairnstone-v6-skills`; per-path HEADs are the accepted skill versions, independently of newer edits that may exist on Git `main`.
+- Fail closed unless an accepted GitHub-backed skill resolves to an immutable 40-hex commit SHA.
+- Add `cairnstone_list_skills`, `cairnstone_get_skill`, and deterministic `cairnstone_resolve_skills` MCP tools.
+- Progressive loading is mandatory: boot with `core.orient`, then load only the smallest relevant skill set for the current task; do not inject the full catalog.
+- Seed three foundational skills (`core.orient`, `core.choose-tools`, `core.verify-live-state`) and migrate the two existing field-tested AFO GitHub runtime skills (`actions-triage`, `actions-job-logs`) into Git-versioned canonical skill files.
+- Keep a future Skills Sub-Agent above the deterministic resolver as an ambiguity/fallback layer only; it must never become authority for which skill version is accepted.
