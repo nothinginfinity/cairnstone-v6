@@ -27,6 +27,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v610_acceptance:
+        description: "Run V6.10 live Skills Sub-Agent acceptance after deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   deploy:
@@ -149,3 +157,51 @@ jobs:
           test "$before_paths" = "$after_paths"
 
           echo "V6.3 live acceptance passed: one immutable repo snapshot classified added/in_sync paths and reconciliation left chain HEAD, every path HEAD, and stone count unchanged."
+
+      - name: V6.10 live Skills Sub-Agent acceptance
+        if: github.event.inputs.run_v610_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+
+          health=""
+          for attempt in {1..10}; do
+            health="$(curl -fsS "$BASE/health" || true)"
+            if echo "$health" | jq -e '.ok == true and .version == "0.4.8" and ((.mcp_tools | index("cairnstone_skill_agent")) != null)' >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          echo "$health" | jq -e '.ok == true and .version == "0.4.8" and ((.mcp_tools | index("cairnstone_skill_agent")) != null)' >/dev/null
+
+          tools="$(curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' -H 'accept: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}')"
+          echo "$tools" | jq -e '.result.tools | any(.name == "cairnstone_skill_agent")' >/dev/null
+
+          deterministic="$(curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' -H 'accept: application/json' --data '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cairnstone_skill_agent","arguments":{"task":"The GitHub Actions deployment failed. Find the failed workflow and inspect its jobs.","mode":"deterministic","max_skills":2}}}')"
+          echo "$deterministic" | jq -e '
+            (.result.content[0].text | fromjson) as $r |
+            $r.ok == true and
+            $r.selection_source == "deterministic" and
+            $r.model_assist.used == false and
+            $r.policy.accepted_state_only == true and
+            $r.policy.execution_authority == false and
+            $r.policy.mutation_authority == false and
+            ($r.manifest.stone_hash | test("^[0-9a-f]{64}$"))
+          ' >/dev/null
+
+          assisted="$(curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' -H 'accept: application/json' --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cairnstone_skill_agent","arguments":{"task":"My pull request is blocked and I need to determine whether pull request state, branch protection, or required checks are responsible.","mode":"model","max_skills":2,"candidate_limit":5}}}')"
+          echo "$assisted" | jq -e '
+            (.result.content[0].text | fromjson) as $r |
+            ($r.deterministic_candidates | map(.skill_id)) as $accepted |
+            $r.ok == true and
+            $r.selection_source == "model_assisted" and
+            $r.model_assist.attempted == true and
+            $r.model_assist.used == true and
+            ($r.recommendations | length) >= 1 and
+            all($r.recommendations[]; (.skill_id as $id | $accepted | index($id)) != null) and
+            $r.policy.model_can_expand_candidate_set == false and
+            $r.policy.model_can_select_unaccepted_skill == false and
+            $r.policy.execution_authority == false and
+            $r.policy.mutation_authority == false
+          ' >/dev/null
+
+          echo "V6.10 live acceptance passed: deterministic routing bypassed AI, ambiguous routing used the Skills Sub-Agent only inside accepted candidates, and no execution/mutation authority was granted."
