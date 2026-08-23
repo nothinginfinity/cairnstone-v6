@@ -195,15 +195,15 @@ test("skill catalog lint catches structural, dependency, tool, trigger, and semv
         dependencies: ["core.alpha"]
       },
       {
-        id: "core.alpha",
+        id: "core.duplicate",
         version: "1.0.0",
-        path: "skills/core/beta/SKILL.md",
+        path: "skills/core/duplicate/SKILL.md",
         dependencies: []
       },
       {
-        id: "core.gamma",
+        id: "core.duplicate",
         version: "1.0.0",
-        path: "skills/core/gamma/SKILL.md",
+        path: "skills/core/duplicate/SKILL.md",
         dependencies: ["missing.skill"]
       }
     ]
