@@ -204,6 +204,9 @@ count and version — this list will keep growing.
 - `cairnstone_list_skills(chain?)` — read the compact accepted catalog without loading full skill bodies.
 - `cairnstone_resolve_skills(task, available_tools?, loaded_skills?, max_skills?)` — deterministic metadata/trigger resolver. Use it after orientation to select the smallest relevant skill set. It recommends skills but grants no execution authority.
 - `cairnstone_get_skill(skill_id, chain?)` — load one accepted full skill body. The selected path HEAD must point at a GitHub-backed stone with an immutable 40-hex commit SHA; mutable `main` is never treated as the active skill version.
+- `cairnstone_get_skill_bundle(skill_ids[], chain?)` — **V6.9.1 distribution boundary.** Compiles selected accepted skills into a provenance-bearing downstream bundle with `manifest_head`, `skill_id`, `skill_version`, `stone_hash`, immutable `commit_sha`, and content identity. Every body is still selected by CairnStone path HEAD; the bundle does not create a second authority.
+- **Downstream-consumer rule (V6.9.1):** another MCP may cache a validated accepted bundle for availability/performance, but cache storage is never authority. A consumer must prefer live CairnStone accepted state, may fall back only to its last-known validated accepted bundle, and must never fall back to arbitrary mutable Git or an older mutable skill document.
+- **Draft-skill rule:** consumer-local `upsert_skill`-style operations may be retained for `draft` / `experimental` / `staging` data, but they must not silently replace a canonically accepted skill ID. Production changes go Git → CairnStone acceptance → accepted bundle → consumer cache.
 - **Progressive-loading rule:** start with the boot skill (`core.orient`), then resolve/load specialized skills only as the task requires. Do not preload the whole catalog merely because it exists. This is designed to remain cheap with 50+ skills.
 - A future Skills Sub-Agent may help resolve ambiguous tasks, but it must sit above this deterministic accepted-state layer and must never choose an unaccepted skill version as authority.
 
@@ -324,7 +327,7 @@ every path head + every edge touching HEAD in one deterministic call.
 
 ---
 
-*Last updated: 2026-08-23, with V6.9 version-controlled progressive skills added after the Claude/ChatGPT concurrent-session
+*Last updated: 2026-08-23, with V6.9.1 canonical skill distribution and the first external consumer (AFO GitHub API MCP) added after V6.9 progressive skills and the Claude/ChatGPT concurrent-session
 coordination incident described in Section 2. If you update this document,
 update it in place here and keep the "Last updated" line current — this
 file is meant to be the single source of truth referenced by URL from every
