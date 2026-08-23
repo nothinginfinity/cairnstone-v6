@@ -218,6 +218,17 @@ export async function skillAgentFromBody(body = {}, env, deps = {}) {
         model
       });
     }
+    if (!catalog.manifest || !baseline.manifest || catalog.manifest.stone_hash !== baseline.manifest.stone_hash) {
+      return deterministicResult({
+        baseline,
+        ambiguity,
+        recommendations: deterministicTop,
+        mode,
+        source: "deterministic_fallback",
+        fallbackReason: "manifest_changed_during_routing",
+        model
+      });
+    }
 
     const metadataById = new Map(catalog.skills.map(item => [item.id, item]));
     const modelCandidates = baseline.recommendations.map(candidate => compactCandidateForModel(candidate, metadataById.get(candidate.skill_id)));
