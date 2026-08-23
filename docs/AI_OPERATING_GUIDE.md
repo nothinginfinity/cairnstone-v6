@@ -199,6 +199,14 @@ count and version — this list will keep growing.
   `chatgpt:cairnstone-v6`. No central registry — any well-formed ID works,
   but use consistent, recognizable IDs so other sessions can find you.
 
+### Version-controlled skills (V6.9 — progressive capability loading)
+- **Canonical skills chain:** `cairnstone-v6-skills`. GitHub files under `skills/` are the editable source; CairnStone `(chain,path)` HEADs are the acceptance authority.
+- `cairnstone_list_skills(chain?)` — read the compact accepted catalog without loading full skill bodies.
+- `cairnstone_resolve_skills(task, available_tools?, loaded_skills?, max_skills?)` — deterministic metadata/trigger resolver. Use it after orientation to select the smallest relevant skill set. It recommends skills but grants no execution authority.
+- `cairnstone_get_skill(skill_id, chain?)` — load one accepted full skill body. The selected path HEAD must point at a GitHub-backed stone with an immutable 40-hex commit SHA; mutable `main` is never treated as the active skill version.
+- **Progressive-loading rule:** start with the boot skill (`core.orient`), then resolve/load specialized skills only as the task requires. Do not preload the whole catalog merely because it exists. This is designed to remain cheap with 50+ skills.
+- A future Skills Sub-Agent may help resolve ambiguous tasks, but it must sit above this deterministic accepted-state layer and must never choose an unaccepted skill version as authority.
+
 ### Grounded Q&A (ASK1 — V6-only)
 - `cairnstone_ask(chain, question, top_k?, context_lines?, verify_freshness?,
   persist?, max_tokens?)` — retrieval-grounded Q&A over one chain via
@@ -237,6 +245,7 @@ every path head + every edge touching HEAD in one deterministic call.
 1. **Orient.** `cairnstone_resume_chain(chain="cairnstone-v6-project-memory")`
    on V6. Check the AC1 inbox for your own actor ID and for other known
    agent IDs before starting work that might overlap with someone else's.
+   Then use `cairnstone_resolve_skills` and `cairnstone_get_skill` to load only the accepted skills needed for the current task, beginning with `core.orient`; do not preload the full catalog.
 2. **Compress/stone.** Use `commit_v2` for new or updated files/notes,
    `create_github_file_stone`/`create_repo_stones` for bulk GitHub content.
 3. **Flags (automatic, free).** Every stone gets per-ref flags at creation —
@@ -305,8 +314,9 @@ every path head + every edge touching HEAD in one deterministic call.
 3. Call `cairnstone_get_inbox` for your own actor ID and check for recent
    messages from other agent IDs (e.g. `chatgpt:cairnstone-v6` if you're
    Claude, or vice versa) that might indicate concurrent or very recent work.
-4. Apply Section 6's workflow in order — don't skip straight to "fix."
-5. When you create or fix something, leave the graph in a state a future
+4. Resolve the current task against the accepted `cairnstone-v6-skills` catalog. Load `core.orient` first, then only the specialized skills recommended for the task.
+5. Apply Section 6's workflow in order — don't skip straight to "fix."
+6. When you create or fix something, leave the graph in a state a future
    session can trust: correct chain, correct edge types, HEAD and path
    heads pointing at the right stones, and a correspondence message sent if
    the change is significant enough that a concurrent session should know
@@ -314,7 +324,7 @@ every path head + every edge touching HEAD in one deterministic call.
 
 ---
 
-*Last updated: 2026-08-23, following the Claude/ChatGPT concurrent-session
+*Last updated: 2026-08-23, with V6.9 version-controlled progressive skills added after the Claude/ChatGPT concurrent-session
 coordination incident described in Section 2. If you update this document,
 update it in place here and keep the "Last updated" line current — this
 file is meant to be the single source of truth referenced by URL from every
