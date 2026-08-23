@@ -139,8 +139,13 @@ the starting point for v6's own schema rather than reinvented from scratch.
 - Require staged acceptance: changed/new skill path HEADs first at one immutable Git commit; manifest path HEAD and chain HEAD last.
 - Grow the accepted catalog deliberately from 5 to 15 operational skills across GitHub and CairnStone workflows; do not create filler skills merely to raise the count.
 
-## V6.10 — Skills Sub-Agent (deferred until justified)
+## V6.10 — Skills Sub-Agent — implemented + live accepted
 
-- Add a Skills Sub-Agent only after the deterministic 15+ skill corpus is healthy and real routing ambiguity warrants model-assisted selection.
-- The sub-agent may rank or explain candidate skills, but accepted manifest/path HEAD state remains authority and deterministic resolver output remains available as the safe baseline/fallback.
-- Do not let the sub-agent select mutable/unaccepted skill versions, bypass skill QA, or grant mutation authority.
+- Add `cairnstone_skill_agent` as an advisory layer above `cairnstone_resolve_skills`; deterministic accepted-state routing always runs first.
+- In `auto` mode, invoke Workers AI only when top deterministic candidate scores are close. `deterministic` mode bypasses AI entirely; `model` mode forces advisory ranking only when at least two accepted candidates exist.
+- Give the model only accepted deterministic candidate IDs plus compact metadata from the same accepted manifest generation. Candidate metadata is treated as untrusted data, not instructions.
+- Validate every model-selected ID against the deterministic accepted candidate set. The model cannot expand the set, choose versions/commits/path HEADs, or select mutable/unaccepted skill source.
+- Fail closed to the deterministic baseline on missing AI binding, provider/model errors, invalid model JSON, empty selection, invented IDs, unavailable accepted catalog metadata, or a manifest-HEAD change during routing.
+- Return explicit policy evidence that execution authority and mutation authority are both false.
+- Regression coverage proves clear deterministic routing makes zero AI calls, ambiguous routing can use AI, invented IDs are rejected, manifest races are rejected before model use, and model outages preserve deterministic routing.
+- Live acceptance is part of `deploy-cloudflare.yml` via `run_v610_acceptance`; production acceptance requires v0.4.8, direct `tools/list` advertisement, deterministic bypass, model-assisted ambiguous routing constrained to accepted candidates, and zero execution/mutation authority.
