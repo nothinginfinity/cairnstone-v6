@@ -17,16 +17,6 @@ for (const skill of Array.isArray(manifest.skills) ? manifest.skills : []) {
   }
 }
 
-const result = lintSkillCatalog({
-  manifest,
-  bodies,
-  require_bodies: true
-});
-
-console.log(JSON.stringify({
-  valid: result.valid,
-  summary: result.summary,
-  issues: result.issues
-}, null, 2));
-
+const result = lintSkillCatalog({ manifest, bodies, require_bodies: true });
+console.log(JSON.stringify({ valid: result.valid, summary: result.summary, issues: result.issues }, null, 2));
 if (!result.valid) process.exitCode = 1;
