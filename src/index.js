@@ -9,6 +9,7 @@ import {
   readMessageFromBody,
   sendMessageFromBody
 } from "./correspondence.js";
+import { askChainFromBody, ASK_TOOL_DEFINITION } from "./ask.js";
 
 const VERSION = "0.4.4";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
@@ -258,6 +259,12 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_get_chain_manifest") return getChainManifest(env, requiredString(args.chain, "chain"));
   if (name === "cairnstone_manifest_v2") return getChainManifestV2(env, requiredString(args.chain, "chain"), args);
   if (name === "cairnstone_resume_chain") return resumeChainFromBody(args, env);
+  if (name === "cairnstone_ask") return askChainFromBody(args, env, {
+    resumeChainFromBody,
+    getSourceFreshnessFromBody,
+    checkSourceFreshnessFromBody,
+    commitV2FromBody
+  });
   if (name === "cairnstone_find_v2") return findV2FromBody(args, env);
   if (name === "cairnstone_commit_v2") return commitV2FromBody(args, env);
   if (name === "cairnstone_stone_v2") return stoneV2FromBody(args, env);
@@ -643,6 +650,7 @@ function mcpTools() {
         }
       }
     },
+    ASK_TOOL_DEFINITION,
     {
       name: "cairnstone_commit_v2",
       description: "One-call write path: create a stone (inline content OR server-side GitHub fetch via owner/repo/path/ref), dedupe identical content only within the same (chain,path), set the per-path head automatically, optionally set the chain head, and create typed edges - all in one call. GitHub-backed writes fail closed unless the requested ref resolves to an immutable 40-hex commit SHA. Edges accept short (>=8 char) target hashes.",
