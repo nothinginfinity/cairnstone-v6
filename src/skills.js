@@ -2,6 +2,10 @@ const DEFAULT_SKILLS_CHAIN = "cairnstone-v6-skills";
 const DEFAULT_MANIFEST_PATH = "skills/manifest.json";
 const MAX_SKILLS = 10;
 const MAX_SKILL_BYTES = 100000;
+const DEFAULT_MAX_RECOMMENDED_SKILL_BYTES = 12000;
+const DEFAULT_MAX_ESTIMATED_TOKENS = 2000;
+const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const SKILL_ID_RE = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
 
 export const SKILLS_TOOL_DEFINITIONS = [
   {
@@ -38,6 +42,20 @@ export const SKILLS_TOOL_DEFINITIONS = [
       properties: {
         skill_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: MAX_SKILLS },
         chain: { type: "string", description: `Skills chain. Defaults to ${DEFAULT_SKILLS_CHAIN}.` }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "cairnstone_lint_skills",
+    description: "V6.9.2: deterministically lint the accepted skill catalog and its accepted path HEADs. Checks duplicate IDs/paths, semantic versions, canonical paths, dependencies/cycles, trigger collisions, tool references, skill size/token budgets, and accepted-state completeness. Read-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        chain: { type: "string", description: `Skills chain. Defaults to ${DEFAULT_SKILLS_CHAIN}.` },
+        available_tools: { type: "array", items: { type: "string" }, maxItems: 500 },
+        max_recommended_bytes: { type: "number", minimum: 1000, maximum: MAX_SKILL_BYTES },
+        max_estimated_tokens: { type: "number", minimum: 100, maximum: 10000 }
       },
       additionalProperties: false
     }
@@ -159,6 +177,150 @@ export async function getSkillBundleFromBody(body = {}, env) {
     bundle_identity: { algorithm: "sha256", sha256: await sha256Text(stableJson(identityPayload)) },
     skills
   };
+}
+
+export async function lintSkillsFromBody(body = {}, env) {
+  const chain = optionalString(body.chain) || DEFAULT_SKILLS_CHAIN;
+  const loaded = await loadAcceptedManifest(env, chain);
+  if (!loaded.ok) return loaded;
+
+  const bodies = {};
+  const acceptedPaths = {};
+  const runtimeIssues = [];
+  for (const skill of loaded.manifest.skills) {
+    if (!skill || typeof skill !== "object" || !optionalString(skill.path)) continue;
+    const accepted = await acceptedPath(env, chain, skill.path);
+    if (!accepted.ok) {
+      if (accepted.error !== "accepted_skill_path_missing") runtimeIssues.push({ severity: "error", code: accepted.error, skill_id: optionalString(skill.id), path: skill.path });
+      continue;
+    }
+    acceptedPaths[skill.path] = accepted.provenance;
+    const fetched = await fetchAcceptedGitHubText(env, accepted);
+    if (!fetched.ok) {
+      runtimeIssues.push({ severity: "error", code: fetched.error, skill_id: optionalString(skill.id), path: skill.path });
+      continue;
+    }
+    bodies[skill.path] = fetched.content;
+  }
+
+  const catalog = lintSkillCatalog({
+    manifest: loaded.manifest,
+    bodies,
+    accepted_paths: acceptedPaths,
+    available_tools: normalizeStringArray(body.available_tools),
+    require_accepted_paths: true,
+    max_recommended_bytes: clampNumber(body.max_recommended_bytes, DEFAULT_MAX_RECOMMENDED_SKILL_BYTES, 1000, MAX_SKILL_BYTES),
+    max_estimated_tokens: clampNumber(body.max_estimated_tokens, DEFAULT_MAX_ESTIMATED_TOKENS, 100, 10000)
+  });
+  const issues = [...runtimeIssues, ...catalog.issues];
+  const errorCount = issues.filter(issue => issue.severity === "error").length;
+  const warningCount = issues.filter(issue => issue.severity === "warning").length;
+  return {
+    ok: true,
+    valid: errorCount === 0,
+    chain,
+    mode: "accepted_state",
+    authority: "cairnstone_path_head",
+    manifest: loaded.provenance,
+    total_skills: loaded.manifest.skills.length,
+    summary: { errors: errorCount, warnings: warningCount, issues: issues.length },
+    issues,
+    policy: { mutable_branch_is_authority: false, accepted_state_required: true }
+  };
+}
+
+export function lintSkillCatalog(options = {}) {
+  const manifest = options.manifest;
+  const bodies = options.bodies && typeof options.bodies === "object" ? options.bodies : {};
+  const acceptedPaths = options.accepted_paths && typeof options.accepted_paths === "object" ? options.accepted_paths : {};
+  const suppliedTools = new Set(normalizeStringArray(options.available_tools));
+  const requireAcceptedPaths = options.require_accepted_paths === true;
+  const requireBodies = options.require_bodies === true;
+  const maxRecommendedBytes = clampNumber(options.max_recommended_bytes, DEFAULT_MAX_RECOMMENDED_SKILL_BYTES, 1000, MAX_SKILL_BYTES);
+  const maxEstimatedTokens = clampNumber(options.max_estimated_tokens, DEFAULT_MAX_ESTIMATED_TOKENS, 100, 10000);
+  const issues = [];
+  const add = (severity, code, fields = {}) => issues.push({ severity, code, ...fields });
+
+  if (!manifest || typeof manifest !== "object" || !Array.isArray(manifest.skills)) {
+    add("error", "manifest_invalid_shape");
+    return { valid: false, summary: { errors: 1, warnings: 0, issues: 1 }, issues };
+  }
+
+  const registryTools = new Set(normalizeStringArray(manifest.tool_registry));
+  const availableTools = suppliedTools.size ? suppliedTools : registryTools;
+  for (const tool of registryTools) if (!isValidToolRefSyntax(tool)) add("error", "invalid_tool_registry_entry", { tool });
+
+  const skills = manifest.skills;
+  const idCounts = new Map();
+  const pathCounts = new Map();
+  const ids = new Set();
+  for (const skill of skills) {
+    const id = skill && optionalString(skill.id);
+    const path = skill && optionalString(skill.path);
+    if (id) { ids.add(id); idCounts.set(id, (idCounts.get(id) || 0) + 1); }
+    if (path) pathCounts.set(path, (pathCounts.get(path) || 0) + 1);
+  }
+
+  for (const [id, count] of idCounts) if (count > 1) add("error", "duplicate_skill_id", { skill_id: id, count });
+  for (const [path, count] of pathCounts) if (count > 1) add("error", "duplicate_skill_path", { path, count });
+
+  const triggerOwners = new Map();
+  for (let index = 0; index < skills.length; index += 1) {
+    const skill = skills[index];
+    if (!skill || typeof skill !== "object") { add("error", "skill_invalid_shape", { index }); continue; }
+    const id = optionalString(skill.id);
+    const path = optionalString(skill.path);
+    if (!id) add("error", "skill_id_missing", { index });
+    else if (!SKILL_ID_RE.test(id)) add("error", "skill_id_invalid", { skill_id: id });
+    if (!optionalString(skill.version) || !SEMVER_RE.test(String(skill.version))) add("error", "skill_version_invalid_semver", { skill_id: id, version: skill.version || null });
+    if (!path) add("error", "skill_path_missing", { skill_id: id });
+    if (id && path) {
+      const expectedPath = canonicalSkillPath(id);
+      if (path !== expectedPath) add("error", "manifest_path_mismatch", { skill_id: id, path, expected_path: expectedPath });
+    }
+
+    for (const dependency of normalizeStringArray(skill.dependencies)) if (!ids.has(dependency)) add("error", "missing_dependency", { skill_id: id, dependency });
+
+    for (const trigger of normalizeStringArray(skill.triggers)) {
+      const normalizedTrigger = normalize(trigger);
+      if (!normalizedTrigger) continue;
+      if (!triggerOwners.has(normalizedTrigger)) triggerOwners.set(normalizedTrigger, []);
+      triggerOwners.get(normalizedTrigger).push(id || `index:${index}`);
+    }
+
+    for (const tool of normalizeStringArray(skill.requires_tools)) {
+      if (!isValidToolRefSyntax(tool)) add("error", "invalid_tool_reference", { skill_id: id, tool, reason: "invalid_syntax" });
+      else if (availableTools.size && !availableTools.has(tool)) add("error", "invalid_tool_reference", { skill_id: id, tool, reason: "not_in_tool_registry" });
+    }
+
+    if (path) {
+      const hasBody = Object.prototype.hasOwnProperty.call(bodies, path);
+      const skillBody = hasBody ? bodies[path] : undefined;
+      if (requireBodies && !hasBody) add("error", "skill_file_missing", { skill_id: id, path });
+      if (hasBody && typeof skillBody !== "string") add("error", "skill_file_invalid", { skill_id: id, path });
+      if (typeof skillBody === "string") {
+        const bytes = new TextEncoder().encode(skillBody).length;
+        if (bytes > MAX_SKILL_BYTES) add("error", "skill_too_large", { skill_id: id, path, bytes, max_bytes: MAX_SKILL_BYTES });
+        else if (bytes > maxRecommendedBytes) add("warning", "skill_large", { skill_id: id, path, bytes, recommended_max_bytes: maxRecommendedBytes });
+      }
+      if (requireAcceptedPaths && !Object.prototype.hasOwnProperty.call(acceptedPaths, path)) add("error", "missing_accepted_path", { skill_id: id, path });
+    }
+
+    const estimatedTokens = Number(skill.estimated_tokens);
+    if (Number.isFinite(estimatedTokens) && estimatedTokens > maxEstimatedTokens) add("warning", "estimated_tokens_large", { skill_id: id, estimated_tokens: estimatedTokens, recommended_max_tokens: maxEstimatedTokens });
+  }
+
+  for (const [trigger, owners] of triggerOwners) {
+    const uniqueOwners = [...new Set(owners)];
+    if (uniqueOwners.length > 1) add("warning", "trigger_collision", { trigger, skill_ids: uniqueOwners });
+  }
+
+  for (const bootId of normalizeStringArray(manifest.boot)) if (!ids.has(bootId)) add("error", "boot_skill_missing", { skill_id: bootId });
+  for (const cycle of findDependencyCycles(skills)) add("error", "dependency_cycle", { cycle });
+
+  const errorCount = issues.filter(issue => issue.severity === "error").length;
+  const warningCount = issues.filter(issue => issue.severity === "warning").length;
+  return { valid: errorCount === 0, summary: { errors: errorCount, warnings: warningCount, issues: issues.length }, issues };
 }
 
 export async function resolveSkillsFromBody(body = {}, env) {
@@ -328,6 +490,48 @@ function decodeBase64Utf8(value) {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return new TextDecoder().decode(bytes);
+}
+
+function canonicalSkillPath(skillId) {
+  return `skills/${String(skillId).split(".").join("/")}/SKILL.md`;
+}
+
+function isValidToolRefSyntax(tool) {
+  const value = String(tool || "").trim();
+  if (/^cairnstone_[a-z0-9_]+$/.test(value)) return true;
+  return /^[^.\n]+\.[A-Za-z0-9_]+$/.test(value);
+}
+
+function findDependencyCycles(skills) {
+  const graph = new Map();
+  for (const skill of skills) {
+    const id = skill && optionalString(skill.id);
+    if (id) graph.set(id, normalizeStringArray(skill.dependencies));
+  }
+  const visited = new Set();
+  const visiting = new Set();
+  const stack = [];
+  const cycles = [];
+  const seen = new Set();
+  const visit = id => {
+    if (visited.has(id)) return;
+    visiting.add(id);
+    stack.push(id);
+    for (const dependency of graph.get(id) || []) {
+      if (!graph.has(dependency)) continue;
+      if (visiting.has(dependency)) {
+        const start = stack.indexOf(dependency);
+        const cycle = [...stack.slice(start), dependency];
+        const key = cycle.join("->");
+        if (!seen.has(key)) { seen.add(key); cycles.push(cycle); }
+      } else if (!visited.has(dependency)) visit(dependency);
+    }
+    stack.pop();
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const id of graph.keys()) if (!visited.has(id)) visit(id);
+  return cycles;
 }
 
 function compactSkill(skill) {
