@@ -213,7 +213,8 @@ count and version — this list will keep growing.
 - **Downstream-consumer rule (V6.9.1):** another MCP may cache a validated accepted bundle for availability/performance, but cache storage is never authority. A consumer must prefer live CairnStone accepted state, may fall back only to its last-known validated accepted bundle, and must never fall back to arbitrary mutable Git or an older mutable skill document.
 - **Draft-skill rule:** consumer-local `upsert_skill`-style operations may be retained for `draft` / `experimental` / `staging` data, but they must not silently replace a canonically accepted skill ID. Production changes go Git → CairnStone acceptance → accepted bundle → consumer cache.
 - **Progressive-loading rule:** start with the boot skill (`core.orient`), then resolve/load specialized skills only as the task requires. Do not preload the whole catalog merely because it exists. This is designed to remain cheap with 50+ skills.
-- A future Skills Sub-Agent may help resolve ambiguous tasks, but it must sit above this deterministic accepted-state layer and must never choose an unaccepted skill version as authority.
+- `cairnstone_skill_agent(task, ..., mode?)` — **V6.10 advisory ambiguity layer.** It always begins with `cairnstone_resolve_skills`, and in `auto` mode calls Workers AI only when deterministic candidates are close. `deterministic` mode never calls AI; `model` mode may force advisory ranking when at least two accepted candidates exist.
+- **Skills Sub-Agent authority rule (V6.10):** the model can select only from deterministic candidates derived from the currently accepted manifest. It cannot expand the candidate set, choose skill versions/commits/path HEADs, execute tools, or grant mutation authority. If AI is unavailable, returns invalid JSON, invents an ID, or accepted manifest HEAD changes during routing, the result fails closed to the deterministic baseline.
 
 ### Grounded Q&A (ASK1 — V6-only)
 - `cairnstone_ask(chain, question, top_k?, context_lines?, verify_freshness?,
@@ -253,7 +254,7 @@ every path head + every edge touching HEAD in one deterministic call.
 1. **Orient.** `cairnstone_resume_chain(chain="cairnstone-v6-project-memory")`
    on V6. Check the AC1 inbox for your own actor ID and for other known
    agent IDs before starting work that might overlap with someone else's.
-   Then use `cairnstone_resolve_skills` and `cairnstone_get_skill` to load only the accepted skills needed for the current task, beginning with `core.orient`; do not preload the full catalog.
+   Then use `cairnstone_resolve_skills` and `cairnstone_get_skill` to load only the accepted skills needed for the current task, beginning with `core.orient`; do not preload the full catalog. When deterministic routing is genuinely ambiguous, `cairnstone_skill_agent` may advise among those accepted candidates, but its output never changes accepted-state authority.
 2. **Compress/stone.** Use `commit_v2` for new or updated files/notes,
    `create_github_file_stone`/`create_repo_stones` for bulk GitHub content.
 3. **Flags (automatic, free).** Every stone gets per-ref flags at creation —
