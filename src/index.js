@@ -10,6 +10,7 @@ import {
   sendMessageFromBody
 } from "./correspondence.js";
 import { askChainFromBody, ASK_TOOL_DEFINITION } from "./ask.js";
+import { skillAgentFromBody, SKILL_AGENT_TOOL_DEFINITION } from "./skill-agent.js";
 import {
   getSkillBundleFromBody,
   getSkillFromBody,
@@ -19,7 +20,7 @@ import {
   SKILLS_TOOL_DEFINITIONS
 } from "./skills.js";
 
-const VERSION = "0.4.7";
+const VERSION = "0.4.8";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -246,6 +247,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_get_skill_bundle") return getSkillBundleFromBody(args, env);
   if (name === "cairnstone_lint_skills") return lintSkillsFromBody(args, env);
   if (name === "cairnstone_resolve_skills") return resolveSkillsFromBody(args, env);
+  if (name === "cairnstone_skill_agent") return skillAgentFromBody(args, env, { resolveSkillsFromBody, listSkillsFromBody });
   if (name === "cairnstone_send_message") return sendMessageFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   if (name === "cairnstone_get_inbox") return getInboxFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   if (name === "cairnstone_read_message") return readMessageFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
@@ -664,6 +666,7 @@ function mcpTools() {
       }
     },
     ...SKILLS_TOOL_DEFINITIONS,
+    SKILL_AGENT_TOOL_DEFINITION,
     ASK_TOOL_DEFINITION,
     {
       name: "cairnstone_commit_v2",
