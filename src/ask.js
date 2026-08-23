@@ -16,7 +16,10 @@ const ASK_SYSTEM_PROMPT = [
   "- STALE means a freshness check found drift; UNKNOWN means freshness was not established.",
   "Prefer relevant PATH_HEAD evidence for current file facts and CHAIN_HEAD for chain orientation.",
   "Treat SUPERSEDED evidence as historical unless the question explicitly asks about history.",
-  "Cite factual claims using [stone:abc123def456 ref:fsl:example] with only supplied stone/ref IDs.",
+  "Every STONE header shows the real stone hash and, when present, a real ref=<ref_id> location; orientation blocks show 'orientation=lod' instead of a ref.",
+  "Cite using [stone:<hash>] (hash only, no ref) when the header shows 'orientation=lod'.",
+  "Cite using [stone:<hash> ref:<ref_id>] only when the header shows a real ref=<ref_id> value, copied verbatim.",
+  "Never write the literal placeholder text 'ref:fsl:example' or any hash/ref not copied verbatim from a supplied STONE header.",
   "If the supplied evidence is insufficient or contradictory, say exactly what is missing.",
   "Do not invent repository state, paths, hashes, freshness, test results, or deployment results."
 ].join("\n");
