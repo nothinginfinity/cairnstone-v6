@@ -136,6 +136,25 @@ test("ambiguous routing can use the model but only within accepted deterministic
   assert.equal(result.policy.model_can_expand_candidate_set, false);
 });
 
+test("accepted manifest changes during routing fail closed before the model is called", async () => {
+  const recommendations = [candidate("github.pull-request-triage", 10), candidate("github.branch-protection-inspection", 9)];
+  const deps = makeDeps(recommendations);
+  deps.listSkillsFromBody = async () => ({
+    ok: true,
+    manifest: { ...MANIFEST, stone_hash: "n".repeat(64) },
+    skills: []
+  });
+  let aiCalls = 0;
+  const result = await skillAgentFromBody({ task: "Ambiguous GitHub routing", mode: "model", max_skills: 1 }, {
+    AI: { async run() { aiCalls += 1; return { response: "{}" }; } }
+  }, deps);
+  assert.equal(result.ok, true);
+  assert.equal(aiCalls, 0);
+  assert.equal(result.selection_source, "deterministic_fallback");
+  assert.equal(result.model_assist.fallback_reason, "manifest_changed_during_routing");
+  assert.equal(result.recommendations[0].skill_id, "github.pull-request-triage");
+});
+
 test("an invented model skill ID fails closed to the deterministic baseline", async () => {
   const recommendations = [candidate("github.pull-request-triage", 10), candidate("github.branch-protection-inspection", 9)];
   const result = await skillAgentFromBody({ task: "Ambiguous GitHub routing", mode: "model", max_skills: 1 }, {
