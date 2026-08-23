@@ -11,13 +11,14 @@ import {
 } from "./correspondence.js";
 import { askChainFromBody, ASK_TOOL_DEFINITION } from "./ask.js";
 import {
+  getSkillBundleFromBody,
   getSkillFromBody,
   listSkillsFromBody,
   resolveSkillsFromBody,
   SKILLS_TOOL_DEFINITIONS
 } from "./skills.js";
 
-const VERSION = "0.4.5";
+const VERSION = "0.4.6";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -241,6 +242,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_health") return health(env);
   if (name === "cairnstone_list_skills") return listSkillsFromBody(args, env);
   if (name === "cairnstone_get_skill") return getSkillFromBody(args, env);
+  if (name === "cairnstone_get_skill_bundle") return getSkillBundleFromBody(args, env);
   if (name === "cairnstone_resolve_skills") return resolveSkillsFromBody(args, env);
   if (name === "cairnstone_send_message") return sendMessageFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   if (name === "cairnstone_get_inbox") return getInboxFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
