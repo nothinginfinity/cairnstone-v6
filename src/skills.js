@@ -30,6 +30,19 @@ export const SKILLS_TOOL_DEFINITIONS = [
     }
   },
   {
+    name: "cairnstone_get_skill_bundle",
+    description: "V6.9.1: compile a provenance-bearing bundle of accepted skills. Every body is selected by CairnStone path HEAD and loaded from its immutable Git commit; the bundle is safe for downstream MCP caches because mutable branches are never authority.",
+    inputSchema: {
+      type: "object",
+      required: ["skill_ids"],
+      properties: {
+        skill_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: MAX_SKILLS },
+        chain: { type: "string", description: `Skills chain. Defaults to ${DEFAULT_SKILLS_CHAIN}.` }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: "cairnstone_resolve_skills",
     description: "V6.9: deterministically recommend the smallest useful set of accepted skills for a task using manifest metadata, triggers, tags, tool requirements, and already-loaded skills. Returns recommendations; it does not execute them.",
     inputSchema: {
@@ -83,6 +96,68 @@ export async function getSkillFromBody(body = {}, env) {
     skill: compactSkill(skill),
     provenance: accepted.provenance,
     content: fetched.content
+  };
+}
+
+export async function getSkillBundleFromBody(body = {}, env) {
+  const chain = optionalString(body.chain) || DEFAULT_SKILLS_CHAIN;
+  const skillIds = [...new Set(normalizeStringArray(body.skill_ids))].sort();
+  if (!skillIds.length) return { ok: false, error: "skill_ids_required", chain };
+  if (skillIds.length > MAX_SKILLS) return { ok: false, error: "too_many_skills", chain, max_skills: MAX_SKILLS };
+
+  const loaded = await loadAcceptedManifest(env, chain);
+  if (!loaded.ok) return loaded;
+  const skills = [];
+  for (const skillId of skillIds) {
+    const skill = loaded.manifest.skills.find(item => item && item.id === skillId && item.enabled !== false);
+    if (!skill) return { ok: false, error: "skill_not_found", chain, skill_id: skillId };
+    const accepted = await acceptedPath(env, chain, skill.path);
+    if (!accepted.ok) return { ...accepted, skill_id: skillId };
+    const fetched = await fetchAcceptedGitHubText(env, accepted);
+    if (!fetched.ok) return { ...fetched, skill_id: skillId };
+    skills.push({
+      skill_id: skill.id,
+      skill_version: skill.version,
+      title: skill.title,
+      description: skill.description || "",
+      path: skill.path,
+      tags: Array.isArray(skill.tags) ? skill.tags : [],
+      triggers: Array.isArray(skill.triggers) ? skill.triggers : [],
+      requires_tools: Array.isArray(skill.requires_tools) ? skill.requires_tools : [],
+      dependencies: Array.isArray(skill.dependencies) ? skill.dependencies : [],
+      manifest_head: loaded.provenance.stone_hash,
+      stone_hash: accepted.provenance.stone_hash,
+      commit_sha: accepted.provenance.commit_sha,
+      content_identity: fetched.content_identity,
+      authority: "cairnstone_path_head",
+      content: fetched.content
+    });
+  }
+
+  const identityPayload = {
+    schema: "cairnstone-accepted-skill-bundle-v1",
+    chain,
+    manifest_head: loaded.provenance.stone_hash,
+    manifest_commit_sha: loaded.provenance.commit_sha,
+    manifest_content_identity: loaded.content_identity,
+    skills: skills.map(skill => ({
+      skill_id: skill.skill_id,
+      skill_version: skill.skill_version,
+      stone_hash: skill.stone_hash,
+      commit_sha: skill.commit_sha,
+      content_identity: skill.content_identity
+    }))
+  };
+
+  return {
+    ok: true,
+    schema: "cairnstone-accepted-skill-bundle-v1",
+    chain,
+    authority: "cairnstone_path_head",
+    manifest_head: loaded.provenance.stone_hash,
+    manifest: { ...loaded.provenance, content_identity: loaded.content_identity },
+    bundle_identity: { algorithm: "sha256", sha256: await sha256Text(stableJson(identityPayload)) },
+    skills
   };
 }
 
@@ -188,7 +263,7 @@ async function loadAcceptedManifest(env, chain) {
   if (!manifest || !Array.isArray(manifest.skills)) {
     return { ok: false, error: "skills_manifest_invalid_shape", chain, path: DEFAULT_MANIFEST_PATH };
   }
-  return { ok: true, manifest, provenance: accepted.provenance };
+  return { ok: true, manifest, provenance: accepted.provenance, content_identity: fetched.content_identity };
 }
 
 async function acceptedPath(env, chain, path) {
@@ -235,8 +310,17 @@ async function fetchAcceptedGitHubText(env, accepted) {
     return { ok: false, error: "accepted_skill_github_response_invalid", provenance };
   }
   const content = decodeBase64Utf8(data.content.replace(/\s+/g, ""));
-  if (content.length > MAX_SKILL_BYTES) return { ok: false, error: "accepted_skill_too_large", bytes: content.length, provenance };
-  return { ok: true, content };
+  const bytes = new TextEncoder().encode(content).length;
+  if (bytes > MAX_SKILL_BYTES) return { ok: false, error: "accepted_skill_too_large", bytes, provenance };
+  return {
+    ok: true,
+    content,
+    content_identity: {
+      sha256: await sha256Text(content),
+      git_blob_sha: /^[0-9a-f]{40}$/i.test(String(data.sha || "")) ? String(data.sha).toLowerCase() : null,
+      bytes
+    }
+  };
 }
 
 function decodeBase64Utf8(value) {
@@ -293,6 +377,20 @@ function clampNumber(value, fallback, min, max) {
 
 function isCommitSha(value) {
   return /^[0-9a-f]{40}$/i.test(String(value || ""));
+}
+
+async function sha256Text(value) {
+  const bytes = new TextEncoder().encode(String(value));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function requireBindings(env) {
