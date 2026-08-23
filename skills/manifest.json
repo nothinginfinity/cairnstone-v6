@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "schema": "cairnstone-skill-manifest-v1",
+  "chain": "cairnstone-v6-skills",
+  "boot": ["core.orient"],
+  "policy": {
+    "source_of_truth": "github",
+    "acceptance_authority": "cairnstone_path_head",
+    "progressive_loading": true,
+    "mutable_branch_is_authority": false,
+    "default_max_skills": 3
+  },
+  "skills": [
+    {
+      "id": "core.orient",
+      "title": "Canonical orientation",
+      "version": "1.0.0",
+      "status": "stable",
+      "description": "Establish exact accepted project state before specialized work.",
+      "path": "skills/core/orient/SKILL.md",
+      "tags": ["orientation", "resume", "head", "project-memory", "correspondence"],
+      "triggers": ["catch me up", "get oriented", "continue work", "resume project"],
+      "requires_tools": ["cairnstone_health", "cairnstone_resume_chain"],
+      "dependencies": [],
+      "estimated_tokens": 500,
+      "enabled": true
+    },
+    {
+      "id": "core.choose-tools",
+      "title": "Deterministic tool selection",
+      "version": "1.0.0",
+      "status": "stable",
+      "description": "Choose the narrowest trustworthy read or mutation tool and verify capabilities instead of guessing.",
+      "path": "skills/core/choose-tools/SKILL.md",
+      "tags": ["tools", "mcp", "capabilities", "mutation", "read-only", "deterministic"],
+      "triggers": ["which tool", "use the tools", "fix this", "debug this"],
+      "requires_tools": [],
+      "dependencies": ["core.orient"],
+      "estimated_tokens": 550,
+      "enabled": true
+    },
+    {
+      "id": "core.verify-live-state",
+      "title": "Verify live state",
+      "version": "1.0.0",
+      "status": "stable",
+      "description": "Distinguish successful tooling from verified behavior and accepted state.",
+      "path": "skills/core/verify-live-state/SKILL.md",
+      "tags": ["verify", "live", "deploy", "acceptance", "freshness", "regression"],
+      "triggers": ["verify", "did it work", "deploy succeeded", "acceptance"],
+      "requires_tools": [],
+      "dependencies": ["core.orient"],
+      "estimated_tokens": 600,
+      "enabled": true
+    },
+    {
+      "id": "github.actions-triage",
+      "title": "GitHub Actions triage",
+      "version": "1.0.0",
+      "status": "stable",
+      "description": "Diagnose CI and deploy failures from workflow runs, jobs, and step conclusions before reaching for unrelated repo surfaces.",
+      "path": "skills/github/actions-triage/SKILL.md",
+      "tags": ["github", "actions", "ci", "workflow", "deploy", "failure"],
+      "triggers": ["ci failed", "workflow failed", "deploy failed", "github actions", "why did the deploy fail"],
+      "requires_tools": ["AFO GitHub API MCP.list_workflow_runs", "AFO GitHub API MCP.list_workflow_run_jobs"],
+      "dependencies": ["core.verify-live-state"],
+      "estimated_tokens": 500,
+      "enabled": true
+    },
+    {
+      "id": "github.actions-job-logs",
+      "title": "GitHub Actions job logs",
+      "version": "1.0.0",
+      "status": "stable",
+      "description": "Use job IDs, not run IDs, for raw GitHub Actions logs and treat the logs endpoint redirect as success.",
+      "path": "skills/github/actions-job-logs/SKILL.md",
+      "tags": ["github", "actions", "logs", "job_id", "run_id", "302", "failure"],
+      "triggers": ["job logs", "raw logs", "actions logs", "download logs"],
+      "requires_tools": ["AFO GitHub API MCP.list_workflow_run_jobs"],
+      "dependencies": ["github.actions-triage"],
+      "estimated_tokens": 400,
+      "enabled": true
+    }
+  ]
+}
