@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   getSkillFromBody,
+  lintSkillCatalog,
   listSkillsFromBody,
   resolveSkillsFromBody
 } from "../src/skills.js";
@@ -133,3 +134,118 @@ test("non-immutable accepted commit fails closed", () => withFetch(async () => {
   assert.equal(result.ok, false);
   assert.equal(result.error, "accepted_skill_commit_not_immutable");
 }));
+
+function lintCodes(result) {
+  return new Set(result.issues.map(issue => issue.code));
+}
+
+test("candidate skill catalog lint accepts a valid canonical manifest", () => {
+  const candidate = {
+    version: 2,
+    boot: ["core.orient"],
+    tool_registry: ["cairnstone_health", "AFO GitHub API MCP.call"],
+    skills: [
+      {
+        id: "core.orient",
+        version: "1.0.0",
+        path: "skills/core/orient/SKILL.md",
+        triggers: ["orient canonical project"],
+        requires_tools: ["cairnstone_health"],
+        dependencies: [],
+        estimated_tokens: 500
+      },
+      {
+        id: "github.repo-read",
+        version: "1.2.3",
+        path: "skills/github/repo-read/SKILL.md",
+        triggers: ["inspect repository content"],
+        requires_tools: ["AFO GitHub API MCP.call"],
+        dependencies: ["core.orient"],
+        estimated_tokens: 600
+      }
+    ]
+  };
+  const bodies = {
+    "skills/core/orient/SKILL.md": "# Orient\nUse accepted state first.\n",
+    "skills/github/repo-read/SKILL.md": "# Repository read\nUse read-only GitHub evidence.\n"
+  };
+  const result = lintSkillCatalog({ manifest: candidate, bodies, require_bodies: true });
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.summary, { errors: 0, warnings: 0, issues: 0 });
+});
+
+test("skill catalog lint catches structural, dependency, tool, trigger, and semver faults", () => {
+  const candidate = {
+    boot: ["missing.boot"],
+    tool_registry: ["AFO GitHub API MCP.call"],
+    skills: [
+      {
+        id: "core.alpha",
+        version: "1",
+        path: "skills/wrong/SKILL.md",
+        triggers: ["shared trigger"],
+        requires_tools: ["not a tool"],
+        dependencies: ["core.beta"]
+      },
+      {
+        id: "core.beta",
+        version: "1.0.0",
+        path: "skills/core/beta/SKILL.md",
+        triggers: ["shared trigger"],
+        dependencies: ["core.alpha"]
+      },
+      {
+        id: "core.alpha",
+        version: "1.0.0",
+        path: "skills/core/beta/SKILL.md",
+        dependencies: []
+      },
+      {
+        id: "core.gamma",
+        version: "1.0.0",
+        path: "skills/core/gamma/SKILL.md",
+        dependencies: ["missing.skill"]
+      }
+    ]
+  };
+  const result = lintSkillCatalog({ manifest: candidate, bodies: {}, require_bodies: true });
+  const codes = lintCodes(result);
+  assert.equal(result.valid, false);
+  for (const code of [
+    "duplicate_skill_id",
+    "duplicate_skill_path",
+    "skill_version_invalid_semver",
+    "manifest_path_mismatch",
+    "missing_dependency",
+    "dependency_cycle",
+    "trigger_collision",
+    "invalid_tool_reference",
+    "skill_file_missing",
+    "boot_skill_missing"
+  ]) assert.ok(codes.has(code), `expected lint code ${code}`);
+});
+
+test("accepted-state and size budgets are linted explicitly", () => {
+  const candidate = {
+    boot: ["core.orient"],
+    skills: [{
+      id: "core.orient",
+      version: "1.0.0",
+      path: "skills/core/orient/SKILL.md",
+      dependencies: [],
+      estimated_tokens: 2501
+    }]
+  };
+  const result = lintSkillCatalog({
+    manifest: candidate,
+    bodies: { "skills/core/orient/SKILL.md": "x".repeat(100001) },
+    accepted_paths: {},
+    require_accepted_paths: true,
+    max_estimated_tokens: 2000
+  });
+  const codes = lintCodes(result);
+  assert.equal(result.valid, false);
+  assert.ok(codes.has("missing_accepted_path"));
+  assert.ok(codes.has("skill_too_large"));
+  assert.ok(codes.has("estimated_tokens_large"));
+});
