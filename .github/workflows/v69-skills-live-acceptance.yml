@@ -1,0 +1,17 @@
+name: V6.9 Skills Live Acceptance
+
+on:
+  workflow_dispatch:
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: V6.9 live skills MCP acceptance
+        run: node scripts/v69-skills-live-acceptance.mjs
