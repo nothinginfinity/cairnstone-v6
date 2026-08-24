@@ -19,8 +19,12 @@ import {
   resolveSkillsFromBody,
   SKILLS_TOOL_DEFINITIONS
 } from "./skills.js";
+import {
+  agentBootstrapFromBody,
+  AGENT_BOOTSTRAP_TOOL_DEFINITION
+} from "./agent-bootstrap.js";
 
-const VERSION = "0.4.8";
+const VERSION = "0.5.0";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -283,6 +287,14 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_find_v2") return findV2FromBody(args, env);
   if (name === "cairnstone_commit_v2") return commitV2FromBody(args, env);
   if (name === "cairnstone_stone_v2") return stoneV2FromBody(args, env);
+  if (name === "cairnstone_agent_bootstrap") return agentBootstrapFromBody(args, env, {
+    resumeChainFromBody,
+    getInboxFromBody: (body, e) => getInboxFromBody(body, e, { createStone: b => createStoneFromBody(b, e) }),
+    resolveSkillsFromBody,
+    getSkillBundleFromBody,
+    listSkillsFromBody,
+    version: VERSION
+  });
   return { ok: false, error: "unknown_tool", name };
 }
 
@@ -728,7 +740,8 @@ function mcpTools() {
           level: { type: "string", enum: ["lod1", "lod2", "lod3", "lod4", "lod5"] }
         }
       }
-    }
+    },
+    AGENT_BOOTSTRAP_TOOL_DEFINITION
   ];
 }
 
