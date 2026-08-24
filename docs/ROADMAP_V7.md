@@ -74,75 +74,97 @@ V7.1 cannot begin implementation until the V7.0 contract and live acceptance tes
 
 ## V7.1 — Provider-Neutral Model Router
 
+Status: **architecture planning accepted; implementation not started**
+
+Canonical contract: `docs/V7_1_PROVIDER_NEUTRAL_MODEL_ROUTER.md`
+
 ### Goal
 
-Make the model interchangeable without changing agent state.
+Make the reasoning engine interchangeable without changing accepted agent state.
 
 ### Architecture
 
 ```text
 V7.0 immutable context package
           ↓
-provider-neutral request IR
+cairnstone-model-request-v1
+(provider-neutral request IR)
           ↓
-AI Gateway
-   ┌──────┼─────────┐
-   ↓      ↓         ↓
-Workers  BYOK      future
-AI       APIs       providers
+explicit route envelope
+(provider/model/credential/failover policy)
+          ↓
+Cloudflare AI Gateway / AI REST API
+          ↓
+Workers AI or third-party provider
+          ↓
+cairnstone-model-result-v1
+(text + normalized tool intents only)
 ```
+
+V7.1 preserves two identities:
+
+- `package_id` — exact V7.0 accepted agent context;
+- `request_ir_id` — exact provider-neutral reasoning request derived from that package.
+
+Provider/model choice changes neither identity.
+
+### Phase gate
+
+V7.1 planning is unblocked by the current V7.0 acceptance state.
+
+Before the first production V7.1 implementation slice, close V7.0 Test G (deliberate mid-compile race injection) or record an explicit canonical waiver. V7.0 Test C is intentionally closed by V7.1 cross-provider acceptance.
+
+### Transport baseline
+
+For new normal single-model calls, prefer Cloudflare's AI REST API. Treat Dynamic Routing as an explicit optional failover/conditional-routing policy, not as an implicit default. Resolve provider/model IDs and capabilities against the live catalog at implementation and acceptance time.
 
 ### Initial provider classes
 
-1. **Workers AI hosted models**
-   - model IDs must be resolved against the live Cloudflare catalog at implementation time;
-   - user-targeted families include high-capability DeepSeek/Kimi-class models where available.
+1. **Workers AI hosted model**
+   - live catalog resolution;
+   - current DeepSeek/Kimi/GLM-class models are candidates, not architectural constants.
 
-2. **BYOK through AI Gateway**
-   - Anthropic
-   - OpenAI
-   - xAI
-   - Gemini
-   - additional adapters may be added without altering V7.0.
+2. **Third-party provider through AI Gateway**
+   - OpenAI, Anthropic, xAI, Google, DeepSeek, Groq, Cerebras, Mistral, or another supported provider;
+   - Unified Billing or stored BYOK;
+   - provider secrets never enter CairnStone context, IR, results, AC1, or normal logs.
 
 ### Router responsibilities
 
-- provider/model selection;
+- validate the V7.0 package;
+- deterministically compile provider-neutral request IR;
+- provider/model selection under explicit policy;
 - model capability registry;
-- provider-specific message/tool schema translation;
+- provider-specific message/tool translation at adapter boundaries;
 - AI Gateway routing/observability;
-- BYOK secret isolation;
 - rate/cost/error normalization;
-- model output normalization;
-- optional advisory Skills Sub-Agent call only after deterministic bootstrap flags ambiguity.
+- normalized result and tool-intent output;
+- optional V6.10 Skills Sub-Agent advisory only for genuine V7.0 ambiguity and only within accepted deterministic candidates.
 
 ### Router non-responsibilities
 
 The router cannot:
 
-- choose canonical instructions;
-- choose accepted memory/path HEADs;
+- choose canonical instructions or accepted memory/path HEADs;
 - select unaccepted skills;
 - change `package_id`;
-- grant execution/mutation authority merely because a model supports tools.
-
-### BYOK invariant
-
-Provider keys are secrets owned by the provider/runtime layer. They never enter:
-
-- CairnStone stones;
-- the V7.0 immutable context package;
-- AC1 correspondence;
-- user-visible evidence payloads.
+- silently change `request_ir_id` because a provider changed;
+- execute tools;
+- grant execution/mutation authority.
 
 ### Acceptance
 
-- identical V7.0 package can be sent to at least two provider classes;
-- provider switch leaves `package_id` unchanged;
-- normalized model result identifies provider/model separately;
-- tool-capability differences are explicit;
-- one provider outage can fail over only under explicit policy, not silently alter authority;
-- AI Gateway telemetry proves which provider/model was actually used.
+See the full R1-R12 contract in `docs/V7_1_PROVIDER_NEUTRAL_MODEL_ROUTER.md`.
+
+Key proofs include:
+
+- same V7.0 package + request IR across Workers AI and one third-party provider;
+- provider switch leaves `package_id` and `request_ir_id` unchanged;
+- real tool call normalizes to `tool_intent` with `executed:false`;
+- stored BYOK/Unified Billing secrets never leak into stable artifacts;
+- failover is off by default and explicit when enabled;
+- AI Gateway/runtime telemetry proves which provider/model actually handled the call;
+- cross-provider proof closes V7.0 Test C.
 
 ---
 
