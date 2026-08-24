@@ -448,6 +448,39 @@ export async function modelRouteFromBody(body, _env, deps = {}) {
   }
 }
 
+export function modelCapabilitiesFromBody(body = {}, _env, deps = {}) {
+  const registry = Array.isArray(deps.registry) ? deps.registry : DEFAULT_MODEL_CAPABILITY_REGISTRY;
+  const provider = typeof body.provider === "string" && body.provider.trim() ? body.provider.trim() : null;
+  const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : null;
+  const models = listModelCapabilities(registry).filter(item => {
+    if (provider && item.provider !== provider) return false;
+    if (model && item.model !== model) return false;
+    return true;
+  });
+  return {
+    ok: true,
+    schema: "cairnstone-model-capabilities-v1",
+    authority: "operational_configuration",
+    accepted_state_authority: false,
+    external_model_calls: 0,
+    total: models.length,
+    models
+  };
+}
+
+export const MODEL_CAPABILITIES_TOOL_DEFINITION = {
+  name: "cairnstone_model_capabilities",
+  description: "V7.1 runtime model capability registry. Operational configuration only, never CairnStone accepted-state authority. V7.1.1 returns deterministic mock provider entries and performs zero external model calls.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      provider: { type: "string" },
+      model: { type: "string" }
+    },
+    additionalProperties: false
+  }
+};
+
 export const MODEL_ROUTE_TOOL_DEFINITION = {
   name: "cairnstone_model_route",
   description: "V7.1.1 provider-neutral router core. Validates a V7.0 context package, deterministically builds request IR, checks a runtime model capability registry, and invokes only deterministic mock-a/mock-b adapters in this slice. Returns normalized model results with zero external model calls, zero tool execution, and zero execution/mutation authority.",
