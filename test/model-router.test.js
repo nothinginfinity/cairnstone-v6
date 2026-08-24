@@ -3,7 +3,10 @@ import { test } from "node:test";
 import {
   AGENT_CONTEXT_SCHEMA,
   buildRequestIr,
+  DEFAULT_MODEL_CAPABILITY_REGISTRY,
   MODEL_RESULT_SCHEMA,
+  modelCapabilitiesFromBody,
+  modelRouteFromBody,
   recomputePackageId,
   validateContextPackage,
   validateModelResultShape
@@ -168,4 +171,133 @@ test("validateModelResultShape rejects a result claiming a tool intent was execu
   });
   assert.equal(result.ok, false);
   assert.equal(result.detail, "tool_intent_marked_executed");
+});
+
+test("V7.1.1 capability registry is operational configuration, not accepted-state authority", () => {
+  const result = modelCapabilitiesFromBody({});
+  assert.equal(result.ok, true);
+  assert.equal(result.schema, "cairnstone-model-capabilities-v1");
+  assert.equal(result.authority, "operational_configuration");
+  assert.equal(result.accepted_state_authority, false);
+  assert.equal(result.external_model_calls, 0);
+  assert.equal(result.total, 2);
+  assert.deepEqual(result.models.map(item => item.provider).sort(), ["mock-a", "mock-b"]);
+  assert.equal(DEFAULT_MODEL_CAPABILITY_REGISTRY.length, 2);
+});
+
+test("V7.1.1 mock A/B preserve package_id and request_ir_id end-to-end", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  const request = { tools: ["cairnstone_health"], generation: { max_output_tokens: 800, temperature: 0.1 } };
+  const a = await modelRouteFromBody({
+    context_package: pkg,
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" },
+    request
+  });
+  const b = await modelRouteFromBody({
+    context_package: pkg,
+    route: { provider: "mock-b", model: "mock-b/text-tools-v1" },
+    request
+  });
+
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+  assert.equal(a.package_id, pkg.package_id);
+  assert.equal(b.package_id, pkg.package_id);
+  assert.equal(a.request_ir_id, b.request_ir_id);
+  assert.notEqual(a.route.provider, b.route.provider);
+  assert.equal(a.v7_1_1.external_model_calls, 0);
+  assert.equal(b.v7_1_1.external_model_calls, 0);
+  assert.equal(a.v7_1_1.tools_executed, 0);
+  assert.equal(b.v7_1_1.tools_executed, 0);
+  assert.equal(a.policy.execution_authority, false);
+  assert.equal(b.policy.mutation_authority, false);
+  assert.equal(a.observability.attempts[0].mock, true);
+  assert.equal(b.observability.attempts[0].mock, true);
+});
+
+test("V7.1.1 unsupported provider fails typed after package/IR identities are established", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  const result = await modelRouteFromBody({
+    context_package: pkg,
+    route: { provider: "not-a-provider", model: "not-a-provider/model" },
+    request: { tools: ["cairnstone_health"] }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "provider_not_supported");
+  assert.equal(result.package_id, pkg.package_id);
+  assert.match(result.request_ir_id, /^sha256:[0-9a-f]{64}$/);
+});
+
+test("V7.1.1 capability mismatch fails before adapter invocation", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  const registry = [{
+    provider: "mock-no-tools",
+    model: "mock-no-tools/text-v1",
+    transport: "mock",
+    supports: { text: true, streaming: false, tool_calls: false, reasoning: false, vision: false },
+    context_window: 32768,
+    max_output_tokens: 4096,
+    status: "available",
+    observed_at: "2026-08-24T00:00:00.000Z"
+  }];
+  const result = await modelRouteFromBody({
+    context_package: pkg,
+    route: { provider: "mock-no-tools", model: "mock-no-tools/text-v1" },
+    request: { tools: ["cairnstone_health"] }
+  }, null, { registry, adapters: {} });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "model_capability_mismatch");
+  assert.deepEqual(result.missing, ["tool_calls"]);
+});
+
+test("V7.1.1 rejects credential material at the router boundary", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  const result = await modelRouteFromBody({
+    context_package: pkg,
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1", credential: { mode: "byok", secret: "must-not-enter-router" } },
+    request: { tools: ["cairnstone_health"] }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "provider_auth_failed");
+  assert.equal(result.detail, "credential_material_not_accepted_in_v7_1_1");
+  assert.equal(JSON.stringify(result).includes("must-not-enter-router"), false);
+});
+
+test("V7.1.1 rejects implicit/early failover policy", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  const result = await modelRouteFromBody({
+    context_package: pkg,
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1", failover: { mode: "automatic" } },
+    request: { tools: ["cairnstone_health"] }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "unsupported_route_policy");
+  assert.equal(result.detail, "failover_not_implemented_until_v7_1_4");
+});
+
+test("V7.1.1 adapter errors normalize without losing package/request identities", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  const throwingAdapter = {
+    can_handle: () => ({ ok: true }),
+    encode: requestIr => ({ request_ir_id: requestIr.request_ir_id }),
+    invoke: async () => { throw new Error("synthetic timeout"); },
+    normalize: () => { throw new Error("unreachable"); },
+    normalize_error: (_error, route, requestIr) => ({
+      ok: false,
+      error: "provider_timeout",
+      provider: route.provider,
+      model: route.model,
+      package_id: requestIr.package_id,
+      request_ir_id: requestIr.request_ir_id
+    })
+  };
+  const result = await modelRouteFromBody({
+    context_package: pkg,
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" },
+    request: { tools: ["cairnstone_health"] }
+  }, null, { adapters: { "mock-a": throwingAdapter } });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "provider_timeout");
+  assert.equal(result.package_id, pkg.package_id);
+  assert.match(result.request_ir_id, /^sha256:[0-9a-f]{64}$/);
 });
