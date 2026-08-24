@@ -496,6 +496,12 @@ function makeWorkersAiAdapter() {
       return {
         model: route.model,
         gateway_id: typeof route.gateway_id === "string" && route.gateway_id.trim() ? route.gateway_id.trim() : "default",
+        gateway_metadata: {
+          package_id: requestIr.package_id,
+          request_ir_id: requestIr.request_ir_id,
+          provider: route.provider,
+          model: route.model
+        },
         input
       };
     },
@@ -510,12 +516,20 @@ function makeWorkersAiAdapter() {
       const raw = await ai.run(
         providerRequest.model,
         providerRequest.input,
-        { gateway: { id: providerRequest.gateway_id, skipCache: true } }
+        {
+          gateway: {
+            id: providerRequest.gateway_id,
+            skipCache: true,
+            collectLog: true,
+            metadata: providerRequest.gateway_metadata
+          }
+        }
       );
       return {
         raw,
         telemetry: {
           gateway_id: providerRequest.gateway_id,
+          gateway_request_id: typeof ai.aiGatewayLogId === "string" ? ai.aiGatewayLogId : null,
           latency_ms: Math.max(0, Date.now() - started)
         }
       };
@@ -597,7 +611,7 @@ function makeWorkersAiAdapter() {
         },
         observability: {
           gateway_id: telemetry.gateway_id || null,
-          gateway_request_id: typeof raw.request_id === "string" ? raw.request_id : null,
+          gateway_request_id: telemetry.gateway_request_id || (typeof raw.request_id === "string" ? raw.request_id : null),
           attempts: [{
             provider: route.provider,
             model: route.model,
