@@ -333,7 +333,7 @@ every path head + every edge touching HEAD in one deterministic call.
 
 ---
 
-*Last updated: 2026-08-23, with V6.9.2 deterministic skill QA/lint and the QA-gated 15-skill accepted catalog added after V6.9.1 canonical distribution/first external consumer, V6.9 progressive skills, and the Claude/ChatGPT concurrent-session coordination incident described in Section 2. V6.10 Skills Sub-Agent remains deferred until the deterministic catalog is healthy and routing ambiguity is demonstrated. If you update this document,
+*Last updated: 2026-08-23. V6.10 Skills Sub-Agent is implemented, production-live-accepted on runtime 0.4.8, and canonically closed on top of the V6.9.2 QA-gated 15-skill catalog and V6.9.1 canonical distribution/first external consumer. V6.10 is the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
 update it in place here and keep the "Last updated" line current — this
 file is meant to be the single source of truth referenced by URL from every
 provider's project instructions, not re-pasted and forked per provider.*
