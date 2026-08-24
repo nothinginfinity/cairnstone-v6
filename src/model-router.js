@@ -241,6 +241,17 @@ export const DEFAULT_MODEL_CAPABILITY_REGISTRY = Object.freeze([
     status: "available",
     observed_at: "2026-08-24T00:00:00.000Z",
     source: "v7.1.1-fixture"
+  }),
+  Object.freeze({
+    provider: "workers-ai",
+    model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    transport: "workers-ai-binding-gateway",
+    supports: Object.freeze({ text: true, streaming: false, tool_calls: true, reasoning: false, vision: false }),
+    context_window: 24000,
+    max_output_tokens: 4096,
+    status: "available",
+    observed_at: "2026-08-24T23:50:00.000Z",
+    source: "cloudflare-workers-ai-catalog-live-verified-2026-08-24"
   })
 ]);
 
@@ -299,7 +310,7 @@ export function validateRouteEnvelope(route, requestIr, registry = DEFAULT_MODEL
   if (!irValidation.ok) return irValidation;
   if (!route || typeof route !== "object") return { ok: false, error: "provider_not_supported", detail: "route_not_an_object" };
   if (Object.prototype.hasOwnProperty.call(route, "credential") || Object.prototype.hasOwnProperty.call(route, "api_key") || Object.prototype.hasOwnProperty.call(route, "token") || Object.prototype.hasOwnProperty.call(route, "secret")) {
-    return { ok: false, error: "provider_auth_failed", detail: "credential_material_not_accepted_in_v7_1_1" };
+    return { ok: false, error: "provider_auth_failed", detail: "credential_material_not_accepted_in_router" };
   }
   if (route.failover && route.failover.mode && route.failover.mode !== "none") {
     return { ok: false, error: "unsupported_route_policy", detail: "failover_not_implemented_until_v7_1_4" };
@@ -401,9 +412,228 @@ function makeMockAdapter(provider) {
   });
 }
 
+function providerToolName(toolId, index) {
+  const safe = String(toolId || "tool").replace(/[^A-Za-z0-9_-]/g, "_").replace(/^_+|_+$/g, "") || "tool";
+  return `cs_${index}_${safe}`.slice(0, 64);
+}
+
+function providerToolMap(requestIr) {
+  const entries = (requestIr.tools || []).map((tool, index) => ({
+    tool_id: tool.tool_id,
+    provider_name: providerToolName(tool.tool_id, index)
+  }));
+  return {
+    entries,
+    by_provider_name: new Map(entries.map(item => [item.provider_name, item.tool_id]))
+  };
+}
+
+function workersAiMessages(requestIr) {
+  return (requestIr.messages || []).map(message => ({
+    role: message.role === "user" ? "user" : "system",
+    content: String(message.content || "")
+  }));
+}
+
+function workersAiTools(requestIr) {
+  return providerToolMap(requestIr).entries.map(item => ({
+    name: item.provider_name,
+    description: `Return a CairnStone tool intent for ${item.tool_id}. This does not execute the tool.`,
+    parameters: { type: "object", properties: {}, additionalProperties: true }
+  }));
+}
+
+function normalizeToolArguments(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return { ok: true, value };
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? { ok: true, value: parsed }
+        : { ok: false, value: {}, error: "arguments_not_object" };
+    } catch {
+      return { ok: false, value: {}, error: "arguments_invalid_json" };
+    }
+  }
+  if (value === undefined || value === null || value === "") return { ok: true, value: {} };
+  return { ok: false, value: {}, error: "arguments_invalid_type" };
+}
+
+function usageNumber(usage, ...keys) {
+  for (const key of keys) {
+    const value = Number(usage && usage[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function mapWorkersAiError(error) {
+  const text = String(error && error.message ? error.message : error || "").toLowerCase();
+  const status = Number(error && (error.status || error.statusCode || error.code));
+  if (status === 401 || status === 403 || text.includes("unauthorized") || text.includes("forbidden") || text.includes("auth")) return "provider_auth_failed";
+  if (status === 429 || text.includes("rate limit") || text.includes("too many requests")) return "provider_rate_limited";
+  if (status === 408 || status === 504 || text.includes("timeout") || text.includes("timed out")) return "provider_timeout";
+  if (status === 400 || status === 422 || text.includes("bad request") || text.includes("invalid request")) return "provider_bad_request";
+  if (status === 503 || text.includes("capacity") || text.includes("overloaded")) return "provider_capacity_exceeded";
+  return "gateway_error";
+}
+
+function makeWorkersAiAdapter() {
+  return Object.freeze({
+    can_handle(route) {
+      return route && route.provider === "workers-ai"
+        ? { ok: true }
+        : { ok: false, error: "provider_not_supported", provider: route && route.provider };
+    },
+    encode(requestIr, route) {
+      const tools = workersAiTools(requestIr);
+      const input = {
+        messages: workersAiMessages(requestIr),
+        max_tokens: requestIr.generation.max_output_tokens,
+        temperature: requestIr.generation.temperature
+      };
+      if (tools.length) input.tools = tools;
+      return {
+        model: route.model,
+        gateway_id: typeof route.gateway_id === "string" && route.gateway_id.trim() ? route.gateway_id.trim() : "default",
+        input
+      };
+    },
+    async invoke(providerRequest, runtime = {}) {
+      const ai = runtime.env && runtime.env.AI;
+      if (!ai || typeof ai.run !== "function") {
+        const error = new Error("workers_ai_binding_missing");
+        error.code = 503;
+        throw error;
+      }
+      const started = Date.now();
+      const raw = await ai.run(
+        providerRequest.model,
+        providerRequest.input,
+        { gateway: { id: providerRequest.gateway_id, skipCache: true } }
+      );
+      return {
+        raw,
+        telemetry: {
+          gateway_id: providerRequest.gateway_id,
+          latency_ms: Math.max(0, Date.now() - started)
+        }
+      };
+    },
+    async normalize(invocation, route, requestIr, capability) {
+      const raw = invocation && invocation.raw && typeof invocation.raw === "object" ? invocation.raw : {};
+      const telemetry = invocation && invocation.telemetry && typeof invocation.telemetry === "object" ? invocation.telemetry : {};
+      const map = providerToolMap(requestIr);
+      const rawCalls = Array.isArray(raw.tool_calls)
+        ? raw.tool_calls
+        : Array.isArray(raw.toolCalls)
+          ? raw.toolCalls
+          : [];
+      const toolIntents = [];
+      for (let index = 0; index < rawCalls.length; index += 1) {
+        const call = rawCalls[index] || {};
+        const providerName = typeof call.name === "string"
+          ? call.name
+          : typeof call.function?.name === "string"
+            ? call.function.name
+            : "";
+        const rawArguments = call.arguments !== undefined ? call.arguments : call.function?.arguments;
+        const args = normalizeToolArguments(rawArguments);
+        const toolId = map.by_provider_name.get(providerName) || null;
+        const validation = !toolId
+          ? { ok: false, error: "unknown_tool_id", provider_name: providerName || null }
+          : !args.ok
+            ? { ok: false, error: args.error }
+            : { ok: true };
+        const intentPayload = {
+          request_ir_id: requestIr.request_ir_id,
+          provider: route.provider,
+          model: route.model,
+          ordinal: index,
+          provider_name: providerName || null,
+          tool_id: toolId,
+          arguments: args.value
+        };
+        const intentId = "sha256:" + await sha256Text(stableJson(intentPayload));
+        toolIntents.push({
+          intent_id: intentId,
+          tool_id: toolId,
+          arguments: args.value,
+          source: { provider: route.provider, model: route.model, provider_name: providerName || null },
+          validation,
+          policy: { intent_only: true, executed: false, execution_authority: false, mutation_authority: false },
+          executed: false
+        });
+      }
+      const text = typeof raw.response === "string"
+        ? raw.response
+        : typeof raw.output_text === "string"
+          ? raw.output_text
+          : typeof raw.result === "string"
+            ? raw.result
+            : "";
+      const usage = raw.usage && typeof raw.usage === "object" ? raw.usage : {};
+      return {
+        ok: true,
+        schema: MODEL_RESULT_SCHEMA,
+        package_id: requestIr.package_id,
+        request_ir_id: requestIr.request_ir_id,
+        route: {
+          provider: route.provider,
+          model: route.model,
+          transport: capability.transport,
+          credential_mode: "workers_ai_billing",
+          failover_policy: "none"
+        },
+        output: {
+          text,
+          tool_intents: toolIntents,
+          finish_reason: raw.finish_reason || raw.finishReason || (toolIntents.length ? "tool_calls" : "stop")
+        },
+        usage: {
+          input_tokens: usageNumber(usage, "input_tokens", "prompt_tokens"),
+          output_tokens: usageNumber(usage, "output_tokens", "completion_tokens"),
+          cost: null
+        },
+        observability: {
+          gateway_id: telemetry.gateway_id || null,
+          gateway_request_id: typeof raw.request_id === "string" ? raw.request_id : null,
+          attempts: [{
+            provider: route.provider,
+            model: route.model,
+            transport: capability.transport,
+            status: "succeeded",
+            latency_ms: Number.isFinite(Number(telemetry.latency_ms)) ? Number(telemetry.latency_ms) : null,
+            mock: false
+          }]
+        },
+        policy: { tool_intents_only: true, execution_authority: false, mutation_authority: false },
+        v7_1_2: { workers_ai_adapter: true, external_model_calls: 1, tools_executed: 0, gateway_routed: Boolean(telemetry.gateway_id) }
+      };
+    },
+    normalize_error(error, route, requestIr) {
+      return {
+        ok: false,
+        error: mapWorkersAiError(error),
+        provider: route && route.provider,
+        model: route && route.model,
+        package_id: requestIr && requestIr.package_id,
+        request_ir_id: requestIr && requestIr.request_ir_id,
+        diagnostic: String(error && error.message ? error.message : error).slice(0, 500),
+        policy: { execution_authority: false, mutation_authority: false }
+      };
+    }
+  });
+}
+
 export const DEFAULT_MOCK_ADAPTERS = Object.freeze({
   "mock-a": makeMockAdapter("mock-a"),
   "mock-b": makeMockAdapter("mock-b")
+});
+
+export const DEFAULT_MODEL_ADAPTERS = Object.freeze({
+  ...DEFAULT_MOCK_ADAPTERS,
+  "workers-ai": makeWorkersAiAdapter()
 });
 
 export async function modelRouteFromBody(body, _env, deps = {}) {
@@ -415,7 +645,7 @@ export async function modelRouteFromBody(body, _env, deps = {}) {
   const requestIr = irResult.value;
 
   const registry = Array.isArray(deps.registry) ? deps.registry : DEFAULT_MODEL_CAPABILITY_REGISTRY;
-  const adapters = deps.adapters && typeof deps.adapters === "object" ? deps.adapters : DEFAULT_MOCK_ADAPTERS;
+  const adapters = deps.adapters && typeof deps.adapters === "object" ? deps.adapters : DEFAULT_MODEL_ADAPTERS;
   const route = body.route && typeof body.route === "object" ? body.route : null;
   const routeValidation = validateRouteEnvelope(route, requestIr, registry);
   if (!routeValidation.ok) return { ...routeValidation, package_id: requestIr.package_id, request_ir_id: requestIr.request_ir_id };
@@ -427,8 +657,8 @@ export async function modelRouteFromBody(body, _env, deps = {}) {
 
   try {
     const providerRequest = adapter.encode(requestIr, route, capability);
-    const raw = await adapter.invoke(providerRequest, { credentials: null });
-    const normalized = adapter.normalize(raw, route, requestIr, capability);
+    const raw = await adapter.invoke(providerRequest, { credentials: null, env: _env });
+    const normalized = await adapter.normalize(raw, route, requestIr, capability);
     const shape = validateModelResultShape(normalized);
     if (!shape.ok) {
       return { ok: false, error: "provider_response_invalid", detail: shape.detail, package_id: requestIr.package_id, request_ir_id: requestIr.request_ir_id };
@@ -470,7 +700,7 @@ export function modelCapabilitiesFromBody(body = {}, _env, deps = {}) {
 
 export const MODEL_CAPABILITIES_TOOL_DEFINITION = {
   name: "cairnstone_model_capabilities",
-  description: "V7.1 runtime model capability registry. Operational configuration only, never CairnStone accepted-state authority. V7.1.1 returns deterministic mock provider entries and performs zero external model calls.",
+  description: "V7.1 runtime model capability registry. Operational configuration only, never CairnStone accepted-state authority. Includes deterministic mock providers plus the V7.1.2 live Workers AI adapter model; listing capabilities performs zero model calls.",
   inputSchema: {
     type: "object",
     properties: {
@@ -483,7 +713,7 @@ export const MODEL_CAPABILITIES_TOOL_DEFINITION = {
 
 export const MODEL_ROUTE_TOOL_DEFINITION = {
   name: "cairnstone_model_route",
-  description: "V7.1.1 provider-neutral router core. Validates a V7.0 context package, deterministically builds request IR, checks a runtime model capability registry, and invokes only deterministic mock-a/mock-b adapters in this slice. Returns normalized model results with zero external model calls, zero tool execution, and zero execution/mutation authority.",
+  description: "V7.1.2 provider-neutral router. Validates a V7.0 context package, deterministically builds request IR, checks runtime model capabilities, and routes to deterministic mocks or the live Workers AI adapter through AI Gateway. Model tool calls are normalized into unexecuted intents; the router never executes tools or grants execution/mutation authority.",
   inputSchema: {
     type: "object",
     required: ["context_package", "route"],
@@ -493,8 +723,9 @@ export const MODEL_ROUTE_TOOL_DEFINITION = {
         type: "object",
         required: ["provider", "model"],
         properties: {
-          provider: { type: "string", description: "V7.1.1 accepts mock-a or mock-b only." },
-          model: { type: "string", description: "Exact model ID from the V7.1.1 runtime capability registry." }
+          provider: { type: "string", description: "Supported providers in V7.1.2: mock-a, mock-b, workers-ai." },
+          model: { type: "string", description: "Exact model ID from the runtime capability registry." },
+          gateway_id: { type: "string", description: "Workers AI Gateway ID. Defaults to 'default'. Route metadata only; never part of package_id or request_ir_id." }
         },
         additionalProperties: false
       },
