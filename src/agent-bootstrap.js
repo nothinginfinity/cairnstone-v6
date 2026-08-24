@@ -585,7 +585,7 @@ function enforceSizeDiscipline(packageBody, limits, instructionsValue) {
 // Package identity (contract section 6): stable, ephemeral-field-excluding hash
 // ---------------------------------------------------------------------------
 
-function hashablePayload(packageBody) {
+export function hashablePayload(packageBody) {
   return {
     schema: packageBody.schema,
     actor_id: packageBody.actor.actor_id,
@@ -708,13 +708,13 @@ function utf8Bytes(value) {
   return new TextEncoder().encode(String(value)).length;
 }
 
-async function sha256Text(value) {
+export async function sha256Text(value) {
   const bytes = new TextEncoder().encode(String(value));
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function stableJson(value) {
+export function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (value && typeof value === "object") {
     return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
