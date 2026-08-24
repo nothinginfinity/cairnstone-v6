@@ -337,3 +337,8 @@ every path head + every edge touching HEAD in one deterministic call.
 update it in place here and keep the "Last updated" line current — this
 file is meant to be the single source of truth referenced by URL from every
 provider's project instructions, not re-pasted and forked per provider.*
+
+<!-- V7.0-DRIFT-TEST-MARKER: this line was pushed to main on 2026-08-24 by claude:cairnstone-v6
+to verify cairnstone_agent_bootstrap serves the accepted path-HEAD commit (55ec7b74...)
+rather than mutable main, per V7.0 acceptance tests D/E. It will be reverted immediately
+after the live check confirms the bootstrap package's instructions.commit_sha did not move. -->
