@@ -30,7 +30,7 @@ import {
   MODEL_ROUTE_TOOL_DEFINITION
 } from "./model-router.js";
 
-const VERSION = "0.5.1";
+const VERSION = "0.5.2";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
