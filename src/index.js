@@ -23,8 +23,14 @@ import {
   agentBootstrapFromBody,
   AGENT_BOOTSTRAP_TOOL_DEFINITION
 } from "./agent-bootstrap.js";
+import {
+  modelCapabilitiesFromBody,
+  modelRouteFromBody,
+  MODEL_CAPABILITIES_TOOL_DEFINITION,
+  MODEL_ROUTE_TOOL_DEFINITION
+} from "./model-router.js";
 
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -295,6 +301,8 @@ async function callMcpTool(name, args, env) {
     listSkillsFromBody,
     version: VERSION
   });
+  if (name === "cairnstone_model_capabilities") return modelCapabilitiesFromBody(args, env);
+  if (name === "cairnstone_model_route") return modelRouteFromBody(args, env);
   return { ok: false, error: "unknown_tool", name };
 }
 
@@ -741,7 +749,9 @@ function mcpTools() {
         }
       }
     },
-    AGENT_BOOTSTRAP_TOOL_DEFINITION
+    AGENT_BOOTSTRAP_TOOL_DEFINITION,
+    MODEL_CAPABILITIES_TOOL_DEFINITION,
+    MODEL_ROUTE_TOOL_DEFINITION
   ];
 }
 
