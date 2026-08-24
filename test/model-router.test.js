@@ -180,9 +180,13 @@ test("V7.1.1 capability registry is operational configuration, not accepted-stat
   assert.equal(result.authority, "operational_configuration");
   assert.equal(result.accepted_state_authority, false);
   assert.equal(result.external_model_calls, 0);
-  assert.equal(result.total, 2);
-  assert.deepEqual(result.models.map(item => item.provider).sort(), ["mock-a", "mock-b"]);
-  assert.equal(DEFAULT_MODEL_CAPABILITY_REGISTRY.length, 2);
+  assert.equal(result.total, 3);
+  assert.deepEqual(result.models.map(item => item.provider).sort(), ["mock-a", "mock-b", "workers-ai"]);
+  assert.equal(DEFAULT_MODEL_CAPABILITY_REGISTRY.length, 3);
+  const workersAi = result.models.find(item => item.provider === "workers-ai");
+  assert.equal(workersAi.model, "@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+  assert.equal(workersAi.supports.tool_calls, true);
+  assert.equal(result.external_model_calls, 0);
 });
 
 test("V7.1.1 mock A/B preserve package_id and request_ir_id end-to-end", async () => {
@@ -259,7 +263,7 @@ test("V7.1.1 rejects credential material at the router boundary", async () => {
   });
   assert.equal(result.ok, false);
   assert.equal(result.error, "provider_auth_failed");
-  assert.equal(result.detail, "credential_material_not_accepted_in_v7_1_1");
+  assert.equal(result.detail, "credential_material_not_accepted_in_router");
   assert.equal(JSON.stringify(result).includes("must-not-enter-router"), false);
 });
 
@@ -298,6 +302,108 @@ test("V7.1.1 adapter errors normalize without losing package/request identities"
   }, null, { adapters: { "mock-a": throwingAdapter } });
   assert.equal(result.ok, false);
   assert.equal(result.error, "provider_timeout");
+  assert.equal(result.package_id, pkg.package_id);
+  assert.match(result.request_ir_id, /^sha256:[0-9a-f]{64}$/);
+});
+
+test("V7.1.2 Workers AI adapter invokes AI binding through Gateway and normalizes text + telemetry", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  const calls = [];
+  const ai = {
+    aiGatewayLogId: "gw-log-test",
+    run: async (model, input, options) => {
+      calls.push({ model, input, options });
+      return { response: "workers-ai-ok", usage: { prompt_tokens: 11, completion_tokens: 4 } };
+    }
+  };
+  const result = await modelRouteFromBody({
+    context_package: pkg,
+    route: { provider: "workers-ai", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" },
+    request: { tools: [], generation: { max_output_tokens: 128, temperature: 0 } }
+  }, { AI: ai });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.package_id, pkg.package_id);
+  assert.equal(result.route.provider, "workers-ai");
+  assert.equal(result.route.credential_mode, "workers_ai_billing");
+  assert.equal(result.output.text, "workers-ai-ok");
+  assert.equal(result.observability.gateway_id, "default");
+  assert.equal(result.observability.gateway_request_id, "gw-log-test");
+  assert.equal(result.v7_1_2.external_model_calls, 1);
+  assert.equal(result.v7_1_2.tools_executed, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, "@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+  assert.equal(calls[0].options.gateway.id, "default");
+  assert.equal(calls[0].options.gateway.skipCache, true);
+  assert.equal(calls[0].options.gateway.collectLog, true);
+  assert.deepEqual(Object.keys(calls[0].options.gateway.metadata).sort(), ["model", "package_id", "provider", "request_ir_id"]);
+  assert.equal(calls[0].options.gateway.metadata.package_id, pkg.package_id);
+  assert.equal(result.policy.execution_authority, false);
+  assert.equal(result.policy.mutation_authority, false);
+});
+
+test("V7.1.2 Workers AI tool call becomes a validated unexecuted CairnStone intent", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  const ai = {
+    aiGatewayLogId: "gw-log-tools",
+    run: async () => ({
+      response: "",
+      tool_calls: [{ name: "cs_0_cairnstone_health", arguments: {} }]
+    })
+  };
+  const result = await modelRouteFromBody({
+    context_package: pkg,
+    route: { provider: "workers-ai", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" },
+    request: { tools: ["cairnstone_health"], generation: { max_output_tokens: 128, temperature: 0 } }
+  }, { AI: ai });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.output.tool_intents.length, 1);
+  const intent = result.output.tool_intents[0];
+  assert.equal(intent.tool_id, "cairnstone_health");
+  assert.deepEqual(intent.arguments, {});
+  assert.equal(intent.validation.ok, true);
+  assert.equal(intent.executed, false);
+  assert.equal(intent.policy.intent_only, true);
+  assert.equal(intent.policy.execution_authority, false);
+  assert.equal(intent.policy.mutation_authority, false);
+  assert.equal(result.v7_1_2.tools_executed, 0);
+});
+
+test("V7.1.2 gateway route metadata changes transport evidence but never request_ir_id", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  const makeAi = logId => ({ aiGatewayLogId: logId, run: async () => ({ response: "ok" }) });
+  const request = { tools: [], generation: { max_output_tokens: 128, temperature: 0 } };
+  const a = await modelRouteFromBody({
+    context_package: pkg,
+    route: { provider: "workers-ai", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", gateway_id: "default" },
+    request
+  }, { AI: makeAi("gw-a") });
+  const b = await modelRouteFromBody({
+    context_package: pkg,
+    route: { provider: "workers-ai", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", gateway_id: "alternate" },
+    request
+  }, { AI: makeAi("gw-b") });
+
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+  assert.equal(a.package_id, b.package_id);
+  assert.equal(a.request_ir_id, b.request_ir_id);
+  assert.equal(a.observability.gateway_id, "default");
+  assert.equal(b.observability.gateway_id, "alternate");
+  assert.equal(a.observability.gateway_request_id, "gw-a");
+  assert.equal(b.observability.gateway_request_id, "gw-b");
+});
+
+test("V7.1.2 missing Workers AI binding fails typed with established identities", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  const result = await modelRouteFromBody({
+    context_package: pkg,
+    route: { provider: "workers-ai", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" },
+    request: { tools: [] }
+  }, {});
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "provider_capacity_exceeded");
   assert.equal(result.package_id, pkg.package_id);
   assert.match(result.request_ir_id, /^sha256:[0-9a-f]{64}$/);
 });
