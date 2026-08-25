@@ -252,6 +252,52 @@ jobs:
           ' >/dev/null
 
           PACKAGE_ID="$(echo "$delegated" | jq -r '(.result.content[0].text | fromjson).package_id')"
+          REQUEST_IR_ID="$(echo "$delegated" | jq -r '(.result.content[0].text | fromjson).request_ir_id')"
+
+          deepseek="$(curl -fsS -X POST "$BASE/mcp" \
+            -H 'content-type: application/json' \
+            -H 'accept: application/json' \
+            --data '{"jsonrpc":"2.0","id":721,"method":"tools/call","params":{"name":"cairnstone_delegate","arguments":{"actor_id":"github-actions:v72-acceptance","task":"Summarize the current accepted V7.2 project state in one short paragraph. Do not request or execute tools.","chain":"cairnstone-v6-project-memory","route":{"provider":"deepseek","model":"deepseek-chat","credential_mode":"byok","credential_alias":"default"},"generation":{"max_output_tokens":256,"temperature":0},"include_inbox":false}}}')"
+          echo "$deepseek" | jq -e --arg package "$PACKAGE_ID" --arg request "$REQUEST_IR_ID" '
+            (.result.content[0].text | fromjson) as $r |
+            $r.ok == true and
+            $r.schema == "cairnstone-delegation-result-v1" and
+            $r.package_id == $package and
+            $r.request_ir_id == $request and
+            $r.route.provider == "deepseek" and
+            $r.route.model == "deepseek-chat" and
+            $r.route.credential_mode == "byok" and
+            $r.policy.tools_exposed_to_model == 0 and
+            $r.policy.tools_executed == 0 and
+            $r.policy.execution_authority == false and
+            $r.policy.mutation_authority == false and
+            $r.policy.accepted_state_mutation == false and
+            $r.diagnostics.context_package_returned == false and
+            $r.diagnostics.external_model_calls >= 1
+          ' >/dev/null
+
+          failed_provider="$(curl -fsS -X POST "$BASE/mcp" \
+            -H 'content-type: application/json' \
+            -H 'accept: application/json' \
+            --data '{"jsonrpc":"2.0","id":722,"method":"tools/call","params":{"name":"cairnstone_delegate","arguments":{"actor_id":"github-actions:v72-acceptance","task":"Summarize the current accepted V7.2 project state in one short paragraph. Do not request or execute tools.","chain":"cairnstone-v6-project-memory","route":{"provider":"deepseek","model":"deepseek-chat","credential_mode":"byok","credential_alias":"v72_missing"},"generation":{"max_output_tokens":256,"temperature":0},"include_inbox":false}}}')"
+          echo "$failed_provider" | jq -e --arg package "$PACKAGE_ID" --arg request "$REQUEST_IR_ID" '
+            (.result.content[0].text | fromjson) as $r |
+            $r.ok == false and
+            $r.schema == "cairnstone-delegation-result-v1" and
+            $r.error == "provider_auth_failed" and
+            $r.package_id == $package and
+            $r.request_ir_id == $request and
+            $r.route.provider == "deepseek" and
+            $r.policy.tools_exposed_to_model == 0 and
+            $r.policy.tools_executed == 0 and
+            $r.policy.execution_authority == false and
+            $r.policy.mutation_authority == false and
+            $r.policy.accepted_state_mutation == false and
+            ($r.observability.attempts | length) == 1 and
+            $r.observability.attempts[0].status == "failed" and
+            $r.observability.attempts[0].error == "provider_auth_failed"
+          ' >/dev/null
+
           DISPATCH_ID="msg:v72-dispatch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           dispatch_payload="$(jq -nc \
             --arg id "$DISPATCH_ID" \
