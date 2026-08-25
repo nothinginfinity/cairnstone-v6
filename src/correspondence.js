@@ -5,6 +5,44 @@ const ALLOWED_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
 const ALLOWED_STATUSES = new Set(["queued", "delivered", "read", "acked", "archived"]);
 const MAX_MESSAGE_BYTES = 900000;
 const MAX_RECIPIENTS = 25;
+const HANDOFF_SCHEMA = "cairnstone-handoff-v1";
+const MAX_HANDOFF_TASK_BYTES = 24000;
+const MAX_HANDOFF_REFS = 25;
+
+export const HANDOFF_DISPATCH_TOOL_DEFINITION = {
+  name: "cairnstone_dispatch_handoff",
+  description: "V7.2: package and dispatch one compact provenance-bearing handoff through immutable AC1 correspondence. Carries task/chain/package identity, continuation stone refs, and an optional immutable GitHub artifact pointer. Transport grants no execution, mutation, or accepted-state authority.",
+  inputSchema: {
+    type: "object",
+    required: ["from", "to", "task", "chain"],
+    properties: {
+      from: { type: "string" },
+      to: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 25 },
+      task: { type: "string", description: "Bounded handoff task/instruction; grants no authority." },
+      chain: { type: "string", maxLength: 300 },
+      package_id: { type: "string", description: "Optional V7.0 sha256 package identity." },
+      continuation_refs: {
+        type: "array", maxItems: 25,
+        items: {
+          type: "object", required: ["stone_hash"],
+          properties: { stone_hash: { type: "string" }, path: { type: "string" }, note: { type: "string" } },
+          additionalProperties: false
+        }
+      },
+      github_artifact: {
+        type: "object", required: ["owner", "repo", "path", "commit_sha"],
+        properties: {
+          owner: { type: "string" }, repo: { type: "string" }, path: { type: "string" },
+          commit_sha: { type: "string", description: "Immutable 40-hex commit SHA; mutable refs are rejected." }
+        },
+        additionalProperties: false
+      },
+      message_id: { type: "string" }, thread_id: { type: "string" }, subject: { type: "string" },
+      priority: { type: "string", enum: ["low", "normal", "high", "urgent"] }
+    },
+    additionalProperties: false
+  }
+};
 
 export function createD1CorrespondenceStore(env) {
   if (!env?.CAIRNSTONE_DB) throw new Error("Missing D1 binding CAIRNSTONE_DB");
@@ -215,6 +253,45 @@ export function createCorrespondenceService({
       };
     },
 
+    async dispatchHandoff(body = {}) {
+      const senderId = actorId(body.from, "from");
+      const recipients = recipientIds(body.to);
+      const task = boundedText(body.task, "task", MAX_HANDOFF_TASK_BYTES);
+      const chain = opaqueId(body.chain, "chain");
+      const packageId = normalizePackageId(body.package_id);
+      const continuationRefs = normalizeContinuationRefs(body.continuation_refs);
+      const githubArtifact = normalizeGitHubArtifact(body.github_artifact);
+      const messageId = opaqueId(body.message_id || `msg:${randomUUID()}`, "message_id");
+      const threadId = opaqueId(body.thread_id || messageId, "thread_id");
+      const priority = body.priority === undefined ? "normal" : String(body.priority);
+      if (!ALLOWED_PRIORITIES.has(priority)) return { ok: false, error: "invalid_priority", allowed: [...ALLOWED_PRIORITIES] };
+      const subject = optionalText(body.subject, "subject", 500) || "CairnStone V7 handoff";
+      const handoff = {
+        schema: HANDOFF_SCHEMA,
+        from: senderId,
+        to: recipients,
+        thread_id: threadId,
+        task,
+        chain,
+        package_id: packageId,
+        continuation_refs: continuationRefs,
+        github_artifact: githubArtifact,
+        policy: handoffPolicy()
+      };
+      const sent = await this.sendMessage({
+        from: senderId, to: recipients, content: stableJson(handoff), message_id: messageId, thread_id: threadId,
+        intent: "handoff", priority, subject
+      });
+      if (!sent?.ok) return sent;
+      return {
+        ...sent,
+        handoff: {
+          schema: HANDOFF_SCHEMA, chain, package_id: packageId, continuation_ref_count: continuationRefs.length,
+          github_artifact: githubArtifact, policy: handoffPolicy()
+        }
+      };
+    },
+
     async getInbox(body = {}) {
       const recipientId = actorId(body.recipient_id, "recipient_id");
       const status = body.status === undefined ? null : String(body.status);
@@ -269,6 +346,11 @@ export async function sendMessageFromBody(body, env, deps = {}) {
   return service.sendMessage(body);
 }
 
+export async function dispatchHandoffFromBody(body, env, deps = {}) {
+  const service = createRuntimeService(env, deps);
+  return service.dispatchHandoff(body);
+}
+
 export async function getInboxFromBody(body, env, deps = {}) {
   const service = createRuntimeService(env, deps);
   return service.getInbox(body);
@@ -289,6 +371,57 @@ function createRuntimeService(env, deps) {
     return object ? object.text() : null;
   });
   return createCorrespondenceService({ store, createStone, readRaw, now: deps.now, randomUUID: deps.randomUUID, hash: deps.hash });
+}
+
+function boundedText(value, name, maxBytes) {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`Missing required string: ${name}`);
+  const text = value.trim();
+  const bytes = new TextEncoder().encode(text).length;
+  if (bytes > maxBytes) throw new Error(`${name} too large: max ${maxBytes} bytes`);
+  return text;
+}
+
+function normalizePackageId(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const text = String(value).trim();
+  if (!/^sha256:[0-9a-f]{64}$/i.test(text)) throw new Error("Invalid package_id");
+  return `sha256:${text.slice(7).toLowerCase()}`;
+}
+
+function normalizeContinuationRefs(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("Invalid continuation_refs");
+  if (value.length > MAX_HANDOFF_REFS) throw new Error(`Too many continuation refs: max ${MAX_HANDOFF_REFS}`);
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`Invalid continuation_refs[${index}]`);
+    const stoneHash = String(item.stone_hash || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(stoneHash)) throw new Error(`Invalid continuation_refs[${index}].stone_hash`);
+    const path = optionalText(item.path, `continuation_refs[${index}].path`, 500);
+    const note = optionalText(item.note, `continuation_refs[${index}].note`, 1000);
+    return { stone_hash: stoneHash, path, note };
+  });
+}
+
+function normalizeGitHubArtifact(value) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid github_artifact");
+  const owner = githubPart(value.owner, "github_artifact.owner");
+  const repo = githubPart(value.repo, "github_artifact.repo");
+  const path = String(value.path || "").trim().replace(/^\/+/, "");
+  if (!path || path.includes("..") || path.includes("\\")) throw new Error("Invalid github_artifact.path");
+  const commitSha = String(value.commit_sha || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(commitSha)) throw new Error("Invalid github_artifact.commit_sha");
+  return { owner, repo, path, commit_sha: commitSha };
+}
+
+function githubPart(value, name) {
+  const text = String(value || "").trim();
+  if (!/^[A-Za-z0-9_.-]+$/.test(text)) throw new Error(`Invalid ${name}`);
+  return text;
+}
+
+function handoffPolicy() {
+  return { transport_only: true, execution_authority: false, mutation_authority: false, accepted_state_authority: false };
 }
 
 function recipientIds(value) {
