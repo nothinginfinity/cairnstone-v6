@@ -1,6 +1,6 @@
 # CairnStone V7 Roadmap
 
-Status: **V7.1 complete (V7.1.0 through V7.1.5); R1-R12 acceptance closed on runtime 0.5.5; V7.2 gate lifted, engineering not yet started**
+Status: **V7.1 complete; V7.2 IN PROGRESS on runtime 0.5.6 — bounded read-only `cairnstone_delegate` is implemented and live-accepted; Console + Inbox Dispatch remains next**
 Predecessor baseline: **V6.10 frozen control plane**
 
 ## V7 thesis
@@ -138,7 +138,7 @@ All twelve acceptance items in the V7.1 contract are closed. Summary (full detai
 | R11 | Advisory skill ambiguity | **Live**: real `cairnstone_skill_agent` call on a genuinely ambiguous task, selection confirmed within deterministic candidates, `advisory_resolution` changes `request_ir_id` only, never `package_id` |
 | R12 | Direct MCP acceptance | All evidence gathered via direct JSON-RPC against the production `/mcp` endpoint, not unit tests alone |
 
-**Gate lifted:** V7.1 is complete. V7.2 (Console + Inbox Dispatch + read-only server-side delegation) is now the next unblocked phase per the accepted roadmap, but engineering on it has not been started as of this update.
+**V7.2 activated:** V7.1 is complete and V7.2 engineering is now in progress. The first bounded read-only server-side delegation slice is live-accepted on runtime `0.5.6`; Console + Inbox Dispatch remains the next V7.2 surface.
 
 ### Transport baseline
 
@@ -195,6 +195,8 @@ Key proofs include:
 ---
 
 ## V7.2 — CairnStone Console + Inbox Dispatch
+
+Status: **IN PROGRESS.** Runtime `0.5.6` now exposes live-accepted `cairnstone_delegate`: one server-side V7.0 bootstrap + one V7.1 model route, zero tools exposed, zero tool execution, zero mutation/execution authority, compact evidence-bearing result only. The preferred `cairnstone-v6-console` client repository has not yet been created; Console + Inbox Dispatch is the next bounded slice.
 
 ### Goal
 
@@ -392,7 +394,7 @@ V7.0 implementation + live acceptance
         ↓
 V7.1 Provider-Neutral Router (COMPLETE -- V7.1.0 through V7.1.5, R1-R12 closed)
         ↓
-V7.2 Console + Inbox Dispatch + read-only server-side delegation (gate lifted; not yet started)
+V7.2 Console + Inbox Dispatch + read-only server-side delegation (IN PROGRESS — delegation first slice live; console/inbox next)
         ↓
 V7.3 Permissioned Agent Loop + MCP Tool Broker
         ↓
