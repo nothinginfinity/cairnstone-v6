@@ -252,6 +252,17 @@ export const DEFAULT_MODEL_CAPABILITY_REGISTRY = Object.freeze([
     status: "available",
     observed_at: "2026-08-24T23:50:00.000Z",
     source: "cloudflare-workers-ai-catalog-live-verified-2026-08-24"
+  }),
+  Object.freeze({
+    provider: "openai",
+    model: "gpt-4o-mini",
+    transport: "openai-rest-chat",
+    supports: Object.freeze({ text: true, streaming: false, tool_calls: true, reasoning: false, vision: false }),
+    context_window: 128000,
+    max_output_tokens: 4096,
+    status: "available",
+    observed_at: "2026-08-25T00:00:00.000Z",
+    source: "openai-catalog-2026-08-not-live-credential-verified"
   })
 ]);
 
@@ -640,6 +651,213 @@ function makeWorkersAiAdapter() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// V7.1.3: BYOK / Unified Billing third-party adapter (OpenAI reference impl)
+// ---------------------------------------------------------------------------
+
+// Resolves a BYOK credential from a Worker secret binding by (provider, alias).
+// Naming convention: alias "default" -> BYOK_<PROVIDER>_API_KEY; any other
+// alias -> BYOK_<PROVIDER>_API_KEY_<ALIAS>. This is deliberately a static,
+// deploy-time binding name, not a caller-suppliable value -- the route
+// envelope may carry credential_mode/credential_alias (plain strings, never
+// the key names of "credential"/"api_key"/"token"/"secret" that
+// validateRouteEnvelope already rejects), but the actual secret material
+// only ever comes from the Worker's own bindings, never from MCP tool input.
+function resolveByokSecret(env, provider, alias) {
+  const providerUpper = String(provider || "").toUpperCase().replace(/[^A-Z0-9_]/g, "_");
+  const normalizedAlias = String(alias || "default").toUpperCase().replace(/[^A-Z0-9_]/g, "_");
+  const keyName = normalizedAlias === "DEFAULT"
+    ? `BYOK_${providerUpper}_API_KEY`
+    : `BYOK_${providerUpper}_API_KEY_${normalizedAlias}`;
+  const value = env && env[keyName];
+  return typeof value === "string" && value.trim()
+    ? { ok: true, value: value.trim(), keyName }
+    : { ok: false, keyName };
+}
+
+function mapOpenAiError(error) {
+  const text = String(error && error.message ? error.message : error || "").toLowerCase();
+  const status = Number(error && (error.status || error.statusCode || error.code));
+  if (status === 401 || status === 403 || text.includes("unauthorized") || text.includes("forbidden") || text.includes("auth") || text.includes("byok_credential_not_configured")) return "provider_auth_failed";
+  if (status === 429 || text.includes("rate limit") || text.includes("too many requests")) return "provider_rate_limited";
+  if (status === 408 || status === 504 || text.includes("timeout") || text.includes("timed out")) return "provider_timeout";
+  if (status === 400 || status === 422 || text.includes("bad request") || text.includes("invalid request")) return "provider_bad_request";
+  if (status === 503 || text.includes("capacity") || text.includes("overloaded")) return "provider_capacity_exceeded";
+  return "gateway_error";
+}
+
+function openAiMessages(requestIr) {
+  return (requestIr.messages || []).map(message => ({
+    role: message.role === "user" ? "user" : "system",
+    content: String(message.content || "")
+  }));
+}
+
+function openAiTools(requestIr) {
+  return providerToolMap(requestIr).entries.map(item => ({
+    type: "function",
+    function: {
+      name: item.provider_name,
+      description: `Return a CairnStone tool intent for ${item.tool_id}. This does not execute the tool.`,
+      parameters: { type: "object", properties: {}, additionalProperties: true }
+    }
+  }));
+}
+
+function makeOpenAiAdapter() {
+  return Object.freeze({
+    can_handle(route) {
+      return route && route.provider === "openai"
+        ? { ok: true }
+        : { ok: false, error: "provider_not_supported", provider: route && route.provider };
+    },
+    encode(requestIr, route) {
+      const tools = openAiTools(requestIr);
+      const requestBody = {
+        model: route.model,
+        messages: openAiMessages(requestIr),
+        max_tokens: requestIr.generation.max_output_tokens,
+        temperature: requestIr.generation.temperature
+      };
+      if (tools.length) {
+        requestBody.tools = tools;
+        requestBody.tool_choice = "auto";
+      }
+      return {
+        url: "https://api.openai.com/v1/chat/completions",
+        body: requestBody,
+        package_id: requestIr.package_id,
+        request_ir_id: requestIr.request_ir_id
+      };
+    },
+    async invoke(providerRequest, runtime = {}) {
+      const alias = (runtime.route && typeof runtime.route.credential_alias === "string" && runtime.route.credential_alias.trim())
+        ? runtime.route.credential_alias.trim()
+        : "default";
+      const secret = resolveByokSecret(runtime.env, "openai", alias);
+      if (!secret.ok) {
+        const error = new Error("byok_credential_not_configured");
+        error.status = 401;
+        error.missing_binding = secret.keyName;
+        throw error;
+      }
+      const started = Date.now();
+      const response = await fetch(providerRequest.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${secret.value}`
+        },
+        body: JSON.stringify(providerRequest.body)
+      });
+      const latencyMs = Date.now() - started;
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        const error = new Error(text || `openai_http_${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
+      const raw = await response.json();
+      return {
+        raw,
+        telemetry: {
+          latency_ms: Math.max(0, latencyMs),
+          request_id: response.headers.get("x-request-id") || null
+        }
+      };
+    },
+    async normalize(invocation, route, requestIr, capability) {
+      const raw = invocation && invocation.raw && typeof invocation.raw === "object" ? invocation.raw : {};
+      const telemetry = invocation && invocation.telemetry && typeof invocation.telemetry === "object" ? invocation.telemetry : {};
+      const choice = (Array.isArray(raw.choices) && raw.choices[0]) || {};
+      const message = choice.message || {};
+      const map = providerToolMap(requestIr);
+      const rawCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+      const toolIntents = [];
+      for (let index = 0; index < rawCalls.length; index += 1) {
+        const call = rawCalls[index] || {};
+        const providerName = typeof call.function?.name === "string" ? call.function.name : "";
+        const args = normalizeToolArguments(call.function?.arguments);
+        const toolId = map.by_provider_name.get(providerName) || null;
+        const validation = !toolId
+          ? { ok: false, error: "unknown_tool_id", provider_name: providerName || null }
+          : !args.ok
+            ? { ok: false, error: args.error }
+            : { ok: true };
+        const intentPayload = {
+          request_ir_id: requestIr.request_ir_id,
+          provider: route.provider,
+          model: route.model,
+          ordinal: index,
+          provider_name: providerName || null,
+          tool_id: toolId,
+          arguments: args.value
+        };
+        const intentId = "sha256:" + await sha256Text(stableJson(intentPayload));
+        toolIntents.push({
+          intent_id: intentId,
+          tool_id: toolId,
+          arguments: args.value,
+          source: { provider: route.provider, model: route.model, provider_name: providerName || null },
+          validation,
+          policy: { intent_only: true, executed: false, execution_authority: false, mutation_authority: false },
+          executed: false
+        });
+      }
+      const usage = raw.usage && typeof raw.usage === "object" ? raw.usage : {};
+      return {
+        ok: true,
+        schema: MODEL_RESULT_SCHEMA,
+        package_id: requestIr.package_id,
+        request_ir_id: requestIr.request_ir_id,
+        route: {
+          provider: route.provider,
+          model: route.model,
+          transport: capability.transport,
+          credential_mode: "byok",
+          failover_policy: "none"
+        },
+        output: {
+          text: typeof message.content === "string" ? message.content : "",
+          tool_intents: toolIntents,
+          finish_reason: choice.finish_reason || (toolIntents.length ? "tool_calls" : "stop")
+        },
+        usage: {
+          input_tokens: usageNumber(usage, "prompt_tokens", "input_tokens"),
+          output_tokens: usageNumber(usage, "completion_tokens", "output_tokens"),
+          cost: null
+        },
+        observability: {
+          gateway_id: null,
+          gateway_request_id: telemetry.request_id || (typeof raw.id === "string" ? raw.id : null),
+          attempts: [{
+            provider: route.provider,
+            model: route.model,
+            transport: capability.transport,
+            status: "succeeded",
+            latency_ms: Number.isFinite(Number(telemetry.latency_ms)) ? Number(telemetry.latency_ms) : null,
+            mock: false
+          }]
+        },
+        policy: { tool_intents_only: true, execution_authority: false, mutation_authority: false },
+        v7_1_3: { byok_adapter: true, external_model_calls: 1, tools_executed: 0 }
+      };
+    },
+    normalize_error(error, route, requestIr) {
+      return {
+        ok: false,
+        error: mapOpenAiError(error),
+        provider: route && route.provider,
+        model: route && route.model,
+        package_id: requestIr && requestIr.package_id,
+        request_ir_id: requestIr && requestIr.request_ir_id,
+        diagnostic: String(error && error.message ? error.message : error).slice(0, 500),
+        policy: { execution_authority: false, mutation_authority: false }
+      };
+    }
+  });
+}
+
 export const DEFAULT_MOCK_ADAPTERS = Object.freeze({
   "mock-a": makeMockAdapter("mock-a"),
   "mock-b": makeMockAdapter("mock-b")
@@ -647,7 +865,8 @@ export const DEFAULT_MOCK_ADAPTERS = Object.freeze({
 
 export const DEFAULT_MODEL_ADAPTERS = Object.freeze({
   ...DEFAULT_MOCK_ADAPTERS,
-  "workers-ai": makeWorkersAiAdapter()
+  "workers-ai": makeWorkersAiAdapter(),
+  "openai": makeOpenAiAdapter()
 });
 
 export async function modelRouteFromBody(body, _env, deps = {}) {
@@ -671,7 +890,7 @@ export async function modelRouteFromBody(body, _env, deps = {}) {
 
   try {
     const providerRequest = adapter.encode(requestIr, route, capability);
-    const raw = await adapter.invoke(providerRequest, { credentials: null, env: _env });
+    const raw = await adapter.invoke(providerRequest, { credentials: null, env: _env, route });
     const normalized = await adapter.normalize(raw, route, requestIr, capability);
     const shape = validateModelResultShape(normalized);
     if (!shape.ok) {
@@ -714,7 +933,7 @@ export function modelCapabilitiesFromBody(body = {}, _env, deps = {}) {
 
 export const MODEL_CAPABILITIES_TOOL_DEFINITION = {
   name: "cairnstone_model_capabilities",
-  description: "V7.1 runtime model capability registry. Operational configuration only, never CairnStone accepted-state authority. Includes deterministic mock providers plus the V7.1.2 live Workers AI adapter model; listing capabilities performs zero model calls.",
+  description: "V7.1 runtime model capability registry. Operational configuration only, never CairnStone accepted-state authority. Includes deterministic mock providers, the V7.1.2 live Workers AI adapter model, and the V7.1.3 OpenAI BYOK adapter model; listing capabilities performs zero model calls and does not indicate whether a BYOK credential is actually configured.",
   inputSchema: {
     type: "object",
     properties: {
@@ -727,7 +946,7 @@ export const MODEL_CAPABILITIES_TOOL_DEFINITION = {
 
 export const MODEL_ROUTE_TOOL_DEFINITION = {
   name: "cairnstone_model_route",
-  description: "V7.1.2 provider-neutral router. Validates a V7.0 context package, deterministically builds request IR, checks runtime model capabilities, and routes to deterministic mocks or the live Workers AI adapter through AI Gateway. Model tool calls are normalized into unexecuted intents; the router never executes tools or grants execution/mutation authority.",
+  description: "V7.1.3 provider-neutral router. Validates a V7.0 context package, deterministically builds request IR, checks runtime model capabilities, and routes to deterministic mocks, the live Workers AI adapter, or a BYOK third-party adapter (OpenAI). Model tool calls are normalized into unexecuted intents; the router never executes tools or grants execution/mutation authority. Third-party credentials are never accepted as tool input -- they resolve server-side from a Worker secret binding by (provider, credential_alias).",
   inputSchema: {
     type: "object",
     required: ["context_package", "route"],
@@ -737,9 +956,11 @@ export const MODEL_ROUTE_TOOL_DEFINITION = {
         type: "object",
         required: ["provider", "model"],
         properties: {
-          provider: { type: "string", description: "Supported providers in V7.1.2: mock-a, mock-b, workers-ai." },
+          provider: { type: "string", description: "Supported providers in V7.1.3: mock-a, mock-b, workers-ai, openai." },
           model: { type: "string", description: "Exact model ID from the runtime capability registry." },
-          gateway_id: { type: "string", description: "Workers AI Gateway ID. Defaults to 'default'. Route metadata only; never part of package_id or request_ir_id." }
+          gateway_id: { type: "string", description: "Workers AI Gateway ID. Defaults to 'default'. Route metadata only; never part of package_id or request_ir_id." },
+          credential_mode: { type: "string", enum: ["workers_ai_billing", "unified_billing", "byok"], description: "Credential mode for third-party/BYOK providers. Route metadata only; never part of package_id or request_ir_id." },
+          credential_alias: { type: "string", description: "Alias name identifying which Worker secret binding to resolve server-side for a BYOK provider. Never the secret value itself; the router rejects any route field literally named credential/api_key/token/secret." }
         },
         additionalProperties: false
       },
