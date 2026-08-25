@@ -122,6 +122,78 @@ test("AC1 Agent A -> immutable message stone -> Agent B inbox -> read", async ()
   assert.equal(h.deliveries[0].status, "read");
 });
 
+test("V7.2 handoff dispatch creates a compact immutable AC1 package with zero authority", async () => {
+  const h = makeHarness();
+  const packageId = `sha256:${"a".repeat(64)}`;
+  const continuationStone = "b".repeat(64);
+  const commitSha = "c".repeat(40);
+  const handoff = {
+    message_id: "msg:v72-handoff",
+    from: "agent:chatgpt:jared",
+    to: ["agent:claude:jared"],
+    task: "Continue the bounded V7.2 Console work.",
+    chain: "cairnstone-v6-project-memory",
+    package_id: packageId,
+    continuation_refs: [{ stone_hash: continuationStone, path: "project-memory/v72-read-only-delegation-live.md", note: "Canonical continuation" }],
+    github_artifact: { owner: "nothinginfinity", repo: "cairnstone-v6", path: "docs/ROADMAP_V7.md", commit_sha: commitSha },
+    priority: "high"
+  };
+
+  const sent = await h.service.dispatchHandoff(handoff);
+  assert.equal(sent.ok, true);
+  assert.equal(sent.idempotent_replay, false);
+  assert.equal(sent.chain_head_written, false);
+  assert.equal(sent.handoff.schema, "cairnstone-handoff-v1");
+  assert.equal(sent.handoff.package_id, packageId);
+  assert.equal(sent.handoff.continuation_ref_count, 1);
+  assert.equal(sent.handoff.policy.execution_authority, false);
+  assert.equal(sent.handoff.policy.mutation_authority, false);
+  assert.equal(sent.handoff.policy.accepted_state_authority, false);
+  assert.equal(h.stoneCreates, 1);
+
+  const inbox = await h.service.getInbox({ recipient_id: "agent:claude:jared" });
+  assert.equal(inbox.total, 1);
+  assert.equal(inbox.messages[0].intent, "handoff");
+  assert.equal(inbox.messages[0].priority, "high");
+
+  const read = await h.service.readMessage({ recipient_id: "agent:claude:jared", message_id: "msg:v72-handoff" });
+  const payload = JSON.parse(read.content);
+  assert.equal(payload.schema, "cairnstone-handoff-v1");
+  assert.equal(payload.chain, "cairnstone-v6-project-memory");
+  assert.equal(payload.package_id, packageId);
+  assert.equal(payload.continuation_refs[0].stone_hash, continuationStone);
+  assert.equal(payload.github_artifact.commit_sha, commitSha);
+  assert.equal(payload.policy.transport_only, true);
+  assert.equal(payload.policy.execution_authority, false);
+  assert.equal(payload.policy.mutation_authority, false);
+  assert.equal(payload.policy.accepted_state_authority, false);
+});
+
+test("V7.2 handoff dispatch is idempotent and rejects mutable GitHub artifact refs", async () => {
+  const h = makeHarness();
+  const base = {
+    message_id: "msg:v72-replay",
+    from: "agent:chatgpt:jared",
+    to: ["agent:claude:jared"],
+    task: "Continue V7.2.",
+    chain: "cairnstone-v6-project-memory",
+    github_artifact: { owner: "nothinginfinity", repo: "cairnstone-v6", path: "docs/ROADMAP_V7.md", commit_sha: "d".repeat(40) }
+  };
+  const first = await h.service.dispatchHandoff(base);
+  const replay = await h.service.dispatchHandoff(base);
+  assert.equal(first.ok, true);
+  assert.equal(replay.ok, true);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.stone_hash, first.stone_hash);
+  assert.equal(h.stoneCreates, 1);
+
+  await assert.rejects(
+    () => h.service.dispatchHandoff({ ...base, message_id: "msg:v72-bad-ref", github_artifact: { ...base.github_artifact, commit_sha: "main" } }),
+    /Invalid github_artifact\.commit_sha/
+  );
+  assert.equal(h.stoneCreates, 1);
+});
+
 test("AC1 retry reuses the original stone and creates no duplicate delivery", async () => {
   const h = makeHarness();
   const message = {
