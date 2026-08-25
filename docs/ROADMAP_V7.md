@@ -1,6 +1,6 @@
 # CairnStone V7 Roadmap
 
-Status: **V7.2 COMPLETE; V7.3 IN PROGRESS — V7.3.0 broker registry + deterministic policy preview, and V7.3.1 read-only tool execution loop, are live-accepted on runtime 0.5.10; V7.3.2 mutation stop boundary is next**
+Status: **V7.2 COMPLETE; V7.3 IN PROGRESS — V7.3.0 broker policy, V7.3.1 read-only execution, and V7.3.2 mutation stop boundary are live-accepted on runtime 0.5.11; V7.3.3 human-confirmed guarded mutation is next**
 Predecessor baseline: **V6.10 frozen control plane**
 
 ## V7 thesis
@@ -317,7 +317,7 @@ Delegation acceptance should prove:
 
 ### V7.3 — Permissioned Agent Loop / MCP Tool Broker
 
-Status: **IN PROGRESS. V7.3.0 and V7.3.1 COMPLETE and live-accepted on runtime `0.5.10`; V7.3.2 mutation stop boundary is next.** Canonical contract: `docs/V7_3_PERMISSIONED_AGENT_LOOP_MCP_TOOL_BROKER.md`. V7.3.0 adds `cairnstone_tool_registry` and `cairnstone_tool_policy_preview`, with deterministic risk/authorization decisions and an explicit hard boundary that no preview can execute a tool (`can_execute_now:false`, `executed:false`, `tools_executed:0`). Live acceptance run `32890344073` proved automatic-read eligibility, human-confirmed mutation gating, and unchanged chain/path authority. V7.3.1 adds `cairnstone_tool_execute`, which re-derives the identical policy verdict and only executes read+automatic intents outside any provider adapter, under output/turn budgets, with an immutable execution receipt on a dedicated `cairnstone-v7-tool-execution-receipts` chain. GitHub Actions deploy run `32907348014` and a real live `cairnstone_health` execution (with receipt) plus a confirmed-denied `cairnstone_commit_v2` execution attempt closed V7.3.1 acceptance; see `project-memory/evidence/v731-tool-execution-loop-acceptance.md`.
+Status: **IN PROGRESS. V7.3.0, V7.3.1, and V7.3.2 COMPLETE and live-accepted on runtime `0.5.11`; V7.3.3 human-confirmed guarded mutation is next.** Canonical contract: `docs/V7_3_PERMISSIONED_AGENT_LOOP_MCP_TOOL_BROKER.md`. V7.3.0 adds `cairnstone_tool_registry` and `cairnstone_tool_policy_preview`, with deterministic risk/authorization decisions and an explicit hard boundary that no preview can execute a tool (`can_execute_now:false`, `executed:false`, `tools_executed:0`). Live acceptance run `32890344073` proved automatic-read eligibility, human-confirmed mutation gating, and unchanged chain/path authority. V7.3.1 adds `cairnstone_tool_execute`, which re-derives the identical policy verdict and only executes read+automatic intents outside any provider adapter, under output/turn budgets, with an immutable execution receipt on `cairnstone-v7-tool-execution-receipts`; run `32907348014` closed its live acceptance. V7.3.2 adds `cairnstone_tool_authorization_request`, which records a model-proposed mutation as an immutable pending authorization request on `cairnstone-v7-tool-authorization-requests` while refusing all embedded approval/execute bypass fields and performing zero target mutation. Live acceptance run `32908958516` proved a real `cairnstone_commit_v2` proposal stopped at `human_confirmation`, persisted the pending request, remained non-executable through `cairnstone_tool_execute`, and left canonical project-memory HEAD/path state unchanged.
 
 Turn normalized V7.1 model tool intents into a governed multi-turn execution loop. This is the point where a routed model becomes a real tool-using subagent rather than only a reasoning subcontractor.
 
@@ -398,7 +398,7 @@ V7.1 Provider-Neutral Router (COMPLETE -- V7.1.0 through V7.1.5, R1-R12 closed)
         ↓
 V7.2 Console + Inbox Dispatch + read-only server-side delegation (COMPLETE — runtime 0.5.8, native AC1 handoff, GitHub mirror, and final Console Operator UX live-accepted)
         ↓
-V7.3 Permissioned Agent Loop + MCP Tool Broker (IN PROGRESS — V7.3.0 and V7.3.1 live-accepted; V7.3.2 next)
+V7.3 Permissioned Agent Loop + MCP Tool Broker (IN PROGRESS — V7.3.0 through V7.3.2 live-accepted; V7.3.3 next)
         ↓
 V7.4 Cross-project agent profiles
         ↓
