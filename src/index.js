@@ -24,13 +24,15 @@ import {
   AGENT_BOOTSTRAP_TOOL_DEFINITION
 } from "./agent-bootstrap.js";
 import {
+  delegateFromBody,
   modelCapabilitiesFromBody,
   modelRouteFromBody,
+  DELEGATE_TOOL_DEFINITION,
   MODEL_CAPABILITIES_TOOL_DEFINITION,
   MODEL_ROUTE_TOOL_DEFINITION
 } from "./model-router.js";
 
-const VERSION = "0.5.5";
+const VERSION = "0.5.6";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -303,6 +305,17 @@ async function callMcpTool(name, args, env) {
   });
   if (name === "cairnstone_model_capabilities") return modelCapabilitiesFromBody(args, env);
   if (name === "cairnstone_model_route") return modelRouteFromBody(args, env);
+  if (name === "cairnstone_delegate") return delegateFromBody(args, env, {
+    agentBootstrapFromBody: (body, e) => agentBootstrapFromBody(body, e, {
+      resumeChainFromBody,
+      getInboxFromBody: (inboxBody, inboxEnv) => getInboxFromBody(inboxBody, inboxEnv, { createStone: b => createStoneFromBody(b, inboxEnv) }),
+      resolveSkillsFromBody,
+      getSkillBundleFromBody,
+      listSkillsFromBody,
+      version: VERSION
+    }),
+    modelRouteFromBody
+  });
   return { ok: false, error: "unknown_tool", name };
 }
 
@@ -751,7 +764,8 @@ function mcpTools() {
     },
     AGENT_BOOTSTRAP_TOOL_DEFINITION,
     MODEL_CAPABILITIES_TOOL_DEFINITION,
-    MODEL_ROUTE_TOOL_DEFINITION
+    MODEL_ROUTE_TOOL_DEFINITION,
+    DELEGATE_TOOL_DEFINITION
   ];
 }
 
