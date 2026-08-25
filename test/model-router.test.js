@@ -10,6 +10,10 @@ import {
   modelCapabilitiesFromBody,
   modelRouteFromBody,
   recomputePackageId,
+  TOOL_POLICY_DECISION_SCHEMA,
+  TOOL_REGISTRY_SCHEMA,
+  toolPolicyPreviewFromBody,
+  toolRegistryFromBody,
   validateContextPackage,
   validateModelResultShape
 } from "../src/model-router.js";
@@ -73,6 +77,145 @@ async function withValidPackageId(pkg) {
   clone.package_id = await recomputePackageId(clone);
   return clone;
 }
+
+async function withAvailableTools(toolIds) {
+  const pkg = baseFixturePackage();
+  pkg.capabilities.available_tools = [...toolIds];
+  pkg.package_id = await recomputePackageId(pkg);
+  return pkg;
+}
+
+test("V7.3.0 tool registry is normalized operational configuration with zero execution authority", () => {
+  const result = toolRegistryFromBody({});
+  assert.equal(result.ok, true);
+  assert.equal(result.schema, TOOL_REGISTRY_SCHEMA);
+  assert.equal(result.authority, "operational_configuration");
+  assert.equal(result.accepted_state_authority, false);
+  assert.equal(result.provider_credentials_in_registry, false);
+  assert.equal(result.external_model_calls, 0);
+  assert.equal(result.tools_executed, 0);
+  assert.equal(result.total, 12);
+
+  const health = result.tools.find(item => item.tool_id === "cairnstone_health");
+  assert.equal(health.risk_class, "read");
+  assert.equal(health.authorization, "automatic");
+  assert.equal(health.available, true);
+  assert.deepEqual(health.input_schema, { type: "object", properties: {}, additionalProperties: false });
+
+  const commit = result.tools.find(item => item.tool_id === "cairnstone_commit_v2");
+  assert.equal(commit.risk_class, "mutation");
+  assert.equal(commit.authorization, "human_confirmation");
+});
+
+test("V7.3.0 automatic read policy can allow an intent but remains preview-only and unexecuted", async () => {
+  const pkg = await withAvailableTools(["cairnstone_health"]);
+  const intent = {
+    intent_id: "sha256:" + "1".repeat(64),
+    tool_id: "cairnstone_health",
+    arguments: {},
+    executed: false
+  };
+  const first = await toolPolicyPreviewFromBody({ context_package: pkg, tool_intent: intent });
+  const second = await toolPolicyPreviewFromBody({ context_package: pkg, tool_intent: intent });
+
+  assert.equal(first.ok, true);
+  assert.equal(first.schema, TOOL_POLICY_DECISION_SCHEMA);
+  assert.equal(first.package_id, pkg.package_id);
+  assert.equal(first.decision, "allow");
+  assert.equal(first.reason, "read_only_automatic");
+  assert.equal(first.authorization_required, false);
+  assert.equal(first.registry.risk_class, "read");
+  assert.equal(first.evidence.capability_present, true);
+  assert.equal(first.evidence.arguments_validation.ok, true);
+  assert.equal(first.execution.preview_only, true);
+  assert.equal(first.execution.can_execute_now, false);
+  assert.equal(first.execution.executed, false);
+  assert.equal(first.execution.tools_executed, 0);
+  assert.equal(first.policy.model_intent_is_execution_authority, false);
+  assert.equal(first.policy.execution_authority, false);
+  assert.equal(first.policy.mutation_authority, false);
+  assert.equal(first.decision_id, second.decision_id);
+});
+
+test("V7.3.0 denies a registered read tool that was not present in the V7.0 capability evidence", async () => {
+  const pkg = await withAvailableTools(["cairnstone_health"]);
+  const result = await toolPolicyPreviewFromBody({
+    context_package: pkg,
+    tool_intent: {
+      tool_id: "cairnstone_resume_chain",
+      arguments: { chain: "cairnstone-v6-project-memory" },
+      executed: false
+    }
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.decision, "deny");
+  assert.equal(result.reason, "capability_not_in_context");
+  assert.equal(result.evidence.capability_present, false);
+  assert.equal(result.execution.tools_executed, 0);
+});
+
+test("V7.3.0 mutation intent requires authorization even when the V7.0 package exposes the capability", async () => {
+  const pkg = await withAvailableTools(["cairnstone_commit_v2"]);
+  const result = await toolPolicyPreviewFromBody({
+    context_package: pkg,
+    tool_intent: {
+      intent_id: "sha256:" + "2".repeat(64),
+      tool_id: "cairnstone_commit_v2",
+      arguments: { chain: "cairnstone-v6-project-memory", author: "test:fixture", content: "candidate" },
+      executed: false
+    }
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.decision, "require_authorization");
+  assert.equal(result.reason, "human_confirmation");
+  assert.equal(result.authorization_required, true);
+  assert.equal(result.registry.risk_class, "mutation");
+  assert.equal(result.execution.can_execute_now, false);
+  assert.equal(result.execution.executed, false);
+  assert.equal(result.policy.mutation_authority, false);
+});
+
+test("V7.3.0 validates registered JSON input schema before any tool could become eligible", async () => {
+  const pkg = await withAvailableTools(["cairnstone_resume_chain"]);
+  const result = await toolPolicyPreviewFromBody({
+    context_package: pkg,
+    tool_intent: {
+      tool_id: "cairnstone_resume_chain",
+      arguments: {},
+      executed: false
+    }
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.decision, "deny");
+  assert.equal(result.reason, "arguments_invalid");
+  assert.equal(result.evidence.arguments_validation.error, "arguments_missing_required");
+  assert.deepEqual(result.evidence.arguments_validation.missing, ["chain"]);
+  assert.equal(result.execution.tools_executed, 0);
+});
+
+test("V7.3.0 rejects any tool intent that already claims execution", async () => {
+  const pkg = await withAvailableTools(["cairnstone_health"]);
+  const result = await toolPolicyPreviewFromBody({
+    context_package: pkg,
+    tool_intent: { tool_id: "cairnstone_health", arguments: {}, executed: true }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "invalid_tool_intent");
+  assert.equal(result.detail, "tool_intent_already_executed");
+});
+
+test("V7.3.0 re-verifies the V7.0 package hash before issuing a policy decision", async () => {
+  const pkg = await withAvailableTools(["cairnstone_health"]);
+  pkg.request.task = "tampered after package identity was minted";
+  const result = await toolPolicyPreviewFromBody({
+    context_package: pkg,
+    tool_intent: { tool_id: "cairnstone_health", arguments: {}, executed: false }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "invalid_context_package");
+  assert.equal(result.detail, "package_id_hash_mismatch");
+  assert.equal(result.stage, "context_package");
+});
 
 test("V7.2 delegate carries the V7.0 package server-side and returns a compact read-only result", async () => {
   const pkg = await withValidPackageId(baseFixturePackage());
