@@ -1,6 +1,6 @@
 # CairnStone V7 Roadmap
 
-Status: **active implementation roadmap — V7.1.3 live; V7.1.4/V7.1.5 next**
+Status: **V7.1 complete (V7.1.0 through V7.1.5); R1-R12 acceptance closed on runtime 0.5.5; V7.2 gate lifted, engineering not yet started**
 Predecessor baseline: **V6.10 frozen control plane**
 
 ## V7 thesis
@@ -74,7 +74,7 @@ V7.0 implementation and live acceptance are complete. The deliberate race-inject
 
 ## V7.1 — Provider-Neutral Model Router
 
-Status: **V7.1.3 live on runtime 0.5.4; R3 / deferred V7.0 Test C closed; V7.1.4 and V7.1.5 remain**
+Status: **COMPLETE.** Full R1-R12 live acceptance closed on runtime `0.5.5`. See `docs/V7_1_PROVIDER_NEUTRAL_MODEL_ROUTER.md` for the contract and the canonical V7.1.5 acceptance stone (`project-memory/v71-5-r1-r12-acceptance-closed.md`) for the complete evidence matrix.
 
 Canonical contract: `docs/V7_1_PROVIDER_NEUTRAL_MODEL_ROUTER.md`
 
@@ -113,29 +113,32 @@ Provider/model choice changes neither identity.
 - **V7.1.0 — contract + fixtures:** complete.
 - **V7.1.1 — router core + mock adapters:** complete.
 - **V7.1.2 — Workers AI adapter:** complete and live-accepted.
-- **V7.1.3 — third-party / BYOK adapters:** complete and live on runtime `0.5.4`; capability registry covers 12 providers/models; real Workers AI, DeepSeek, and OpenAI routing preserved one V7.0 `package_id` and one provider-neutral `request_ir_id`.
-- **R3 / deferred V7.0 Test C:** closed with real non-mocked cross-provider evidence.
-- Provider secrets remain outside V7.0 packages, request IR, CairnStone stones, AC1, and normal model-visible payloads.
+- **V7.1.3 — third-party / BYOK adapters:** complete and live; capability registry covers 12 providers/models; real Workers AI, DeepSeek, and OpenAI routing preserved one V7.0 `package_id` and one provider-neutral `request_ir_id`.
+- **V7.1.4 — explicit failover + observability:** complete and live-accepted on runtime `0.5.5`; real primary-provider failure (credential-resolution failure) triggered real fallback to Workers AI with identity fully preserved and a complete ordered attempts history recorded.
+- **V7.1.5 — full R1-R12 live acceptance closure:** complete. All twelve acceptance items closed with live and/or unit evidence; see the acceptance matrix in `project-memory/v71-5-r1-r12-acceptance-closed.md`.
+- **R3 / deferred V7.0 Test C:** closed with real non-mocked cross-provider evidence and formally re-certified in V7.1.5.
+- Provider secrets remain outside V7.0 packages, request IR, CairnStone stones, AC1, and normal model-visible payloads -- confirmed by scanning every captured live request/result payload from this session for secret material (none found).
 
-### Remaining V7.1 slices
+### V7.1.5 closure: full R1-R12 acceptance evidence
 
-#### V7.1.4 — Explicit failover + observability
+All twelve acceptance items in the V7.1 contract are closed. Summary (full detail in `project-memory/v71-5-r1-r12-acceptance-closed.md`):
 
-- preserve the no-failover default;
-- add a versioned explicit fallback policy;
-- induce a primary-provider failure and prove fallback keeps `package_id` and `request_ir_id` unchanged;
-- record ordered attempts, selected provider/model, normalized failure reasons, latency, usage, gateway/provider request IDs, and cost where available;
-- never weaken required capabilities or tool/execution policy to make a fallback succeed.
+| # | Item | Evidence |
+|---|---|---|
+| R1 | Package integrity | Unit (tampered/mismatched package_id fails closed) |
+| R2 | Request-IR determinism | Unit + live (identical `request_ir_id` across repeat calls) |
+| R3 | Cross-provider neutrality / V7.0 Test C | **Live**: same package routed to real Workers AI, DeepSeek, and OpenAI, identical `package_id`/`request_ir_id` on all three |
+| R4 | Provider identity separation | Live (R3 evidence) + unit |
+| R5 | Tool capability truth | **Live**: `max_output_tokens` beyond model cap -> `model_capability_mismatch` |
+| R6 | Tool intent only | **Live**: real DeepSeek tool call normalized to `tool_intent` with `executed:false` |
+| R7 | Secret isolation | **Live**: every captured live request/result payload this session scanned for secret material -- none found |
+| R8 | Explicit failover | **Live**: real primary-provider failure, real fallback success, identity preserved, full attempts history |
+| R9 | Error normalization | Unit (401/429/timeout/bad_request/capacity fixtures) + live (real `provider_auth_failed`) |
+| R10 | AI Gateway observability | **Live**: real `gateway_request_id` (Workers AI) and real provider request IDs (DeepSeek/OpenAI) |
+| R11 | Advisory skill ambiguity | **Live**: real `cairnstone_skill_agent` call on a genuinely ambiguous task, selection confirmed within deterministic candidates, `advisory_resolution` changes `request_ir_id` only, never `package_id` |
+| R12 | Direct MCP acceptance | All evidence gathered via direct JSON-RPC against the production `/mcp` endpoint, not unit tests alone |
 
-#### V7.1.5 — Full live acceptance closure
-
-- run and stone the complete R1-R12 acceptance sweep;
-- formally re-certify R3 against the real V7.1.3 evidence;
-- verify direct production MCP behavior, secret isolation, capability truth, tool-intent-only behavior, error normalization, failover, and observability;
-- decide which additional registered BYOK providers require live exercise versus remaining explicitly labeled `implemented + unit-tested + not yet live-exercised`;
-- update this roadmap and create the canonical V7.1 completion continuation point.
-
-**Gate:** do not treat V7.2 as the active engineering phase until V7.1.5 closes R1-R12.
+**Gate lifted:** V7.1 is complete. V7.2 (Console + Inbox Dispatch + read-only server-side delegation) is now the next unblocked phase per the accepted roadmap, but engineering on it has not been started as of this update.
 
 ### Transport baseline
 
@@ -387,11 +390,9 @@ V7.0 Context Compiler Contract
         ↓
 V7.0 implementation + live acceptance
         ↓
-V7.1 Provider-Neutral Router
-  ├─ V7.1.4 explicit failover + observability
-  └─ V7.1.5 R1-R12 live closure
+V7.1 Provider-Neutral Router (COMPLETE -- V7.1.0 through V7.1.5, R1-R12 closed)
         ↓
-V7.2 Console + Inbox Dispatch + read-only server-side delegation
+V7.2 Console + Inbox Dispatch + read-only server-side delegation (gate lifted; not yet started)
         ↓
 V7.3 Permissioned Agent Loop + MCP Tool Broker
         ↓
