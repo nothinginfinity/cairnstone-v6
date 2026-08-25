@@ -216,6 +216,436 @@ export function validateModelResultShape(result) {
 }
 
 // ---------------------------------------------------------------------------
+// V7.3.0: Permissioned Agent Loop / MCP Tool Broker foundation
+// ---------------------------------------------------------------------------
+//
+// This slice is deliberately policy-only. It normalizes a small explicit
+// registry of broker-visible tools and deterministically previews whether one
+// normalized V7.1 tool intent is policy-eligible. It NEVER invokes the tool.
+// V7.3.1 will wire the first bounded read-only execution loop.
+//
+// Invariant: model intent is not execution authority.
+
+export const TOOL_REGISTRY_SCHEMA = "cairnstone-tool-registry-v1";
+export const TOOL_POLICY_DECISION_SCHEMA = "cairnstone-tool-policy-decision-v1";
+
+const BROKER_RISK_CLASSES = new Set(["read", "mutation", "execution", "prohibited"]);
+const BROKER_AUTHORIZATION = new Set(["automatic", "scoped_grant", "human_confirmation", "prohibited"]);
+
+export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
+  Object.freeze({
+    tool_id: "cairnstone_health",
+    connector: "cairnstone",
+    handler: "cairnstone_health",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Read live CairnStone runtime health and advertised tool surface.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_resume_chain",
+    connector: "cairnstone",
+    handler: "cairnstone_resume_chain",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Read the canonical chain HEAD, accepted path HEADs, and HEAD-adjacent graph edges.",
+    input_schema: {
+      type: "object",
+      required: ["chain"],
+      properties: { chain: { type: "string" } },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_find_v2",
+    connector: "cairnstone",
+    handler: "cairnstone_find_v2",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Search accepted/history refs without mutating canonical state.",
+    input_schema: {
+      type: "object",
+      required: ["query"],
+      properties: {
+        query: { type: "string" },
+        chain: { type: "string" },
+        stone_hash: { type: "string" },
+        top_k: { type: "number" },
+        match_mode: { type: "string" },
+        expand: { type: "boolean" },
+        context_lines: { type: "number" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_expand",
+    connector: "cairnstone",
+    handler: "cairnstone_expand",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Expand a selected immutable CairnStone ref window.",
+    input_schema: {
+      type: "object",
+      properties: {
+        ref_id: { type: "string" },
+        stone_hash: { type: "string" },
+        path: { type: "string" },
+        line_start: { type: "number" },
+        context_lines: { type: "number" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_get_source_freshness",
+    connector: "cairnstone",
+    handler: "cairnstone_get_source_freshness",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Read the last recorded freshness result for one accepted path.",
+    input_schema: {
+      type: "object",
+      required: ["chain", "path"],
+      properties: { chain: { type: "string" }, path: { type: "string" } },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_check_source_freshness",
+    connector: "cairnstone",
+    handler: "cairnstone_check_source_freshness",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Live-check one accepted path against GitHub without advancing accepted state.",
+    input_schema: {
+      type: "object",
+      required: ["chain", "path", "owner", "repo"],
+      properties: {
+        chain: { type: "string" },
+        path: { type: "string" },
+        owner: { type: "string" },
+        repo: { type: "string" },
+        ref: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_reconcile_repo",
+    connector: "cairnstone",
+    handler: "cairnstone_reconcile_repo",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Compare one immutable Git tree snapshot against accepted CairnStone path state; read-only.",
+    input_schema: {
+      type: "object",
+      required: ["chain"],
+      properties: {
+        chain: { type: "string" },
+        owner: { type: "string" },
+        repo: { type: "string" },
+        ref: { type: "string" },
+        include_in_sync: { type: "boolean" },
+        max_paths: { type: "number" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_send_message",
+    connector: "cairnstone",
+    handler: "cairnstone_send_message",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "Create immutable AC1 correspondence plus delivery state; never grants execution authority.",
+    input_schema: {
+      type: "object",
+      required: ["from", "to", "content"],
+      properties: {
+        from: { type: "string" },
+        to: { type: "array" },
+        content: { type: "string" },
+        message_id: { type: "string" },
+        thread_id: { type: "string" },
+        intent: { type: "string" },
+        priority: { type: "string" },
+        subject: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_dispatch_handoff",
+    connector: "cairnstone",
+    handler: "cairnstone_dispatch_handoff",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "Create a structured AC1 handoff and optional mirror transport; requires an explicit scoped policy before execution.",
+    input_schema: { type: "object", additionalProperties: true }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_commit_v2",
+    connector: "cairnstone",
+    handler: "cairnstone_commit_v2",
+    risk_class: "mutation",
+    authorization: "human_confirmation",
+    available: true,
+    description: "Create/accept a stone and optionally move path/chain authority pointers.",
+    input_schema: { type: "object", additionalProperties: true }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_set_path_head",
+    connector: "cairnstone",
+    handler: "cairnstone_set_path_head",
+    risk_class: "mutation",
+    authorization: "human_confirmation",
+    available: true,
+    description: "Move one accepted per-path authority pointer.",
+    input_schema: {
+      type: "object",
+      required: ["chain", "path", "hash"],
+      properties: { chain: { type: "string" }, path: { type: "string" }, hash: { type: "string" } },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_set_head",
+    connector: "cairnstone",
+    handler: "cairnstone_set_head",
+    risk_class: "mutation",
+    authorization: "human_confirmation",
+    available: true,
+    description: "Move one chain-level canonical authority pointer.",
+    input_schema: {
+      type: "object",
+      required: ["chain", "hash"],
+      properties: { chain: { type: "string" }, hash: { type: "string" } },
+      additionalProperties: false
+    }
+  })
+]);
+
+function brokerJsonTypeMatches(value, type) {
+  if (type === "object") return value !== null && typeof value === "object" && !Array.isArray(value);
+  if (type === "array") return Array.isArray(value);
+  if (type === "string") return typeof value === "string";
+  if (type === "boolean") return typeof value === "boolean";
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (type === "integer") return Number.isInteger(value);
+  if (type === "null") return value === null;
+  return true;
+}
+
+export function validateBrokerArguments(schema, args) {
+  const inputSchema = schema && typeof schema === "object" ? schema : { type: "object" };
+  if (!brokerJsonTypeMatches(args, inputSchema.type || "object")) {
+    return { ok: false, error: "arguments_type_mismatch", expected: inputSchema.type || "object" };
+  }
+  if ((inputSchema.type || "object") !== "object") return { ok: true };
+
+  const properties = inputSchema.properties && typeof inputSchema.properties === "object" ? inputSchema.properties : {};
+  const required = Array.isArray(inputSchema.required) ? inputSchema.required : [];
+  const missing = required.filter(key => !Object.prototype.hasOwnProperty.call(args, key));
+  if (missing.length) return { ok: false, error: "arguments_missing_required", missing };
+
+  if (inputSchema.additionalProperties === false) {
+    const unknown = Object.keys(args).filter(key => !Object.prototype.hasOwnProperty.call(properties, key));
+    if (unknown.length) return { ok: false, error: "arguments_unknown_properties", unknown };
+  }
+
+  const invalid = [];
+  for (const [key, value] of Object.entries(args)) {
+    const propertySchema = properties[key];
+    if (!propertySchema || !propertySchema.type) continue;
+    if (!brokerJsonTypeMatches(value, propertySchema.type)) {
+      invalid.push({ key, expected: propertySchema.type });
+    }
+  }
+  if (invalid.length) return { ok: false, error: "arguments_property_type_mismatch", invalid };
+  return { ok: true };
+}
+
+function validateBrokerRegistryEntry(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  if (typeof entry.tool_id !== "string" || !entry.tool_id) return false;
+  if (typeof entry.connector !== "string" || !entry.connector) return false;
+  if (typeof entry.handler !== "string" || !entry.handler) return false;
+  if (!BROKER_RISK_CLASSES.has(entry.risk_class)) return false;
+  if (!BROKER_AUTHORIZATION.has(entry.authorization)) return false;
+  if (!entry.input_schema || typeof entry.input_schema !== "object") return false;
+  return true;
+}
+
+export function toolRegistryFromBody(body = {}, _env, deps = {}) {
+  const registry = Array.isArray(deps.registry) ? deps.registry : DEFAULT_TOOL_BROKER_REGISTRY;
+  if (!registry.every(validateBrokerRegistryEntry)) {
+    return { ok: false, error: "tool_registry_invalid" };
+  }
+  const toolId = typeof body.tool_id === "string" && body.tool_id.trim() ? body.tool_id.trim() : null;
+  const riskClass = typeof body.risk_class === "string" && body.risk_class.trim() ? body.risk_class.trim() : null;
+  if (riskClass && !BROKER_RISK_CLASSES.has(riskClass)) {
+    return { ok: false, error: "invalid_risk_class", allowed: [...BROKER_RISK_CLASSES] };
+  }
+  const tools = registry
+    .filter(entry => (!toolId || entry.tool_id === toolId) && (!riskClass || entry.risk_class === riskClass))
+    .map(entry => cloneJson(entry))
+    .sort((a, b) => a.tool_id.localeCompare(b.tool_id));
+
+  return {
+    ok: true,
+    schema: TOOL_REGISTRY_SCHEMA,
+    authority: "operational_configuration",
+    accepted_state_authority: false,
+    provider_credentials_in_registry: false,
+    external_model_calls: 0,
+    tools_executed: 0,
+    total: tools.length,
+    tools
+  };
+}
+
+function brokerDecisionFor(entry, capabilityPresent, argsValidation) {
+  if (!entry) return { decision: "deny", reason: "tool_not_registered", authorization_required: false };
+  if (entry.available !== true) return { decision: "deny", reason: "tool_unavailable", authorization_required: false };
+  if (!capabilityPresent) return { decision: "deny", reason: "capability_not_in_context", authorization_required: false };
+  if (!argsValidation.ok) return { decision: "deny", reason: "arguments_invalid", authorization_required: false };
+  if (entry.risk_class === "prohibited" || entry.authorization === "prohibited") {
+    return { decision: "deny", reason: "tool_prohibited", authorization_required: false };
+  }
+  if (entry.risk_class === "read" && entry.authorization === "automatic") {
+    return { decision: "allow", reason: "read_only_automatic", authorization_required: false };
+  }
+  return { decision: "require_authorization", reason: entry.authorization, authorization_required: true };
+}
+
+export async function toolPolicyPreviewFromBody(body, _env, deps = {}) {
+  if (!body || typeof body !== "object") return { ok: false, error: "invalid_tool_policy_request", detail: "body_not_an_object" };
+  const pkg = body.context_package;
+  const packageValidation = await validateContextPackage(pkg);
+  if (!packageValidation.ok) return { ...packageValidation, stage: "context_package" };
+
+  const intent = body.tool_intent;
+  if (!intent || typeof intent !== "object") return { ok: false, error: "invalid_tool_intent", detail: "not_an_object" };
+  if (intent.executed === true) return { ok: false, error: "invalid_tool_intent", detail: "tool_intent_already_executed" };
+  const toolId = typeof intent.tool_id === "string" ? intent.tool_id.trim() : "";
+  if (!toolId) return { ok: false, error: "invalid_tool_intent", detail: "missing_tool_id" };
+  const args = intent.arguments === undefined ? {} : intent.arguments;
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return { ok: false, error: "invalid_tool_intent", detail: "arguments_not_object" };
+  }
+
+  const registry = Array.isArray(deps.registry) ? deps.registry : DEFAULT_TOOL_BROKER_REGISTRY;
+  if (!registry.every(validateBrokerRegistryEntry)) return { ok: false, error: "tool_registry_invalid" };
+  const entry = registry.find(item => item.tool_id === toolId) || null;
+  const capabilityPresent = Array.isArray(pkg.capabilities?.available_tools) && pkg.capabilities.available_tools.includes(toolId);
+  const argsValidation = entry ? validateBrokerArguments(entry.input_schema, args) : { ok: false, error: "tool_not_registered" };
+  const verdict = brokerDecisionFor(entry, capabilityPresent, argsValidation);
+
+  const decisionPayload = {
+    package_id: pkg.package_id,
+    intent_id: typeof intent.intent_id === "string" ? intent.intent_id : null,
+    tool_id: toolId,
+    arguments: args,
+    registry: entry ? {
+      connector: entry.connector,
+      handler: entry.handler,
+      risk_class: entry.risk_class,
+      authorization: entry.authorization,
+      available: entry.available === true
+    } : null,
+    capability_present: capabilityPresent,
+    arguments_validation: argsValidation,
+    decision: verdict
+  };
+  const decisionId = "sha256:" + await sha256Text(stableJson(decisionPayload));
+
+  return {
+    ok: true,
+    schema: TOOL_POLICY_DECISION_SCHEMA,
+    decision_id: decisionId,
+    package_id: pkg.package_id,
+    intent_id: typeof intent.intent_id === "string" ? intent.intent_id : null,
+    tool_id: toolId,
+    decision: verdict.decision,
+    reason: verdict.reason,
+    authorization_required: verdict.authorization_required,
+    registry: entry ? {
+      connector: entry.connector,
+      handler: entry.handler,
+      risk_class: entry.risk_class,
+      authorization: entry.authorization,
+      available: entry.available === true,
+      input_schema: cloneJson(entry.input_schema)
+    } : null,
+    evidence: {
+      capability_present: capabilityPresent,
+      arguments_validation: argsValidation,
+      accepted_state_authority: false,
+      registry_authority: "operational_configuration"
+    },
+    execution: {
+      preview_only: true,
+      can_execute_now: false,
+      executed: false,
+      tools_executed: 0
+    },
+    policy: {
+      model_intent_is_execution_authority: false,
+      execution_authority: false,
+      mutation_authority: false,
+      provider_credentials_exposed: false
+    }
+  };
+}
+
+export const TOOL_REGISTRY_TOOL_DEFINITION = {
+  name: "cairnstone_tool_registry",
+  description: "V7.3.0: read the normalized CairnStone tool-broker registry (stable tool identity, JSON input schema, risk class, availability, and required authorization). Operational configuration only; listing the registry executes no tools and grants no authority.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      tool_id: { type: "string" },
+      risk_class: { type: "string", enum: ["read", "mutation", "execution", "prohibited"] }
+    },
+    additionalProperties: false
+  }
+};
+
+export const TOOL_POLICY_PREVIEW_TOOL_DEFINITION = {
+  name: "cairnstone_tool_policy_preview",
+  description: "V7.3.0: deterministically validate one normalized V7.1 tool intent against a verified V7.0 context package and the broker registry. Returns allow / require_authorization / deny plus evidence, but NEVER invokes the requested tool. Even an automatic read verdict remains preview_only with executed:false in V7.3.0.",
+  inputSchema: {
+    type: "object",
+    required: ["context_package", "tool_intent"],
+    properties: {
+      context_package: { type: "object", description: "Completed cairnstone-agent-context-v1 package." },
+      tool_intent: {
+        type: "object",
+        required: ["tool_id", "arguments"],
+        properties: {
+          intent_id: { type: "string" },
+          tool_id: { type: "string" },
+          arguments: { type: "object" },
+          executed: { type: "boolean" }
+        },
+        additionalProperties: true
+      }
+    },
+    additionalProperties: false
+  }
+};
+
+// ---------------------------------------------------------------------------
 // V7.1.1: router core + capability registry + deterministic mock adapters
 // ---------------------------------------------------------------------------
 
