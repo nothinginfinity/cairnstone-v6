@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createCorrespondenceService } from "../src/correspondence.js";
 
-function makeHarness() {
+function makeHarness(options = {}) {
   const deliveries = [];
   const stones = new Map();
   const raw = new Map();
@@ -78,7 +78,8 @@ function makeHarness() {
     },
     async hash(value) {
       return `hash:${value}`;
-    }
+    },
+    mirrorHandoff: options.mirrorHandoff || null
   });
 
   return { service, deliveries, stones, raw, get stoneCreates() { return stoneCreates; } };
@@ -192,6 +193,76 @@ test("V7.2 handoff dispatch is idempotent and rejects mutable GitHub artifact re
     /Invalid github_artifact\.commit_sha/
   );
   assert.equal(h.stoneCreates, 1);
+});
+
+test("V7.2 optional GitHub inbox mirror is explicit and remains non-authoritative", async () => {
+  let mirrored = null;
+  const h = makeHarness({
+    async mirrorHandoff(input) {
+      mirrored = input;
+      return {
+        ok: true,
+        schema: "cairnstone-github-inbox-mirror-v1",
+        authority: "ac1_message_stone",
+        ac1_stone_hash: input.sent.stone_hash,
+        artifacts: [{ recipient: input.handoff.to[0], path: "cairnstone-inbox/agent_claude_jared/msg_v72-mirror.json", commit_sha: "e".repeat(40) }],
+        failures: [],
+        isolated: false,
+        ac1_message_preserved: true
+      };
+    }
+  });
+  const sent = await h.service.dispatchHandoff({
+    message_id: "msg:v72-mirror",
+    from: "agent:chatgpt:jared",
+    to: ["agent:claude:jared"],
+    task: "Mirror this bounded handoff asynchronously.",
+    chain: "cairnstone-v6-project-memory",
+    github_inbox: { owner: "nothinginfinity", repo: "cairnstone-v6-console", branch: "main", path_prefix: "cairnstone-inbox" }
+  });
+
+  assert.equal(sent.ok, true);
+  assert.equal(sent.github_inbox_mirror.ok, true);
+  assert.equal(sent.github_inbox_mirror.authority, "ac1_message_stone");
+  assert.equal(sent.github_inbox_mirror.ac1_stone_hash, sent.stone_hash);
+  assert.equal(mirrored.target.repo, "cairnstone-v6-console");
+  assert.equal(mirrored.handoff.policy.external_mirror_authority, false);
+  assert.equal(mirrored.handoff.github_inbox.path_prefix, "cairnstone-inbox");
+
+  const read = await h.service.readMessage({ recipient_id: "agent:claude:jared", message_id: "msg:v72-mirror" });
+  const payload = JSON.parse(read.content);
+  assert.equal(payload.github_inbox.repo, "cairnstone-v6-console");
+  assert.equal(payload.policy.execution_authority, false);
+  assert.equal(payload.policy.mutation_authority, false);
+  assert.equal(payload.policy.accepted_state_authority, false);
+  assert.equal(payload.policy.external_mirror_authority, false);
+});
+
+test("V7.2 GitHub inbox mirror failure is isolated from the canonical AC1 handoff", async () => {
+  const h = makeHarness({
+    async mirrorHandoff() {
+      throw new Error("mirror transport unavailable");
+    }
+  });
+  const sent = await h.service.dispatchHandoff({
+    message_id: "msg:v72-mirror-failure",
+    from: "agent:chatgpt:jared",
+    to: ["agent:claude:jared"],
+    task: "Preserve AC1 even if the external mirror fails.",
+    chain: "cairnstone-v6-project-memory",
+    github_inbox: { owner: "nothinginfinity", repo: "cairnstone-v6-console" }
+  });
+
+  assert.equal(sent.ok, true);
+  assert.equal(sent.github_inbox_mirror.ok, false);
+  assert.equal(sent.github_inbox_mirror.error, "github_inbox_mirror_failed");
+  assert.equal(sent.github_inbox_mirror.isolated, true);
+  assert.equal(sent.github_inbox_mirror.ac1_message_preserved, true);
+  assert.equal(sent.github_inbox_mirror.stone_hash, sent.stone_hash);
+  assert.equal(h.stoneCreates, 1);
+  const inbox = await h.service.getInbox({ recipient_id: "agent:claude:jared" });
+  assert.equal(inbox.total, 1);
+  assert.equal(inbox.messages[0].stone_hash, sent.stone_hash);
 });
 
 test("AC1 retry reuses the original stone and creates no duplicate delivery", async () => {
