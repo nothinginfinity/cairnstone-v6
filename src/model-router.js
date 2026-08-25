@@ -404,17 +404,28 @@ export function validateRequestIrShape(requestIr) {
   return { ok: true };
 }
 
-export function validateRouteEnvelope(route, requestIr, registry = DEFAULT_MODEL_CAPABILITY_REGISTRY) {
-  const irValidation = validateRequestIrShape(requestIr);
-  if (!irValidation.ok) return irValidation;
-  if (!route || typeof route !== "object") return { ok: false, error: "provider_not_supported", detail: "route_not_an_object" };
-  if (Object.prototype.hasOwnProperty.call(route, "credential") || Object.prototype.hasOwnProperty.call(route, "api_key") || Object.prototype.hasOwnProperty.call(route, "token") || Object.prototype.hasOwnProperty.call(route, "secret")) {
+const SUPPORTED_FAILOVER_MODES = Object.freeze(["none", "explicit"]);
+
+function hasForbiddenCredentialField(candidate) {
+  return Object.prototype.hasOwnProperty.call(candidate, "credential") ||
+    Object.prototype.hasOwnProperty.call(candidate, "api_key") ||
+    Object.prototype.hasOwnProperty.call(candidate, "token") ||
+    Object.prototype.hasOwnProperty.call(candidate, "secret");
+}
+
+// Validates one route candidate (primary or a failover chain member) against
+// the SAME request IR capability requirements. This is what guarantees a
+// fallback can never be used to quietly weaken required capabilities (e.g.
+// tool support) below what the primary route needed -- every candidate is
+// checked against the identical requestIr before any invocation is attempted.
+function validateCandidateRoute(candidate, requestIr, registry) {
+  if (!candidate || typeof candidate !== "object") {
+    return { ok: false, error: "provider_not_supported", detail: "route_not_an_object" };
+  }
+  if (hasForbiddenCredentialField(candidate)) {
     return { ok: false, error: "provider_auth_failed", detail: "credential_material_not_accepted_in_router" };
   }
-  if (route.failover && route.failover.mode && route.failover.mode !== "none") {
-    return { ok: false, error: "unsupported_route_policy", detail: "failover_not_implemented_until_v7_1_4" };
-  }
-  const capabilityResult = resolveModelCapability(route, registry);
+  const capabilityResult = resolveModelCapability(candidate, registry);
   if (!capabilityResult.ok) return capabilityResult;
   const capability = capabilityResult.value;
   if (requestIr.tools.length && capability.supports?.tool_calls !== true) {
@@ -432,7 +443,53 @@ export function validateRouteEnvelope(route, requestIr, registry = DEFAULT_MODEL
       supported: capability.max_output_tokens
     };
   }
-  return { ok: true, value: capability };
+  return { ok: true, value: { route: candidate, capability } };
+}
+
+// V7.1.4: route envelope now describes an ordered candidate chain rather than
+// a single destination. Default (`failover` omitted, or `{mode:"none"}`) is
+// exactly the V7.1.1-V7.1.3 behavior: one candidate, no fallback. Explicit
+// opt-in (`failover:{mode:"explicit", chain:[...]}`) adds ordered fallback
+// candidates, each validated against the identical requestIr capability
+// requirements as the primary -- an invalid or under-capable fallback fails
+// the whole request up front, before any model is ever called, rather than
+// being silently skipped or allowed to degrade capability at use time.
+export function validateRouteEnvelope(route, requestIr, registry = DEFAULT_MODEL_CAPABILITY_REGISTRY) {
+  const irValidation = validateRequestIrShape(requestIr);
+  if (!irValidation.ok) return irValidation;
+  if (!route || typeof route !== "object") return { ok: false, error: "provider_not_supported", detail: "route_not_an_object" };
+  if (hasForbiddenCredentialField(route)) {
+    return { ok: false, error: "provider_auth_failed", detail: "credential_material_not_accepted_in_router" };
+  }
+
+  const failoverMode = route.failover && typeof route.failover === "object" && typeof route.failover.mode === "string"
+    ? route.failover.mode
+    : "none";
+  if (!SUPPORTED_FAILOVER_MODES.includes(failoverMode)) {
+    return { ok: false, error: "unsupported_route_policy", detail: "failover_mode_not_supported", mode: failoverMode };
+  }
+
+  const primaryResult = validateCandidateRoute(route, requestIr, registry);
+  if (!primaryResult.ok) return primaryResult;
+
+  const candidates = [primaryResult.value];
+
+  if (failoverMode === "explicit") {
+    const chain = Array.isArray(route.failover.chain) ? route.failover.chain : null;
+    if (!chain || !chain.length) {
+      return { ok: false, error: "unsupported_route_policy", detail: "failover_chain_empty_or_missing" };
+    }
+    if (chain.length > 5) {
+      return { ok: false, error: "unsupported_route_policy", detail: "failover_chain_too_long", max: 5 };
+    }
+    for (const candidateRoute of chain) {
+      const candidateResult = validateCandidateRoute(candidateRoute, requestIr, registry);
+      if (!candidateResult.ok) return candidateResult;
+      candidates.push(candidateResult.value);
+    }
+  }
+
+  return { ok: true, value: { failover_mode: failoverMode, candidates } };
 }
 
 function makeMockAdapter(provider) {
@@ -740,7 +797,7 @@ function makeWorkersAiAdapter() {
 }
 
 // ---------------------------------------------------------------------------
-// V7.1.3: BYOK / Unified Billing third-party adapters
+// V7.1.3: BYOK / Unified Billing third-party adapter (OpenAI reference impl)
 // ---------------------------------------------------------------------------
 
 // Resolves a BYOK credential from a Worker secret binding by (provider, alias).
@@ -1188,33 +1245,66 @@ export async function modelRouteFromBody(body, _env, deps = {}) {
   const route = body.route && typeof body.route === "object" ? body.route : null;
   const routeValidation = validateRouteEnvelope(route, requestIr, registry);
   if (!routeValidation.ok) return { ...routeValidation, package_id: requestIr.package_id, request_ir_id: requestIr.request_ir_id };
-  const capability = routeValidation.value;
-  const adapter = adapters[route.provider];
-  if (!adapter) return { ok: false, error: "provider_not_supported", provider: route.provider, package_id: requestIr.package_id, request_ir_id: requestIr.request_ir_id };
-  const verdict = typeof adapter.can_handle === "function" ? adapter.can_handle(route, requestIr) : { ok: false, error: "provider_not_supported" };
-  if (!verdict || verdict.ok !== true) return { ...(verdict || { ok: false, error: "provider_not_supported" }), package_id: requestIr.package_id, request_ir_id: requestIr.request_ir_id };
 
-  try {
-    const providerRequest = adapter.encode(requestIr, route, capability);
-    const raw = await adapter.invoke(providerRequest, { credentials: null, env: _env, route });
-    const normalized = await adapter.normalize(raw, route, requestIr, capability);
-    const shape = validateModelResultShape(normalized);
-    if (!shape.ok) {
-      return { ok: false, error: "provider_response_invalid", detail: shape.detail, package_id: requestIr.package_id, request_ir_id: requestIr.request_ir_id };
+  const { failover_mode, candidates } = routeValidation.value;
+  const attempts = [];
+  let lastFailure = null;
+
+  for (const { route: candidateRoute, capability } of candidates) {
+    const adapter = adapters[candidateRoute.provider];
+    if (!adapter) {
+      attempts.push({ provider: candidateRoute.provider, model: candidateRoute.model, transport: capability.transport, status: "failed", error: "provider_not_supported", latency_ms: null, mock: false });
+      lastFailure = { ok: false, error: "provider_not_supported", provider: candidateRoute.provider, package_id: requestIr.package_id, request_ir_id: requestIr.request_ir_id };
+      continue;
     }
-    return normalized;
-  } catch (error) {
-    if (typeof adapter.normalize_error === "function") return adapter.normalize_error(error, route, requestIr);
-    return {
-      ok: false,
-      error: "provider_response_invalid",
-      provider: route.provider,
-      model: route.model,
-      package_id: requestIr.package_id,
-      request_ir_id: requestIr.request_ir_id,
-      diagnostic: String(error && error.message ? error.message : error)
-    };
+    const verdict = typeof adapter.can_handle === "function" ? adapter.can_handle(candidateRoute, requestIr) : { ok: false, error: "provider_not_supported" };
+    if (!verdict || verdict.ok !== true) {
+      const failure = verdict || { ok: false, error: "provider_not_supported" };
+      attempts.push({ provider: candidateRoute.provider, model: candidateRoute.model, transport: capability.transport, status: "failed", error: failure.error, latency_ms: null, mock: false });
+      lastFailure = { ...failure, package_id: requestIr.package_id, request_ir_id: requestIr.request_ir_id };
+      continue;
+    }
+
+    const startedAt = Date.now();
+    try {
+      const providerRequest = adapter.encode(requestIr, candidateRoute, capability);
+      const raw = await adapter.invoke(providerRequest, { credentials: null, env: _env, route: candidateRoute });
+      const normalized = await adapter.normalize(raw, candidateRoute, requestIr, capability);
+      const shape = validateModelResultShape(normalized);
+      if (!shape.ok) {
+        attempts.push({ provider: candidateRoute.provider, model: candidateRoute.model, transport: capability.transport, status: "failed", error: "provider_response_invalid", latency_ms: Date.now() - startedAt, mock: false });
+        lastFailure = { ok: false, error: "provider_response_invalid", detail: shape.detail, package_id: requestIr.package_id, request_ir_id: requestIr.request_ir_id };
+        continue;
+      }
+      // Success: merge any earlier failed attempts with this adapter's own
+      // attempt record(s) so observability.attempts reflects the full ordered
+      // history, not just the winning call. package_id/request_ir_id are
+      // untouched -- they were fixed before any candidate was ever tried.
+      const ownAttempts = Array.isArray(normalized.observability?.attempts) ? normalized.observability.attempts : [];
+      normalized.observability = { ...normalized.observability, attempts: [...attempts, ...ownAttempts] };
+      normalized.route = { ...normalized.route, failover_policy: failover_mode };
+      return normalized;
+    } catch (error) {
+      const normalizedError = typeof adapter.normalize_error === "function"
+        ? adapter.normalize_error(error, candidateRoute, requestIr)
+        : {
+            ok: false,
+            error: "provider_response_invalid",
+            provider: candidateRoute.provider,
+            model: candidateRoute.model,
+            package_id: requestIr.package_id,
+            request_ir_id: requestIr.request_ir_id,
+            diagnostic: String(error && error.message ? error.message : error)
+          };
+      attempts.push({ provider: candidateRoute.provider, model: candidateRoute.model, transport: capability.transport, status: "failed", error: normalizedError.error, latency_ms: Date.now() - startedAt, mock: false });
+      lastFailure = normalizedError;
+    }
   }
+
+  // Every candidate failed. Return the last candidate's normalized error,
+  // augmented with the full ordered attempts history so the caller can see
+  // exactly what was tried, in what order, and why each one failed.
+  return { ...lastFailure, attempts, policy: { execution_authority: false, mutation_authority: false } };
 }
 
 export function modelCapabilitiesFromBody(body = {}, _env, deps = {}) {
@@ -1252,7 +1342,7 @@ export const MODEL_CAPABILITIES_TOOL_DEFINITION = {
 
 export const MODEL_ROUTE_TOOL_DEFINITION = {
   name: "cairnstone_model_route",
-  description: "V7.1.3 provider-neutral router. Validates a V7.0 context package, deterministically builds request IR, checks runtime model capabilities, and routes to deterministic mocks, the live Workers AI adapter, or a BYOK third-party adapter. Model tool calls are normalized into unexecuted intents; the router never executes tools or grants execution/mutation authority. Third-party credentials are never accepted as tool input -- they resolve server-side from a Worker secret binding by (provider, credential_alias).",
+  description: "V7.1.4 provider-neutral router. Validates a V7.0 context package, deterministically builds request IR, checks runtime model capabilities, and routes to deterministic mocks, the live Workers AI adapter, or a BYOK third-party adapter, with optional explicit ordered failover. Model tool calls are normalized into unexecuted intents; the router never executes tools or grants execution/mutation authority. Third-party credentials are never accepted as tool input -- they resolve server-side from a Worker secret binding by (provider, credential_alias). Failover is off by default; every fallback candidate is validated against the identical capability requirements as the primary before any call is attempted, so a fallback can never quietly run with weaker tool/capability support.",
   inputSchema: {
     type: "object",
     required: ["context_package", "route"],
@@ -1262,11 +1352,36 @@ export const MODEL_ROUTE_TOOL_DEFINITION = {
         type: "object",
         required: ["provider", "model"],
         properties: {
-          provider: { type: "string", description: "Supported providers in V7.1.3: mock-a, mock-b, workers-ai, openai, deepseek, anthropic, groq, mistral, cerebras, sambanova, grok, kimi." },
+          provider: { type: "string", description: "Supported providers in V7.1.4: mock-a, mock-b, workers-ai, openai, deepseek, anthropic, groq, mistral, cerebras, sambanova, grok, kimi." },
           model: { type: "string", description: "Exact model ID from the runtime capability registry." },
           gateway_id: { type: "string", description: "Workers AI Gateway ID. Defaults to 'default'. Route metadata only; never part of package_id or request_ir_id." },
           credential_mode: { type: "string", enum: ["workers_ai_billing", "unified_billing", "byok"], description: "Credential mode for third-party/BYOK providers. Route metadata only; never part of package_id or request_ir_id." },
-          credential_alias: { type: "string", description: "Alias name identifying which Worker secret binding to resolve server-side for a BYOK provider. Never the secret value itself; the router rejects any route field literally named credential/api_key/token/secret." }
+          credential_alias: { type: "string", description: "Alias name identifying which Worker secret binding to resolve server-side for a BYOK provider. Never the secret value itself; the router rejects any route field literally named credential/api_key/token/secret." },
+          failover: {
+            type: "object",
+            description: "Optional explicit fallback policy. Omit or set mode:'none' for the default (no fallback, single candidate). Never affects package_id or request_ir_id.",
+            properties: {
+              mode: { type: "string", enum: ["none", "explicit"] },
+              chain: {
+                type: "array",
+                description: "Ordered fallback candidates, tried in order only if the primary (and each prior candidate) fails. Each candidate uses the same shape as route minus 'failover'. Max 5. Every candidate is validated against the same capability requirements as the primary before any call is attempted.",
+                maxItems: 5,
+                items: {
+                  type: "object",
+                  required: ["provider", "model"],
+                  properties: {
+                    provider: { type: "string" },
+                    model: { type: "string" },
+                    gateway_id: { type: "string" },
+                    credential_mode: { type: "string", enum: ["workers_ai_billing", "unified_billing", "byok"] },
+                    credential_alias: { type: "string" }
+                  },
+                  additionalProperties: false
+                }
+              }
+            },
+            additionalProperties: false
+          }
         },
         additionalProperties: false
       },
