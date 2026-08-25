@@ -222,7 +222,7 @@ jobs:
           BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
 
           health="$(curl -fsS "$BASE/health")"
-          echo "$health" | jq -e '.ok == true and .version == "0.5.6" and ((.mcp_tools | index("cairnstone_delegate")) != null)' >/dev/null
+          echo "$health" | jq -e '.ok == true and .version == "0.5.7" and ((.mcp_tools | index("cairnstone_delegate")) != null) and ((.mcp_tools | index("cairnstone_dispatch_handoff")) != null)' >/dev/null
 
           before="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
           before_head="$(echo "$before" | jq -r '.canonical_head.hash')"
@@ -251,10 +251,61 @@ jobs:
             (($r.observability.gateway_request_id | type) == "string")
           ' >/dev/null
 
+          PACKAGE_ID="$(echo "$delegated" | jq -r '(.result.content[0].text | fromjson).package_id')"
+          DISPATCH_ID="msg:v72-dispatch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          dispatch_payload="$(jq -nc \
+            --arg id "$DISPATCH_ID" \
+            --arg package "$PACKAGE_ID" \
+            --arg head "$before_head" \
+            --arg commit "$GITHUB_SHA" \
+            '{jsonrpc:"2.0",id:73,method:"tools/call",params:{name:"cairnstone_dispatch_handoff",arguments:{from:"github-actions:v72-acceptance",to:["github-actions:v72-inbox"],message_id:$id,thread_id:"v72-live-acceptance",subject:"V7.2 live handoff acceptance",priority:"normal",task:"Continue bounded V7.2 Console work.",chain:"cairnstone-v6-project-memory",package_id:$package,continuation_refs:[{stone_hash:$head,path:"project-memory/v72-read-only-delegation-live.md"}],github_artifact:{owner:"nothinginfinity",repo:"cairnstone-v6",path:"docs/ROADMAP_V7.md",commit_sha:$commit}}}}')"
+          dispatched="$(curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' -H 'accept: application/json' --data "$dispatch_payload")"
+          echo "$dispatched" | jq -e --arg package "$PACKAGE_ID" --arg commit "$GITHUB_SHA" '
+            (.result.content[0].text | fromjson) as $r |
+            $r.ok == true and
+            $r.idempotent_replay == false and
+            $r.immutable_message_stone == true and
+            $r.chain_head_written == false and
+            $r.handoff.schema == "cairnstone-handoff-v1" and
+            $r.handoff.package_id == $package and
+            $r.handoff.continuation_ref_count == 1 and
+            $r.handoff.github_artifact.commit_sha == $commit and
+            $r.handoff.policy.transport_only == true and
+            $r.handoff.policy.execution_authority == false and
+            $r.handoff.policy.mutation_authority == false and
+            $r.handoff.policy.accepted_state_authority == false
+          ' >/dev/null
+
+          replayed="$(curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' -H 'accept: application/json' --data "$dispatch_payload")"
+          echo "$replayed" | jq -e '(.result.content[0].text | fromjson) | .ok == true and .idempotent_replay == true' >/dev/null
+
+          inbox_payload="$(jq -nc '{jsonrpc:"2.0",id:74,method:"tools/call",params:{name:"cairnstone_get_inbox",arguments:{recipient_id:"github-actions:v72-inbox",limit:50}}}')"
+          inbox="$(curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' -H 'accept: application/json' --data "$inbox_payload")"
+          echo "$inbox" | jq -e --arg id "$DISPATCH_ID" '(.result.content[0].text | fromjson) as $r | any($r.messages[]; .message_id == $id and .intent == "handoff" and .status == "delivered")' >/dev/null
+
+          read_payload="$(jq -nc --arg id "$DISPATCH_ID" '{jsonrpc:"2.0",id:75,method:"tools/call",params:{name:"cairnstone_read_message",arguments:{recipient_id:"github-actions:v72-inbox",message_id:$id}}}')"
+          read_back="$(curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' -H 'accept: application/json' --data "$read_payload")"
+          echo "$read_back" | jq -e --arg package "$PACKAGE_ID" --arg commit "$GITHUB_SHA" '
+            (.result.content[0].text | fromjson) as $r |
+            ($r.content | fromjson) as $p |
+            $r.ok == true and
+            $r.immutable_message_stone == true and
+            $r.mutation_scope == "delivery_state_only" and
+            $p.schema == "cairnstone-handoff-v1" and
+            $p.chain == "cairnstone-v6-project-memory" and
+            $p.package_id == $package and
+            ($p.continuation_refs | length) == 1 and
+            $p.github_artifact.commit_sha == $commit and
+            $p.policy.transport_only == true and
+            $p.policy.execution_authority == false and
+            $p.policy.mutation_authority == false and
+            $p.policy.accepted_state_authority == false
+          ' >/dev/null
+
           after="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
           after_head="$(echo "$after" | jq -r '.canonical_head.hash')"
           after_paths="$(echo "$after" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
           test "$before_head" = "$after_head"
           test "$before_paths" = "$after_paths"
 
-          echo "V7.2 live acceptance passed: real Workers AI delegation returned compact server-carried context evidence and left accepted chain/path state unchanged."
+          echo "V7.2 live acceptance passed: real Workers AI delegation plus immutable AC1 handoff dispatch/replay/read succeeded while accepted chain/path state remained unchanged."
