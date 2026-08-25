@@ -646,6 +646,311 @@ export const TOOL_POLICY_PREVIEW_TOOL_DEFINITION = {
 };
 
 // ---------------------------------------------------------------------------
+// V7.3.1: read-only tool execution loop
+// ---------------------------------------------------------------------------
+//
+// Wires a narrow allowlist of automatic-read broker tools to real execution,
+// entirely outside any provider adapter. Every call re-derives the exact
+// same deterministic policy verdict cairnstone_tool_policy_preview would
+// produce for the identical (context_package, tool_intent) pair; only a
+// verdict of decision:"allow" (risk_class:"read", authorization:"automatic")
+// may execute. Mutation/execution-class tools remain unavailable here --
+// V7.3.2 stops explicitly at the mutation boundary instead of executing.
+//
+// Invariant carried over from V7.3.0: model intent is not execution
+// authority. This loop does not let a model bypass that boundary; it only
+// lets an already-eligible automatic read actually run, under budgets, with
+// an immutable receipt.
+
+export const TOOL_EXECUTION_RECEIPT_SCHEMA = "cairnstone-tool-execution-receipt-v1";
+const DEFAULT_MAX_OUTPUT_BYTES = 20000;
+const MIN_MAX_OUTPUT_BYTES = 256;
+const MAX_MAX_OUTPUT_BYTES = 200000;
+const DEFAULT_MAX_TOOL_CALLS_PER_TURN = 8;
+const MAX_MAX_TOOL_CALLS_PER_TURN = 25;
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function clampNumber(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+function deniedExecutionResult(base, reason, decision, authorizationRequired) {
+  return {
+    ok: true,
+    ...base,
+    executed: false,
+    decision,
+    execution_denied_reason: reason,
+    authorization_required: authorizationRequired,
+    execution: {
+      preview_only: false,
+      can_execute_now: false,
+      executed: false,
+      tools_executed: 0,
+      execution_authority: false,
+      mutation_authority: false
+    },
+    receipt: null
+  };
+}
+
+// Shares the exact gate logic toolPolicyPreviewFromBody uses, so the
+// execution loop's decision can never be looser than the standalone preview.
+function evaluateToolIntentDecision(pkg, intent, registry) {
+  const toolId = typeof intent.tool_id === "string" ? intent.tool_id.trim() : "";
+  const args = intent.arguments === undefined ? {} : intent.arguments;
+  const entry = registry.find(item => item.tool_id === toolId) || null;
+  const capabilityPresent = Array.isArray(pkg.capabilities?.available_tools) && pkg.capabilities.available_tools.includes(toolId);
+  const argsValidation = entry ? validateBrokerArguments(entry.input_schema, args) : { ok: false, error: "tool_not_registered" };
+  const verdict = brokerDecisionFor(entry, capabilityPresent, argsValidation);
+  return { toolId, args, entry, capabilityPresent, argsValidation, verdict };
+}
+
+export async function executeToolIntentFromBody(body, env, deps = {}) {
+  if (!body || typeof body !== "object") return { ok: false, error: "invalid_tool_execution_request", detail: "body_not_an_object" };
+
+  const pkg = body.context_package;
+  const packageValidation = await validateContextPackage(pkg);
+  if (!packageValidation.ok) return { ...packageValidation, stage: "context_package" };
+
+  const intent = body.tool_intent;
+  if (!intent || typeof intent !== "object") return { ok: false, error: "invalid_tool_intent", detail: "not_an_object" };
+  if (intent.executed === true) return { ok: false, error: "invalid_tool_intent", detail: "tool_intent_already_executed" };
+  if (typeof intent.tool_id !== "string" || !intent.tool_id.trim()) return { ok: false, error: "invalid_tool_intent", detail: "missing_tool_id" };
+  if (intent.arguments !== undefined && !isPlainObject(intent.arguments)) {
+    return { ok: false, error: "invalid_tool_intent", detail: "arguments_not_object" };
+  }
+
+  const registry = Array.isArray(deps.registry) ? deps.registry : DEFAULT_TOOL_BROKER_REGISTRY;
+  if (!registry.every(validateBrokerRegistryEntry)) return { ok: false, error: "tool_registry_invalid" };
+
+  // V7.3.1 does not add new registry entries -- it only executes what the
+  // V7.3.0 registry already marked risk_class:"read" + authorization:
+  // "automatic". A caller-supplied allowlist may narrow further but never
+  // widen past that set.
+  const readOnlyAutomaticIds = new Set(
+    registry.filter(entry => entry.risk_class === "read" && entry.authorization === "automatic").map(entry => entry.tool_id)
+  );
+  const callerAllowlist = Array.isArray(body.execution_allowlist)
+    ? new Set(body.execution_allowlist.filter(id => typeof id === "string"))
+    : null;
+
+  const budgetsInput = isPlainObject(body.budgets) ? body.budgets : {};
+  const maxOutputBytes = clampNumber(budgetsInput.max_output_bytes, MIN_MAX_OUTPUT_BYTES, MAX_MAX_OUTPUT_BYTES, DEFAULT_MAX_OUTPUT_BYTES);
+  const maxToolCallsPerTurn = clampNumber(budgetsInput.max_tool_calls_per_turn, 1, MAX_MAX_TOOL_CALLS_PER_TURN, DEFAULT_MAX_TOOL_CALLS_PER_TURN);
+  const turnCallsSoFar = clampNumber(budgetsInput.turn_tool_calls_so_far, 0, 1_000_000, 0);
+
+  const { toolId, args, entry, capabilityPresent, argsValidation, verdict } = evaluateToolIntentDecision(pkg, intent, registry);
+
+  const decisionPayload = {
+    package_id: pkg.package_id,
+    intent_id: typeof intent.intent_id === "string" ? intent.intent_id : null,
+    tool_id: toolId,
+    arguments: args,
+    registry: entry ? { connector: entry.connector, handler: entry.handler, risk_class: entry.risk_class, authorization: entry.authorization, available: entry.available === true } : null,
+    capability_present: capabilityPresent,
+    arguments_validation: argsValidation,
+    decision: verdict
+  };
+  const decisionId = "sha256:" + await sha256Text(stableJson(decisionPayload));
+
+  const base = {
+    schema: TOOL_EXECUTION_RECEIPT_SCHEMA,
+    decision_id: decisionId,
+    package_id: pkg.package_id,
+    request_ir_id: typeof body.request_ir_id === "string" ? body.request_ir_id : null,
+    model: isPlainObject(body.model) ? { provider: body.model.provider ?? null, model: body.model.model ?? null } : null,
+    intent_id: typeof intent.intent_id === "string" ? intent.intent_id : null,
+    tool_id: toolId,
+    turn_id: typeof body.turn_id === "string" ? body.turn_id : null,
+    registry: entry ? { connector: entry.connector, handler: entry.handler, risk_class: entry.risk_class, authorization: entry.authorization } : null
+  };
+
+  // Fail closed: unregistered / unavailable / capability mismatch / bad
+  // arguments / not read+automatic (mutation/execution/prohibited all land
+  // here as require_authorization or deny -- neither ever executes).
+  if (verdict.decision !== "allow") {
+    return deniedExecutionResult(base, verdict.reason, verdict.decision, verdict.authorization_required);
+  }
+
+  // Belt-and-suspenders: even though brokerDecisionFor already restricts
+  // "allow" to risk_class:"read" + authorization:"automatic", explicitly
+  // re-check against the read-only-automatic set (and any caller-narrowed
+  // allowlist) before ever invoking a real handler.
+  if (!readOnlyAutomaticIds.has(toolId) || (callerAllowlist && !callerAllowlist.has(toolId))) {
+    return deniedExecutionResult(base, "not_in_read_only_execution_allowlist", "deny", false);
+  }
+
+  if (turnCallsSoFar >= maxToolCallsPerTurn) {
+    return deniedExecutionResult(base, "turn_tool_call_budget_exceeded", "deny", false);
+  }
+
+  if (typeof deps.invokeTool !== "function") {
+    return { ok: false, error: "tool_invocation_unavailable", detail: "missing_invoke_tool_dependency" };
+  }
+
+  let toolResult;
+  try {
+    toolResult = await deps.invokeTool(entry.handler, args, env);
+  } catch (error) {
+    return deniedExecutionResult(base, "tool_invocation_failed", "error", false);
+  }
+
+  const serialized = stableJson(toolResult === undefined ? null : toolResult);
+  const outputTruncated = serialized.length > maxOutputBytes;
+  const resultHash = "sha256:" + await sha256Text(serialized);
+  const executedAt = new Date().toISOString();
+  const executionId = "sha256:" + await sha256Text(stableJson({ decisionId, resultHash, executedAt, toolId, packageId: pkg.package_id }));
+
+  let receiptStoneHash = null;
+  if (typeof deps.createStone === "function") {
+    const receiptContent = stableJson({
+      schema: TOOL_EXECUTION_RECEIPT_SCHEMA,
+      execution_id: executionId,
+      decision_id: decisionId,
+      package_id: pkg.package_id,
+      request_ir_id: base.request_ir_id,
+      tool_id: toolId,
+      arguments: args,
+      result_hash: resultHash,
+      output_bytes: serialized.length,
+      output_truncated: outputTruncated,
+      executed_at: executedAt,
+      registry: base.registry
+    });
+    try {
+      const receiptCreated = await deps.createStone({
+        title: `Tool execution receipt: ${toolId}`,
+        author: "cairnstone-v7-tool-broker",
+        content: receiptContent,
+        path: `tool-execution-receipts/${executionId.replace("sha256:", "")}.json`,
+        chain: "cairnstone-v7-tool-execution-receipts",
+        metadata: {
+          type: "tool-execution-receipt",
+          schema: TOOL_EXECUTION_RECEIPT_SCHEMA,
+          execution_id: executionId,
+          decision_id: decisionId,
+          package_id: pkg.package_id,
+          tool_id: toolId
+        },
+        set_as_head: false
+      });
+      if (receiptCreated && receiptCreated.ok) receiptStoneHash = receiptCreated.stone_hash;
+    } catch (_error) {
+      // Receipt persistence failure never surfaces the raw tool result
+      // without a receipt id -- report it explicitly instead of silently
+      // dropping provenance.
+      return {
+        ok: true,
+        ...base,
+        executed: true,
+        decision: "allow",
+        authorization_required: false,
+        execution_id: executionId,
+        result_hash: resultHash,
+        output_truncated: outputTruncated,
+        result: outputTruncated ? null : toolResult,
+        result_preview: outputTruncated ? serialized.slice(0, 2000) : null,
+        receipt: null,
+        receipt_error: "receipt_persist_failed",
+        execution: {
+          preview_only: false,
+          can_execute_now: true,
+          executed: true,
+          tools_executed: 1,
+          execution_authority: false,
+          mutation_authority: false
+        },
+        budgets: { max_output_bytes: maxOutputBytes, max_tool_calls_per_turn: maxToolCallsPerTurn, turn_tool_calls_so_far: turnCallsSoFar + 1 }
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    ...base,
+    executed: true,
+    decision: "allow",
+    authorization_required: false,
+    execution_id: executionId,
+    result_hash: resultHash,
+    output_truncated: outputTruncated,
+    result: outputTruncated ? null : toolResult,
+    result_preview: outputTruncated ? serialized.slice(0, 2000) : null,
+    receipt: receiptStoneHash ? { stone_hash: receiptStoneHash, chain: "cairnstone-v7-tool-execution-receipts" } : null,
+    execution: {
+      preview_only: false,
+      can_execute_now: true,
+      executed: true,
+      tools_executed: 1,
+      execution_authority: false,
+      mutation_authority: false
+    },
+    policy: {
+      model_intent_is_execution_authority: false,
+      execution_authority: false,
+      mutation_authority: false,
+      provider_credentials_exposed: false
+    },
+    budgets: {
+      max_output_bytes: maxOutputBytes,
+      max_tool_calls_per_turn: maxToolCallsPerTurn,
+      turn_tool_calls_so_far: turnCallsSoFar + 1
+    }
+  };
+}
+
+export const TOOL_EXECUTE_TOOL_DEFINITION = {
+  name: "cairnstone_tool_execute",
+  description: "V7.3.1: execute one already-eligible automatic-read broker tool intent outside any provider adapter, and issue an immutable execution receipt. Re-derives the identical deterministic policy verdict cairnstone_tool_policy_preview would produce; only decision:\"allow\" (risk_class:\"read\", authorization:\"automatic\") ever executes -- mutation/execution/prohibited intents are denied here, never executed, matching V7.3.0's hard boundary. Preserves package_id, request_ir_id (if supplied), tool intent identity, and policy decision identity through to the execution receipt. Enforces per-call output-size and per-turn tool-call budgets and fails closed on unregistered/unavailable tools or capability mismatch.",
+  inputSchema: {
+    type: "object",
+    required: ["context_package", "tool_intent"],
+    properties: {
+      context_package: { type: "object", description: "Completed cairnstone-agent-context-v1 package." },
+      tool_intent: {
+        type: "object",
+        required: ["tool_id"],
+        properties: {
+          intent_id: { type: "string" },
+          tool_id: { type: "string" },
+          arguments: { type: "object" },
+          executed: { type: "boolean" }
+        },
+        additionalProperties: true
+      },
+      request_ir_id: { type: "string", description: "Optional provider-neutral request IR identity to carry through to the receipt." },
+      model: {
+        type: "object",
+        properties: { provider: { type: "string" }, model: { type: "string" } },
+        additionalProperties: false
+      },
+      turn_id: { type: "string" },
+      execution_allowlist: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional caller-supplied narrowing of eligible tool_ids for this call; can only narrow, never widen, the registry's read+automatic set."
+      },
+      budgets: {
+        type: "object",
+        properties: {
+          max_output_bytes: { type: "number", minimum: 256, maximum: 200000 },
+          max_tool_calls_per_turn: { type: "number", minimum: 1, maximum: 25 },
+          turn_tool_calls_so_far: { type: "number", minimum: 0 }
+        },
+        additionalProperties: false
+      }
+    },
+    additionalProperties: false
+  }
+};
+
+// ---------------------------------------------------------------------------
 // V7.1.1: router core + capability registry + deterministic mock adapters
 // ---------------------------------------------------------------------------
 
