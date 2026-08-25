@@ -1340,6 +1340,291 @@ export const MODEL_CAPABILITIES_TOOL_DEFINITION = {
   }
 };
 
+// V7.2 -- bounded read-only server-side delegation.
+// Composes V7.0 bootstrap + V7.1 routing inside the Worker. The full context
+// package stays server-side; no tools are exposed or executed. Multi-turn tool
+// execution remains a V7.3 concern.
+export const DELEGATION_RESULT_SCHEMA = "cairnstone-delegation-result-v1";
+const DELEGATION_MAX_TASK_LENGTH = 4000;
+const DELEGATION_MAX_OUTPUT_TOKENS = 2048;
+const DELEGATION_DEFAULT_OUTPUT_TOKENS = 800;
+const DELEGATION_MAX_EVIDENCE_REFS = 20;
+const DELEGATION_MAX_PATH_HEADS = 100;
+
+export const DELEGATE_TOOL_DEFINITION = {
+  name: "cairnstone_delegate",
+  description: "V7.2: bounded read-only server-side delegation. Compiles V7.0 accepted state and routes through V7.1 entirely inside CairnStone, returning compact text, identities, evidence refs, usage, and diagnostics instead of the full context package. Exposes zero tools and grants zero execution/mutation authority; tool execution remains deferred to V7.3.",
+  inputSchema: {
+    type: "object",
+    required: ["actor_id", "task", "chain", "route"],
+    properties: {
+      actor_id: { type: "string", description: "namespace:identifier for the delegated actor." },
+      task: { type: "string", maxLength: DELEGATION_MAX_TASK_LENGTH, description: "Read-only reasoning task. Descriptive input grants no execution authority." },
+      chain: { type: "string", maxLength: 300, description: "Accepted-state CairnStone chain compiled server-side." },
+      route: {
+        type: "object",
+        required: ["provider", "model"],
+        properties: {
+          provider: { type: "string" }, model: { type: "string" }, gateway_id: { type: "string" },
+          credential_mode: { type: "string", enum: ["workers_ai_billing", "unified_billing", "byok"] },
+          credential_alias: { type: "string" },
+          failover: {
+            type: "object",
+            properties: {
+              mode: { type: "string", enum: ["none", "explicit"] },
+              chain: {
+                type: "array", maxItems: 5,
+                items: {
+                  type: "object", required: ["provider", "model"],
+                  properties: {
+                    provider: { type: "string" }, model: { type: "string" }, gateway_id: { type: "string" },
+                    credential_mode: { type: "string", enum: ["workers_ai_billing", "unified_billing", "byok"] },
+                    credential_alias: { type: "string" }
+                  },
+                  additionalProperties: false
+                }
+              }
+            },
+            additionalProperties: false
+          }
+        },
+        additionalProperties: false
+      },
+      generation: {
+        type: "object",
+        properties: {
+          max_output_tokens: { type: "number", minimum: 1, maximum: DELEGATION_MAX_OUTPUT_TOKENS },
+          temperature: { type: "number", minimum: 0, maximum: 2 }
+        },
+        additionalProperties: false
+      },
+      limits: {
+        type: "object",
+        description: "Optional V7.0 context-package limits; the context compiler still enforces its own hard ceilings.",
+        properties: {
+          max_skills: { type: "number", minimum: 1, maximum: 10 },
+          max_memory_hits: { type: "number", minimum: 0, maximum: 15 },
+          max_memory_bytes: { type: "number", minimum: 0, maximum: 60000 },
+          max_inbox_items: { type: "number", minimum: 0, maximum: 50 },
+          max_package_bytes: { type: "number", minimum: 1000, maximum: 180000 }
+        },
+        additionalProperties: false
+      },
+      include_inbox: { type: "boolean", description: "Include the non-mutating AC1 inbox snapshot in the server-side V7.0 package. Defaults to true." }
+    },
+    additionalProperties: false
+  }
+};
+
+export async function delegateFromBody(body, env, deps = {}) {
+  try {
+    if (!body || typeof body !== "object") return delegationFailure("invalid_delegation_request", "body_not_an_object");
+    if (typeof deps.agentBootstrapFromBody !== "function" || typeof deps.modelRouteFromBody !== "function") {
+      return delegationFailure("delegation_dependencies_missing");
+    }
+    const actorId = delegationRequiredText(body.actor_id, "actor_id", 240);
+    const task = delegationRequiredText(body.task, "task", DELEGATION_MAX_TASK_LENGTH);
+    const chain = delegationRequiredText(body.chain, "chain", 300);
+    const route = body.route && typeof body.route === "object" ? body.route : null;
+    if (!route) return delegationFailure("invalid_delegation_request", "route_not_an_object");
+    const generation = normalizeDelegationGeneration(body.generation);
+
+    const bootstrap = await deps.agentBootstrapFromBody({
+      actor_id: actorId,
+      task,
+      chain,
+      capabilities: { tools: [], supports_tool_calls: false },
+      limits: body.limits,
+      include_inbox: body.include_inbox !== false
+    }, env);
+    if (!bootstrap || bootstrap.ok !== true) {
+      return {
+        ok: false,
+        error: "delegation_bootstrap_failed",
+        detail: bootstrap && bootstrap.error ? bootstrap.error : "unknown",
+        bootstrap_error: compactDelegationFailure(bootstrap),
+        policy: delegationReadOnlyPolicy()
+      };
+    }
+
+    const routed = await deps.modelRouteFromBody({
+      context_package: bootstrap,
+      route,
+      request: { tools: [], generation }
+    }, env);
+    if (!routed || routed.ok !== true) {
+      return {
+        ok: false,
+        schema: DELEGATION_RESULT_SCHEMA,
+        error: routed && routed.error ? routed.error : "delegation_route_failed",
+        detail: routed && routed.detail ? routed.detail : undefined,
+        diagnostic: routed && routed.diagnostic ? routed.diagnostic : undefined,
+        actor_id: actorId,
+        chain,
+        package_id: bootstrap.package_id,
+        request_ir_id: routed && routed.request_ir_id ? routed.request_ir_id : null,
+        route: compactDelegationRoute(routed && routed.route ? routed.route : route),
+        observability: compactDelegationObservability(routed),
+        policy: delegationReadOnlyPolicy(),
+        evidence: compactDelegationEvidence(bootstrap),
+        diagnostics: compactDelegationDiagnostics(bootstrap, routed)
+      };
+    }
+
+    const toolIntents = Array.isArray(routed.output?.tool_intents) ? routed.output.tool_intents : [];
+    if (toolIntents.length) {
+      return {
+        ok: false,
+        schema: DELEGATION_RESULT_SCHEMA,
+        error: "delegation_tool_intent_forbidden",
+        detail: "V7.2 read-only delegation exposes no tools; any returned tool intent fails closed.",
+        actor_id: actorId,
+        chain,
+        package_id: bootstrap.package_id,
+        request_ir_id: routed.request_ir_id || null,
+        route: compactDelegationRoute(routed.route),
+        observability: compactDelegationObservability(routed),
+        policy: delegationReadOnlyPolicy(),
+        evidence: compactDelegationEvidence(bootstrap),
+        diagnostics: { ...compactDelegationDiagnostics(bootstrap, routed), tool_intents_returned: toolIntents.length }
+      };
+    }
+
+    return {
+      ok: true,
+      schema: DELEGATION_RESULT_SCHEMA,
+      actor_id: actorId,
+      chain,
+      package_id: bootstrap.package_id,
+      request_ir_id: routed.request_ir_id,
+      output: { text: typeof routed.output?.text === "string" ? routed.output.text : "", finish_reason: routed.output?.finish_reason || null },
+      route: compactDelegationRoute(routed.route),
+      usage: compactDelegationUsage(routed.usage),
+      observability: compactDelegationObservability(routed),
+      evidence: compactDelegationEvidence(bootstrap),
+      policy: delegationReadOnlyPolicy(),
+      diagnostics: compactDelegationDiagnostics(bootstrap, routed)
+    };
+  } catch (error) {
+    return delegationFailure("invalid_delegation_request", String(error && error.message ? error.message : error));
+  }
+}
+
+function normalizeDelegationGeneration(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const requested = Number(source.max_output_tokens);
+  const maxOutputTokens = Number.isFinite(requested)
+    ? Math.max(1, Math.min(DELEGATION_MAX_OUTPUT_TOKENS, Math.floor(requested)))
+    : DELEGATION_DEFAULT_OUTPUT_TOKENS;
+  const requestedTemperature = Number(source.temperature);
+  const temperature = Number.isFinite(requestedTemperature) ? Math.max(0, Math.min(2, requestedTemperature)) : 0.2;
+  return { max_output_tokens: maxOutputTokens, temperature };
+}
+
+function compactDelegationEvidence(pkg) {
+  const allPathHeads = Array.isArray(pkg.authority?.path_heads) ? pkg.authority.path_heads : [];
+  const pathHeads = allPathHeads.slice(0, DELEGATION_MAX_PATH_HEADS);
+  const allMemory = Array.isArray(pkg.memory?.items) ? pkg.memory.items : [];
+  const memoryItems = allMemory.slice(0, DELEGATION_MAX_EVIDENCE_REFS);
+  const skillItems = Array.isArray(pkg.skills?.accepted_bundle?.skills) ? pkg.skills.accepted_bundle.skills : [];
+  return {
+    chain_head: pkg.authority?.chain_head || null,
+    path_heads: pathHeads.map(item => ({ path: item.path, stone_hash: item.stone_hash, repo: item.repo || null, commit_sha: item.commit_sha || null })),
+    path_heads_truncated: allPathHeads.length > pathHeads.length,
+    skill_manifest_head: pkg.skills?.manifest_head || null,
+    selected_skills: skillItems.map(skill => ({ skill_id: skill.skill_id, skill_version: skill.skill_version, stone_hash: skill.stone_hash, commit_sha: skill.commit_sha })),
+    memory_refs: memoryItems.map(item => ({
+      authority_class: item.authority_class, stone_hash: item.stone_hash, path: item.path, ref_id: item.ref_id,
+      line_start: item.line_start, line_end: item.line_end, freshness: item.freshness
+    })),
+    memory_refs_truncated: allMemory.length > memoryItems.length || pkg.memory?.truncated === true
+  };
+}
+
+function compactDelegationRoute(route) {
+  if (!route || typeof route !== "object") return null;
+  return {
+    provider: route.provider || null, model: route.model || null, transport: route.transport || null,
+    credential_mode: route.credential_mode || null,
+    failover_policy: route.failover_policy || (route.failover?.mode || "none")
+  };
+}
+
+function compactDelegationUsage(usage) {
+  return {
+    input_tokens: delegationNumberOrNull(usage && usage.input_tokens),
+    output_tokens: delegationNumberOrNull(usage && usage.output_tokens),
+    cost: usage && Object.prototype.hasOwnProperty.call(usage, "cost") ? usage.cost : null
+  };
+}
+
+function compactDelegationObservability(result) {
+  const source = result && result.observability && typeof result.observability === "object" ? result.observability : {};
+  const attempts = Array.isArray(source.attempts) ? source.attempts : Array.isArray(result && result.attempts) ? result.attempts : [];
+  return {
+    gateway_id: source.gateway_id || null,
+    gateway_request_id: source.gateway_request_id || null,
+    attempts: attempts.map(item => ({
+      provider: item.provider || null, model: item.model || null, transport: item.transport || null,
+      status: item.status || null, error: item.error || null,
+      latency_ms: delegationNumberOrNull(item.latency_ms), mock: item.mock === true
+    }))
+  };
+}
+
+function compactDelegationDiagnostics(pkg, result) {
+  return {
+    context_package_returned: false,
+    server_carried_context_package: true,
+    package_bytes: delegationNumberOrNull(pkg.limits?.package_bytes),
+    package_truncated: pkg.limits?.truncated === true,
+    memory_truncated: pkg.memory?.truncated === true,
+    coordination_items: Array.isArray(pkg.coordination?.items) ? pkg.coordination.items.length : 0,
+    external_model_calls: delegationModelCallCount(result),
+    tools_executed: 0
+  };
+}
+
+function delegationModelCallCount(result) {
+  const candidates = [
+    result && result.v7_1_4 && result.v7_1_4.external_model_calls,
+    result && result.v7_1_3 && result.v7_1_3.external_model_calls,
+    result && result.v7_1_2 && result.v7_1_2.external_model_calls,
+    result && result.v7_1_1 && result.v7_1_1.external_model_calls
+  ];
+  for (const value of candidates) if (Number.isFinite(Number(value))) return Number(value);
+  const attempts = result && result.observability && Array.isArray(result.observability.attempts) ? result.observability.attempts : [];
+  return attempts.filter(item => item && item.mock !== true).length;
+}
+
+function delegationReadOnlyPolicy() {
+  return {
+    delegation_mode: "read_only", tools_exposed_to_model: 0, tools_executed: 0,
+    execution_authority: false, mutation_authority: false, accepted_state_mutation: false
+  };
+}
+
+function compactDelegationFailure(value) {
+  if (!value || typeof value !== "object") return null;
+  return { error: value.error || null, detail: value.detail || null };
+}
+
+function delegationFailure(error, detail) {
+  return { ok: false, error, ...(detail ? { detail } : {}), policy: delegationReadOnlyPolicy() };
+}
+
+function delegationRequiredText(value, name, maxLength) {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`invalid_${name}`);
+  const text = value.trim();
+  if (text.length > maxLength) throw new Error(`invalid_${name}`);
+  return text;
+}
+
+function delegationNumberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 export const MODEL_ROUTE_TOOL_DEFINITION = {
   name: "cairnstone_model_route",
   description: "V7.1.4 provider-neutral router. Validates a V7.0 context package, deterministically builds request IR, checks runtime model capabilities, and routes to deterministic mocks, the live Workers AI adapter, or a BYOK third-party adapter, with optional explicit ordered failover. Model tool calls are normalized into unexecuted intents; the router never executes tools or grants execution/mutation authority. Third-party credentials are never accepted as tool input -- they resolve server-side from a Worker secret binding by (provider, credential_alias). Failover is off by default; every fallback candidate is validated against the identical capability requirements as the primary before any call is attempted, so a fallback can never quietly run with weaker tool/capability support.",
