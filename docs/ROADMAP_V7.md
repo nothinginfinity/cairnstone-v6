@@ -1,6 +1,6 @@
 # CairnStone V7 Roadmap
 
-Status: **V7.1 complete; V7.2 IN PROGRESS on runtime 0.5.7 — bounded read-only `cairnstone_delegate` and native AC1 `cairnstone_dispatch_handoff` are implemented and live-accepted; Console + external GitHub Inbox mirror remain**
+Status: **V7.1 complete; V7.2 IN PROGRESS — runtime 0.5.7 delegation + native AC1 dispatch + the initial Console client are live-accepted; optional external GitHub Inbox mirror + final V7.2 closure remain**
 Predecessor baseline: **V6.10 frozen control plane**
 
 ## V7 thesis
@@ -196,7 +196,7 @@ Key proofs include:
 
 ## V7.2 — CairnStone Console + Inbox Dispatch
 
-Status: **IN PROGRESS.** Runtime `0.5.7` exposes two live-accepted V7.2 primitives: `cairnstone_delegate` (one server-side V7.0 bootstrap + one V7.1 model route, zero tools exposed/executed, zero mutation/execution authority) and `cairnstone_dispatch_handoff` (compact provenance-bearing handoff over immutable AC1 correspondence with replay idempotency and zero execution/mutation/accepted-state authority). The preferred `cairnstone-v6-console` client repository has not yet been created; Console + optional external GitHub Inbox transport/mirror remain the next bounded surface.
+Status: **IN PROGRESS.** Runtime `0.5.7` exposes two live-accepted V7.2 primitives: `cairnstone_delegate` (one server-side V7.0 bootstrap + one V7.1 model route, zero tools exposed/executed, zero mutation/execution authority) and `cairnstone_dispatch_handoff` (compact provenance-bearing handoff over immutable AC1 correspondence with replay idempotency and zero execution/mutation/accepted-state authority). The initial `nothinginfinity/cairnstone-v6-console` client is now live-accepted at immutable commit `f35cd0a1430062749947ffdd9dc55fbfdce88e09` and published at `https://nothinginfinity.github.io/cairnstone-v6-console/`, with delegated chat/model selection, evidence inspection, native AC1 inbox/read, and structured handoff composition. Mobile acceptance `vb_9651fdd7` returned HTTP 200 at 393×852 with no horizontal overflow and zero console/page/network failures. The optional external GitHub Inbox transport/mirror and final V7.2 closure matrix remain before V7.3.
 
 ### Goal
 
