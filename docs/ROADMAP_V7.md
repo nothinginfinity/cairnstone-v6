@@ -1,6 +1,6 @@
 # CairnStone V7 Roadmap
 
-Status: **V7.1 complete; V7.2 NEARLY COMPLETE — runtime 0.5.8 delegation, native AC1 dispatch, its optional GitHub Inbox mirror, and the Console client are all live-accepted; only final V7.2 closure bookkeeping remains**
+Status: **V7.2 COMPLETE — runtime 0.5.8 delegation, native AC1 dispatch, optional GitHub Inbox mirror, and the Console Operator UX are live-accepted; V7.3 Permissioned Agent Loop / MCP Tool Broker is the active next phase**
 Predecessor baseline: **V6.10 frozen control plane**
 
 ## V7 thesis
@@ -138,7 +138,7 @@ All twelve acceptance items in the V7.1 contract are closed. Summary (full detai
 | R11 | Advisory skill ambiguity | **Live**: real `cairnstone_skill_agent` call on a genuinely ambiguous task, selection confirmed within deterministic candidates, `advisory_resolution` changes `request_ir_id` only, never `package_id` |
 | R12 | Direct MCP acceptance | All evidence gathered via direct JSON-RPC against the production `/mcp` endpoint, not unit tests alone |
 
-**V7.2 nearly complete:** V7.1 is complete and V7.2 engineering is nearly done. Runtime `0.5.8` has three live-accepted primitives: bounded read-only `cairnstone_delegate`, structured immutable AC1 `cairnstone_dispatch_handoff`, and its optional GitHub Inbox mirror transport. The Console client is live-accepted end-to-end, including the mirror UI. Only final V7.2 closure bookkeeping remains before V7.3.
+**V7.2 complete:** V7.1 remains complete and V7.2 is now canonically closed. Runtime `0.5.8` has three live-accepted primitives: bounded read-only `cairnstone_delegate`, structured immutable AC1 `cairnstone_dispatch_handoff`, and its optional GitHub Inbox mirror transport. The Console client is live-accepted end-to-end and was advanced through the final Operator UX pass at immutable commit `4df875600bfeccf5fd45ee8fe4bf7dcbcec7c700`, with Recent Activity and Stones tabs live. Console chain HEAD `eb4ea74cb9ba453cb112d421d89a41e2f9d21b0addf059f4f3f2ba2880ac3f95`, project-memory HEAD `69d8ee165ac1ab2f3f79b4602134fe358cd36778f3b90da93d6d7852c680534d`, and the closing AC1 handoff together lift the V7.3 gate.
 
 ### Transport baseline
 
@@ -196,7 +196,7 @@ Key proofs include:
 
 ## V7.2 — CairnStone Console + Inbox Dispatch
 
-Status: **NEARLY COMPLETE.** Runtime `0.5.8` exposes three live-accepted V7.2 primitives: `cairnstone_delegate`, `cairnstone_dispatch_handoff`, and its optional GitHub Inbox mirror transport (deterministic per-recipient/message artifacts, isolated failure handling, idempotent replay). Live acceptance run `32870621139` at commit `a567a553a66fee61ad85f20f2e7c7b2970c0aed9` additionally proved real Workers AI -> DeepSeek provider switching under the same V7.0 package/request identities, intentional provider-credential failure isolation, successful mirroring, mirror replay, and deliberate mirror-target failure isolation, all with canonical chain/path-head state unchanged. The `nothinginfinity/cairnstone-v6-console` client is live-accepted at immutable commit `0a1f1d958c175caa1f770dfb8b12ea3e84c1eb53` and published at `https://nothinginfinity.github.io/cairnstone-v6-console/`, with delegated chat/model selection, evidence inspection, native AC1 inbox/read, structured handoff composition, and the GitHub Inbox mirror fields wired into handoff compose. Mobile acceptance `vb_9651fdd7` returned HTTP 200 at 393×852 with no horizontal overflow and zero console/page/network failures. Only the final V7.2 closure matrix (this document, project-memory START HERE, and a closing AC1 handoff) remains before V7.3.
+Status: **COMPLETE.** Runtime `0.5.8` exposes three live-accepted V7.2 primitives: `cairnstone_delegate`, `cairnstone_dispatch_handoff`, and its optional GitHub Inbox mirror transport (deterministic per-recipient/message artifacts, isolated failure handling, idempotent replay). Live acceptance run `32870621139` at commit `a567a553a66fee61ad85f20f2e7c7b2970c0aed9` additionally proved real Workers AI -> DeepSeek provider switching under the same V7.0 package/request identities, intentional provider-credential failure isolation, successful mirroring, mirror replay, and deliberate mirror-target failure isolation, all with canonical chain/path-head state unchanged. The `nothinginfinity/cairnstone-v6-console` client was initially live-accepted at immutable commit `0a1f1d958c175caa1f770dfb8b12ea3e84c1eb53`, then advanced through the final Operator UX pass at `4df875600bfeccf5fd45ee8fe4bf7dcbcec7c700`, adding Recent Activity and Stones while preserving the same read-only authority boundary. It remains published at `https://nothinginfinity.github.io/cairnstone-v6-console/`; the final Console chain HEAD is `eb4ea74cb9ba453cb112d421d89a41e2f9d21b0addf059f4f3f2ba2880ac3f95` and the closing project-memory HEAD is `69d8ee165ac1ab2f3f79b4602134fe358cd36778f3b90da93d6d7852c680534d`. V7.2 is canonically closed and V7.3 may proceed.
 
 ### Goal
 
@@ -394,7 +394,7 @@ V7.0 implementation + live acceptance
         ↓
 V7.1 Provider-Neutral Router (COMPLETE -- V7.1.0 through V7.1.5, R1-R12 closed)
         ↓
-V7.2 Console + Inbox Dispatch + read-only server-side delegation (NEARLY COMPLETE — delegation, native AC1 handoff, GitHub mirror, and Console all live; final closure bookkeeping only)
+V7.2 Console + Inbox Dispatch + read-only server-side delegation (COMPLETE — runtime 0.5.8, native AC1 handoff, GitHub mirror, and final Console Operator UX live-accepted)
         ↓
 V7.3 Permissioned Agent Loop + MCP Tool Broker
         ↓
