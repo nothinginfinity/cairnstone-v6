@@ -4,6 +4,8 @@ import {
   AGENT_CONTEXT_SCHEMA,
   buildRequestIr,
   DEFAULT_MODEL_CAPABILITY_REGISTRY,
+  DELEGATION_RESULT_SCHEMA,
+  delegateFromBody,
   MODEL_RESULT_SCHEMA,
   modelCapabilitiesFromBody,
   modelRouteFromBody,
@@ -71,6 +73,100 @@ async function withValidPackageId(pkg) {
   clone.package_id = await recomputePackageId(clone);
   return clone;
 }
+
+test("V7.2 delegate carries the V7.0 package server-side and returns a compact read-only result", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  let bootstrapArgs = null;
+  const result = await delegateFromBody({
+    actor_id: "test:delegate",
+    task: "Summarize the accepted state.",
+    chain: "cairnstone-v6-project-memory",
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" },
+    generation: { max_output_tokens: 256, temperature: 0 }
+  }, {}, {
+    agentBootstrapFromBody: async args => { bootstrapArgs = args; return pkg; },
+    modelRouteFromBody
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.schema, DELEGATION_RESULT_SCHEMA);
+  assert.equal(result.package_id, pkg.package_id);
+  assert.match(result.request_ir_id, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(result.route.provider, "mock-a");
+  assert.equal(result.policy.delegation_mode, "read_only");
+  assert.equal(result.policy.execution_authority, false);
+  assert.equal(result.policy.mutation_authority, false);
+  assert.equal(result.policy.tools_exposed_to_model, 0);
+  assert.equal(result.policy.tools_executed, 0);
+  assert.equal(result.diagnostics.context_package_returned, false);
+  assert.equal(result.diagnostics.server_carried_context_package, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, "context_package"), false);
+  assert.deepEqual(bootstrapArgs.capabilities.tools, []);
+  assert.equal(bootstrapArgs.capabilities.supports_tool_calls, false);
+});
+
+test("V7.2 delegate forces a tool-free router request and clamps its output budget", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  let routedBody = null;
+  const result = await delegateFromBody({
+    actor_id: "test:delegate", task: "Read only.", chain: "cairnstone-v6-project-memory",
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" },
+    generation: { max_output_tokens: 999999, temperature: 9 }
+  }, {}, {
+    agentBootstrapFromBody: async () => pkg,
+    modelRouteFromBody: async body => {
+      routedBody = body;
+      return {
+        ok: true, package_id: pkg.package_id, request_ir_id: "sha256:" + "7".repeat(64),
+        route: { provider: "mock-a", model: "mock-a/text-tools-v1", transport: "mock", credential_mode: "none", failover_policy: "none" },
+        output: { text: "ok", tool_intents: [], finish_reason: "stop" },
+        usage: { input_tokens: 1, output_tokens: 1, cost: null },
+        observability: { gateway_id: null, gateway_request_id: null, attempts: [] },
+        policy: { tool_intents_only: true, execution_authority: false, mutation_authority: false },
+        v7_1_1: { external_model_calls: 0, tools_executed: 0 }
+      };
+    }
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(routedBody.request.tools, []);
+  assert.equal(routedBody.request.generation.max_output_tokens, 2048);
+  assert.equal(routedBody.request.generation.temperature, 2);
+});
+
+test("V7.2 delegate fails closed if a routed model somehow returns a tool intent", async () => {
+  const pkg = await withValidPackageId(baseFixturePackage());
+  const result = await delegateFromBody({
+    actor_id: "test:delegate", task: "Read only.", chain: "cairnstone-v6-project-memory",
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" }
+  }, {}, {
+    agentBootstrapFromBody: async () => pkg,
+    modelRouteFromBody: async () => ({
+      ok: true, package_id: pkg.package_id, request_ir_id: "sha256:" + "8".repeat(64),
+      route: { provider: "mock-a", model: "mock-a/text-tools-v1", transport: "mock", credential_mode: "none", failover_policy: "none" },
+      output: { text: "", tool_intents: [{ tool_id: "cairnstone_health", executed: false }], finish_reason: "tool_calls" },
+      usage: { input_tokens: 1, output_tokens: 1, cost: null }, observability: { attempts: [] },
+      policy: { tool_intents_only: true, execution_authority: false, mutation_authority: false }
+    })
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "delegation_tool_intent_forbidden");
+  assert.equal(result.policy.execution_authority, false);
+  assert.equal(result.policy.tools_executed, 0);
+});
+
+test("V7.2 delegate stops after a bootstrap failure and never calls the router", async () => {
+  let routed = false;
+  const result = await delegateFromBody({
+    actor_id: "test:delegate", task: "Read only.", chain: "missing-chain",
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" }
+  }, {}, {
+    agentBootstrapFromBody: async () => ({ ok: false, error: "chain_not_found" }),
+    modelRouteFromBody: async () => { routed = true; return { ok: true }; }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "delegation_bootstrap_failed");
+  assert.equal(result.detail, "chain_not_found");
+  assert.equal(routed, false);
+});
 
 test("R1: a genuinely valid V7.0 package is accepted", async () => {
   const pkg = await withValidPackageId(baseFixturePackage());
