@@ -3,7 +3,10 @@ import { test } from "node:test";
 import {
   AGENT_CONTEXT_SCHEMA,
   executeToolIntentFromBody,
+  requestToolAuthorizationFromBody,
   recomputePackageId,
+  TOOL_AUTHORIZATION_REQUEST_CHAIN,
+  TOOL_AUTHORIZATION_REQUEST_SCHEMA,
   TOOL_EXECUTION_RECEIPT_SCHEMA,
   toolPolicyPreviewFromBody
 } from "../src/model-router.js";
@@ -137,6 +140,133 @@ test("V7.3.1 never invokes a mutation-class tool even though its risk_class/auth
   assert.equal(result.authorization_required, true);
   assert.equal(result.receipt, null);
   assert.equal(result.execution.can_execute_now, false);
+});
+
+test("V7.3.2 creates an immutable pending human-confirmation request without invoking the target mutation", async () => {
+  const pkg = await withAvailableTools(["cairnstone_commit_v2"]);
+  const intent = {
+    intent_id: "sha256:" + "5".repeat(64),
+    tool_id: "cairnstone_commit_v2",
+    arguments: { chain: "cairnstone-v6-project-memory", author: "test:fixture", content: "candidate" }
+  };
+  let targetInvoked = false;
+  let persisted = null;
+  const result = await requestToolAuthorizationFromBody({
+    context_package: pkg,
+    tool_intent: intent,
+    request_ir_id: "sha256:" + "6".repeat(64),
+    model: { provider: "deepseek", model: "deepseek-chat" },
+    turn_id: "turn:v732-test",
+    justification: "Proposed canonical update; wait for explicit human approval."
+  }, {}, {
+    invokeTool: async () => { targetInvoked = true; return { ok: true }; },
+    createStone: async body => { persisted = body; return { ok: true, stone_hash: "authorization-request-stone" }; }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.schema, TOOL_AUTHORIZATION_REQUEST_SCHEMA);
+  assert.equal(result.request_created, true);
+  assert.equal(result.decision, "require_authorization");
+  assert.equal(result.required_authorization, "human_confirmation");
+  assert.equal(result.authorization_request.status, "pending");
+  assert.equal(result.authorization_request.authorization.consumed, false);
+  assert.equal(result.authorization_request.target.tool_id, "cairnstone_commit_v2");
+  assert.deepEqual(result.authorization_request.target.arguments, intent.arguments);
+  assert.equal(result.execution.target_tool_invoked, false);
+  assert.equal(result.execution.target_mutation_performed, false);
+  assert.equal(result.execution.executed, false);
+  assert.equal(result.execution.tools_executed, 0);
+  assert.equal(result.policy.authorization_consumed, false);
+  assert.equal(targetInvoked, false);
+  assert.equal(result.receipt.chain, TOOL_AUTHORIZATION_REQUEST_CHAIN);
+  assert.equal(persisted.chain, TOOL_AUTHORIZATION_REQUEST_CHAIN);
+  assert.equal(persisted.set_as_head, false);
+  assert.equal(persisted.metadata.status, "pending");
+  assert.ok(result.authorization_request_id.startsWith("sha256:"));
+});
+
+test("V7.3.2 produces a stable authorization_request_id for the same proposed mutation", async () => {
+  const pkg = await withAvailableTools(["cairnstone_commit_v2"]);
+  const body = {
+    context_package: pkg,
+    tool_intent: { tool_id: "cairnstone_commit_v2", arguments: { chain: "x", author: "test:fixture", content: "same" } },
+    request_ir_id: "sha256:" + "7".repeat(64),
+    model: { provider: "workers-ai", model: "fixture" },
+    turn_id: "turn:same",
+    justification: "same"
+  };
+  const deps = { createStone: async () => ({ ok: true, stone_hash: "stone" }) };
+  const first = await requestToolAuthorizationFromBody(body, {}, deps);
+  const second = await requestToolAuthorizationFromBody(body, {}, deps);
+  assert.equal(first.authorization_request_id, second.authorization_request_id);
+  assert.equal(first.decision_id, second.decision_id);
+});
+
+test("V7.3.2 supports scoped-grant mutation requests but still performs zero target mutation", async () => {
+  const pkg = await withAvailableTools(["cairnstone_send_message"]);
+  let invoked = false;
+  const result = await requestToolAuthorizationFromBody({
+    context_package: pkg,
+    tool_intent: { tool_id: "cairnstone_send_message", arguments: { from: "test:a", to: ["test:b"], content: "candidate message" } }
+  }, {}, {
+    invokeTool: async () => { invoked = true; return {}; },
+    createStone: async () => ({ ok: true, stone_hash: "scoped-request" })
+  });
+  assert.equal(result.request_created, true);
+  assert.equal(result.required_authorization, "scoped_grant");
+  assert.equal(result.execution.target_mutation_performed, false);
+  assert.equal(invoked, false);
+});
+
+test("V7.3.2 does not create an authorization request for an automatic read intent", async () => {
+  const pkg = await withAvailableTools(["cairnstone_health"]);
+  let persisted = false;
+  const result = await requestToolAuthorizationFromBody({
+    context_package: pkg,
+    tool_intent: { tool_id: "cairnstone_health", arguments: {} }
+  }, {}, { createStone: async () => { persisted = true; return { ok: true, stone_hash: "unused" }; } });
+  assert.equal(result.ok, true);
+  assert.equal(result.request_created, false);
+  assert.equal(result.decision, "allow");
+  assert.equal(result.authorization_request, null);
+  assert.equal(result.execution.target_tool_invoked, false);
+  assert.equal(persisted, false);
+});
+
+test("V7.3.2 rejects embedded approval/execute bypass fields instead of treating them as authority", async () => {
+  const pkg = await withAvailableTools(["cairnstone_commit_v2"]);
+  const result = await requestToolAuthorizationFromBody({
+    context_package: pkg,
+    tool_intent: { tool_id: "cairnstone_commit_v2", arguments: {}, confirmed: true }
+  }, {}, { createStone: async () => ({ ok: true, stone_hash: "unused" }) });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "authorization_bypass_not_accepted");
+  assert.equal(result.field, "tool_intent.confirmed");
+});
+
+test("V7.3.2 re-verifies package identity before creating a pending mutation request", async () => {
+  const pkg = await withAvailableTools(["cairnstone_commit_v2"]);
+  pkg.request.task = "tampered";
+  let persisted = false;
+  const result = await requestToolAuthorizationFromBody({
+    context_package: pkg,
+    tool_intent: { tool_id: "cairnstone_commit_v2", arguments: {} }
+  }, {}, { createStone: async () => { persisted = true; return { ok: true, stone_hash: "unused" }; } });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "invalid_context_package");
+  assert.equal(result.detail, "package_id_hash_mismatch");
+  assert.equal(persisted, false);
+});
+
+test("V7.3.2 fails closed when the pending authorization request cannot be persisted", async () => {
+  const pkg = await withAvailableTools(["cairnstone_commit_v2"]);
+  const result = await requestToolAuthorizationFromBody({
+    context_package: pkg,
+    tool_intent: { tool_id: "cairnstone_commit_v2", arguments: {} }
+  }, {}, { createStone: async () => ({ ok: false, error: "synthetic" }) });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "authorization_request_persist_failed");
+  assert.equal(result.execution.target_mutation_performed, false);
 });
 
 test("V7.3.1 fails closed when the intent's tool is absent from V7.0 capability evidence", async () => {
