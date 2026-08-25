@@ -5,9 +5,11 @@ import {
 } from "./repo-stones-runtime.js";
 import { importV5BundleFromBody } from "./v5-import.js";
 import {
+  dispatchHandoffFromBody,
   getInboxFromBody,
   readMessageFromBody,
-  sendMessageFromBody
+  sendMessageFromBody,
+  HANDOFF_DISPATCH_TOOL_DEFINITION
 } from "./correspondence.js";
 import { askChainFromBody, ASK_TOOL_DEFINITION } from "./ask.js";
 import { skillAgentFromBody, SKILL_AGENT_TOOL_DEFINITION } from "./skill-agent.js";
@@ -32,7 +34,7 @@ import {
   MODEL_ROUTE_TOOL_DEFINITION
 } from "./model-router.js";
 
-const VERSION = "0.5.6";
+const VERSION = "0.5.7";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -261,6 +263,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_resolve_skills") return resolveSkillsFromBody(args, env);
   if (name === "cairnstone_skill_agent") return skillAgentFromBody(args, env, { resolveSkillsFromBody, listSkillsFromBody });
   if (name === "cairnstone_send_message") return sendMessageFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
+  if (name === "cairnstone_dispatch_handoff") return dispatchHandoffFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   if (name === "cairnstone_get_inbox") return getInboxFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   if (name === "cairnstone_read_message") return readMessageFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   if (name === "cairnstone_list_stones") return listStones(env, { ...args, origin: "mcp://cairnstone" });
@@ -450,6 +453,7 @@ function mcpTools() {
         additionalProperties: false
       }
     },
+    HANDOFF_DISPATCH_TOOL_DEFINITION,
     {
       name: "cairnstone_get_inbox",
       description: "AC1: list compact correspondence metadata and LOD5 for one recipient without mutating message Stones.",
