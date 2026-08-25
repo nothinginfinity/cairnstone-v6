@@ -1,9 +1,9 @@
 # CairnStone V7.3 — Permissioned Agent Loop / MCP Tool Broker
 
-Status: **V7.3.0 implemented and live-accepted — broker registry + deterministic policy preview only; zero broker tool execution**
+Status: **V7.3.0, V7.3.1, and V7.3.2 implemented and live-accepted; V7.3.3 human-confirmed guarded mutation is next**
 
 Predecessor: **V7.2 complete**  
-Runtime baseline: **0.5.9**
+Runtime baseline: **0.5.11**
 
 ## Core invariant
 
@@ -102,25 +102,17 @@ V7.3.0 acceptance requires all of the following:
 - a V7.0 package containing `cairnstone_commit_v2` yields `require_authorization/human_confirmation`;
 - no preview call changes chain HEAD or any accepted path HEAD.
 
-## Next bounded slices
+## Subsequent slices
 
-### V7.3.1 — Read-only execution loop
+### V7.3.1 — Read-only execution loop — COMPLETE / LIVE-ACCEPTED
 
-Wire only a narrow allowlist of automatic read tools behind the broker. The loop must:
+`cairnstone_tool_execute` executes only broker intents already classified as `read` + `automatic`. It re-derives the same policy decision as preview, executes outside provider adapters, enforces turn/output budgets, and creates immutable execution receipts on `cairnstone-v7-tool-execution-receipts`. Mutation intents remain non-executable. Live acceptance run `32907348014` proved a real `cairnstone_health` execution with receipt and a denied `cairnstone_commit_v2` mutation attempt.
 
-- execute outside provider adapters;
-- issue an immutable execution/tool receipt;
-- return the tool result to the same model request loop;
-- preserve `package_id`, request/model identities, tool intent identity, and policy decision identity;
-- enforce turn/tool/output budgets;
-- fail closed on unavailable/unregistered tools or capability mismatch;
-- keep mutation/execution classes unavailable.
+### V7.3.2 — Mutation stop boundary — COMPLETE / LIVE-ACCEPTED
 
-### V7.3.2 — Mutation stop boundary
+`cairnstone_tool_authorization_request` turns a policy-eligible mutation intent into a durable pending authorization artifact without invoking the target tool. It re-verifies the V7.0 package and broker decision, preserves the exact proposed mutation plus `package_id`, `request_ir_id`, model/turn and decision identities, and stores the pending artifact on `cairnstone-v7-tool-authorization-requests` with no chain HEAD authority. Embedded approval/confirmation/execute fields are rejected as authorization bypass attempts. Runtime `0.5.11` live acceptance run `32908958516` proved a real `cairnstone_commit_v2` proposal created a pending `human_confirmation` request while `target_tool_invoked:false`, `target_mutation_performed:false`, and the project-memory chain/path state remained byte-for-byte equivalent before and after the boundary call.
 
-Allow the model to propose mutation intents but stop with an explicit authorization requirement. No mutation is performed.
-
-### V7.3.3 — Human-confirmed guarded mutation
+### V7.3.3 — Human-confirmed guarded mutation — NEXT
 
 After explicit authorization, execute a narrowly registered mutation through concurrency guards, verify resulting state/tests, and issue immutable execution receipts linked to the originating package and model envelope.
 
