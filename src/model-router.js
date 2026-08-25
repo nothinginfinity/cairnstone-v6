@@ -262,7 +262,95 @@ export const DEFAULT_MODEL_CAPABILITY_REGISTRY = Object.freeze([
     max_output_tokens: 4096,
     status: "available",
     observed_at: "2026-08-25T00:00:00.000Z",
-    source: "openai-catalog-2026-08-not-live-credential-verified"
+    source: "openai-catalog-2026-08-credential-configured"
+  }),
+  Object.freeze({
+    provider: "deepseek",
+    model: "deepseek-chat",
+    transport: "openai-rest-chat",
+    supports: Object.freeze({ text: true, streaming: false, tool_calls: true, reasoning: false, vision: false }),
+    context_window: 64000,
+    max_output_tokens: 4096,
+    status: "available",
+    observed_at: "2026-08-25T01:00:00.000Z",
+    source: "deepseek-catalog-2026-08-credential-configured"
+  }),
+  Object.freeze({
+    provider: "anthropic",
+    model: "claude-haiku-4-5-20251001",
+    transport: "anthropic-messages",
+    supports: Object.freeze({ text: true, streaming: false, tool_calls: true, reasoning: false, vision: false }),
+    context_window: 200000,
+    max_output_tokens: 4096,
+    status: "available",
+    observed_at: "2026-08-25T01:00:00.000Z",
+    source: "anthropic-catalog-2026-08-credential-configured"
+  }),
+  Object.freeze({
+    provider: "groq",
+    model: "llama-3.3-70b-versatile",
+    transport: "openai-rest-chat",
+    supports: Object.freeze({ text: true, streaming: false, tool_calls: true, reasoning: false, vision: false }),
+    context_window: 128000,
+    max_output_tokens: 4096,
+    status: "available",
+    observed_at: "2026-08-25T01:00:00.000Z",
+    source: "groq-catalog-2026-08-credential-configured"
+  }),
+  Object.freeze({
+    provider: "mistral",
+    model: "mistral-large-latest",
+    transport: "openai-rest-chat",
+    supports: Object.freeze({ text: true, streaming: false, tool_calls: true, reasoning: false, vision: false }),
+    context_window: 128000,
+    max_output_tokens: 4096,
+    status: "available",
+    observed_at: "2026-08-25T01:00:00.000Z",
+    source: "mistral-catalog-2026-08-credential-configured"
+  }),
+  Object.freeze({
+    provider: "cerebras",
+    model: "llama-3.3-70b",
+    transport: "openai-rest-chat",
+    supports: Object.freeze({ text: true, streaming: false, tool_calls: true, reasoning: false, vision: false }),
+    context_window: 128000,
+    max_output_tokens: 4096,
+    status: "available",
+    observed_at: "2026-08-25T01:00:00.000Z",
+    source: "cerebras-catalog-2026-08-credential-configured"
+  }),
+  Object.freeze({
+    provider: "sambanova",
+    model: "Meta-Llama-3.3-70B-Instruct",
+    transport: "openai-rest-chat",
+    supports: Object.freeze({ text: true, streaming: false, tool_calls: true, reasoning: false, vision: false }),
+    context_window: 128000,
+    max_output_tokens: 4096,
+    status: "available",
+    observed_at: "2026-08-25T01:00:00.000Z",
+    source: "sambanova-catalog-2026-08-credential-configured"
+  }),
+  Object.freeze({
+    provider: "grok",
+    model: "grok-4",
+    transport: "openai-rest-chat",
+    supports: Object.freeze({ text: true, streaming: false, tool_calls: true, reasoning: false, vision: false }),
+    context_window: 128000,
+    max_output_tokens: 4096,
+    status: "available",
+    observed_at: "2026-08-25T01:00:00.000Z",
+    source: "xai-catalog-2026-08-credential-configured"
+  }),
+  Object.freeze({
+    provider: "kimi",
+    model: "kimi-k2-0711-preview",
+    transport: "openai-rest-chat",
+    supports: Object.freeze({ text: true, streaming: false, tool_calls: true, reasoning: false, vision: false }),
+    context_window: 128000,
+    max_output_tokens: 4096,
+    status: "available",
+    observed_at: "2026-08-25T01:00:00.000Z",
+    source: "moonshot-catalog-2026-08-credential-configured"
   })
 ]);
 
@@ -652,7 +740,7 @@ function makeWorkersAiAdapter() {
 }
 
 // ---------------------------------------------------------------------------
-// V7.1.3: BYOK / Unified Billing third-party adapter (OpenAI reference impl)
+// V7.1.3: BYOK / Unified Billing third-party adapters
 // ---------------------------------------------------------------------------
 
 // Resolves a BYOK credential from a Worker secret binding by (provider, alias).
@@ -704,10 +792,24 @@ function openAiTools(requestIr) {
   }));
 }
 
-function makeOpenAiAdapter() {
+// OpenAI-compatible chat-completions providers: same request/response shape,
+// different base URL and credential binding. Covers OpenAI itself plus every
+// third-party provider whose API mirrors the OpenAI chat completions schema.
+const OPENAI_COMPATIBLE_PROVIDERS = Object.freeze({
+  openai: "https://api.openai.com/v1/chat/completions",
+  deepseek: "https://api.deepseek.com/v1/chat/completions",
+  groq: "https://api.groq.com/openai/v1/chat/completions",
+  mistral: "https://api.mistral.ai/v1/chat/completions",
+  cerebras: "https://api.cerebras.ai/v1/chat/completions",
+  sambanova: "https://api.sambanova.ai/v1/chat/completions",
+  grok: "https://api.x.ai/v1/chat/completions",
+  kimi: "https://api.moonshot.ai/v1/chat/completions"
+});
+
+function makeOpenAiCompatibleAdapter(provider, baseUrl) {
   return Object.freeze({
     can_handle(route) {
-      return route && route.provider === "openai"
+      return route && route.provider === provider
         ? { ok: true }
         : { ok: false, error: "provider_not_supported", provider: route && route.provider };
     },
@@ -724,7 +826,7 @@ function makeOpenAiAdapter() {
         requestBody.tool_choice = "auto";
       }
       return {
-        url: "https://api.openai.com/v1/chat/completions",
+        url: baseUrl,
         body: requestBody,
         package_id: requestIr.package_id,
         request_ir_id: requestIr.request_ir_id
@@ -734,7 +836,7 @@ function makeOpenAiAdapter() {
       const alias = (runtime.route && typeof runtime.route.credential_alias === "string" && runtime.route.credential_alias.trim())
         ? runtime.route.credential_alias.trim()
         : "default";
-      const secret = resolveByokSecret(runtime.env, "openai", alias);
+      const secret = resolveByokSecret(runtime.env, provider, alias);
       if (!secret.ok) {
         const error = new Error("byok_credential_not_configured");
         error.status = 401;
@@ -753,7 +855,7 @@ function makeOpenAiAdapter() {
       const latencyMs = Date.now() - started;
       if (!response.ok) {
         const text = await response.text().catch(() => "");
-        const error = new Error(text || `openai_http_${response.status}`);
+        const error = new Error(text || `${provider}_http_${response.status}`);
         error.status = response.status;
         throw error;
       }
@@ -858,6 +960,207 @@ function makeOpenAiAdapter() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// V7.1.3: Anthropic adapter (Messages API -- distinct shape from OpenAI-style)
+// ---------------------------------------------------------------------------
+
+function anthropicMessages(requestIr) {
+  // Anthropic's Messages API takes `system` as a separate top-level string,
+  // not a system-role message, and only accepts user/assistant roles in the
+  // messages array. All of our IR's "system" content (instructions, policy,
+  // skills, memory) is concatenated into one system block in a fixed order;
+  // the task becomes the sole user turn.
+  const systemParts = [];
+  const messages = [];
+  for (const message of requestIr.messages || []) {
+    if (message.role === "user") {
+      messages.push({ role: "user", content: String(message.content || "") });
+    } else {
+      systemParts.push(String(message.content || ""));
+    }
+  }
+  return { system: systemParts.join("\n\n---\n\n"), messages };
+}
+
+function anthropicTools(requestIr) {
+  return providerToolMap(requestIr).entries.map(item => ({
+    name: item.provider_name,
+    description: `Return a CairnStone tool intent for ${item.tool_id}. This does not execute the tool.`,
+    input_schema: { type: "object", properties: {}, additionalProperties: true }
+  }));
+}
+
+function mapAnthropicError(error) {
+  const text = String(error && error.message ? error.message : error || "").toLowerCase();
+  const status = Number(error && (error.status || error.statusCode || error.code));
+  if (status === 401 || text.includes("authentication") || text.includes("invalid x-api-key") || text.includes("unauthorized") || text.includes("byok_credential_not_configured")) return "provider_auth_failed";
+  if (status === 429 || text.includes("rate_limit") || text.includes("rate limit")) return "provider_rate_limited";
+  if (status === 408 || status === 504 || text.includes("timeout")) return "provider_timeout";
+  if (status === 400 || status === 422 || text.includes("invalid_request")) return "provider_bad_request";
+  if (status === 529 || status === 503 || text.includes("overloaded")) return "provider_capacity_exceeded";
+  return "gateway_error";
+}
+
+function makeAnthropicAdapter() {
+  const baseUrl = "https://api.anthropic.com/v1/messages";
+  return Object.freeze({
+    can_handle(route) {
+      return route && route.provider === "anthropic"
+        ? { ok: true }
+        : { ok: false, error: "provider_not_supported", provider: route && route.provider };
+    },
+    encode(requestIr, route) {
+      const { system, messages } = anthropicMessages(requestIr);
+      const tools = anthropicTools(requestIr);
+      const requestBody = {
+        model: route.model,
+        system,
+        messages,
+        max_tokens: requestIr.generation.max_output_tokens,
+        temperature: requestIr.generation.temperature
+      };
+      if (tools.length) requestBody.tools = tools;
+      return {
+        url: baseUrl,
+        body: requestBody,
+        package_id: requestIr.package_id,
+        request_ir_id: requestIr.request_ir_id
+      };
+    },
+    async invoke(providerRequest, runtime = {}) {
+      const alias = (runtime.route && typeof runtime.route.credential_alias === "string" && runtime.route.credential_alias.trim())
+        ? runtime.route.credential_alias.trim()
+        : "default";
+      const secret = resolveByokSecret(runtime.env, "anthropic", alias);
+      if (!secret.ok) {
+        const error = new Error("byok_credential_not_configured");
+        error.status = 401;
+        error.missing_binding = secret.keyName;
+        throw error;
+      }
+      const started = Date.now();
+      const response = await fetch(providerRequest.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": secret.value,
+          "anthropic-version": "2023-06-01"
+        },
+        body: JSON.stringify(providerRequest.body)
+      });
+      const latencyMs = Date.now() - started;
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        const error = new Error(text || `anthropic_http_${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
+      const raw = await response.json();
+      return {
+        raw,
+        telemetry: {
+          latency_ms: Math.max(0, latencyMs),
+          request_id: response.headers.get("request-id") || null
+        }
+      };
+    },
+    async normalize(invocation, route, requestIr, capability) {
+      const raw = invocation && invocation.raw && typeof invocation.raw === "object" ? invocation.raw : {};
+      const telemetry = invocation && invocation.telemetry && typeof invocation.telemetry === "object" ? invocation.telemetry : {};
+      const blocks = Array.isArray(raw.content) ? raw.content : [];
+      const map = providerToolMap(requestIr);
+      const toolIntents = [];
+      let text = "";
+      let ordinal = 0;
+      for (const block of blocks) {
+        if (!block || typeof block !== "object") continue;
+        if (block.type === "text" && typeof block.text === "string") {
+          text += block.text;
+        } else if (block.type === "tool_use") {
+          const providerName = typeof block.name === "string" ? block.name : "";
+          const args = normalizeToolArguments(block.input);
+          const toolId = map.by_provider_name.get(providerName) || null;
+          const validation = !toolId
+            ? { ok: false, error: "unknown_tool_id", provider_name: providerName || null }
+            : !args.ok
+              ? { ok: false, error: args.error }
+              : { ok: true };
+          const intentPayload = {
+            request_ir_id: requestIr.request_ir_id,
+            provider: route.provider,
+            model: route.model,
+            ordinal,
+            provider_name: providerName || null,
+            tool_id: toolId,
+            arguments: args.value
+          };
+          const intentId = "sha256:" + await sha256Text(stableJson(intentPayload));
+          toolIntents.push({
+            intent_id: intentId,
+            tool_id: toolId,
+            arguments: args.value,
+            source: { provider: route.provider, model: route.model, provider_name: providerName || null },
+            validation,
+            policy: { intent_only: true, executed: false, execution_authority: false, mutation_authority: false },
+            executed: false
+          });
+          ordinal += 1;
+        }
+      }
+      const usage = raw.usage && typeof raw.usage === "object" ? raw.usage : {};
+      return {
+        ok: true,
+        schema: MODEL_RESULT_SCHEMA,
+        package_id: requestIr.package_id,
+        request_ir_id: requestIr.request_ir_id,
+        route: {
+          provider: route.provider,
+          model: route.model,
+          transport: capability.transport,
+          credential_mode: "byok",
+          failover_policy: "none"
+        },
+        output: {
+          text,
+          tool_intents: toolIntents,
+          finish_reason: raw.stop_reason || (toolIntents.length ? "tool_calls" : "stop")
+        },
+        usage: {
+          input_tokens: usageNumber(usage, "input_tokens"),
+          output_tokens: usageNumber(usage, "output_tokens"),
+          cost: null
+        },
+        observability: {
+          gateway_id: null,
+          gateway_request_id: telemetry.request_id || (typeof raw.id === "string" ? raw.id : null),
+          attempts: [{
+            provider: route.provider,
+            model: route.model,
+            transport: capability.transport,
+            status: "succeeded",
+            latency_ms: Number.isFinite(Number(telemetry.latency_ms)) ? Number(telemetry.latency_ms) : null,
+            mock: false
+          }]
+        },
+        policy: { tool_intents_only: true, execution_authority: false, mutation_authority: false },
+        v7_1_3: { byok_adapter: true, external_model_calls: 1, tools_executed: 0 }
+      };
+    },
+    normalize_error(error, route, requestIr) {
+      return {
+        ok: false,
+        error: mapAnthropicError(error),
+        provider: route && route.provider,
+        model: route && route.model,
+        package_id: requestIr && requestIr.package_id,
+        request_ir_id: requestIr && requestIr.request_ir_id,
+        diagnostic: String(error && error.message ? error.message : error).slice(0, 500),
+        policy: { execution_authority: false, mutation_authority: false }
+      };
+    }
+  });
+}
+
 export const DEFAULT_MOCK_ADAPTERS = Object.freeze({
   "mock-a": makeMockAdapter("mock-a"),
   "mock-b": makeMockAdapter("mock-b")
@@ -866,7 +1169,10 @@ export const DEFAULT_MOCK_ADAPTERS = Object.freeze({
 export const DEFAULT_MODEL_ADAPTERS = Object.freeze({
   ...DEFAULT_MOCK_ADAPTERS,
   "workers-ai": makeWorkersAiAdapter(),
-  "openai": makeOpenAiAdapter()
+  "anthropic": makeAnthropicAdapter(),
+  ...Object.fromEntries(
+    Object.entries(OPENAI_COMPATIBLE_PROVIDERS).map(([provider, baseUrl]) => [provider, makeOpenAiCompatibleAdapter(provider, baseUrl)])
+  )
 });
 
 export async function modelRouteFromBody(body, _env, deps = {}) {
@@ -933,7 +1239,7 @@ export function modelCapabilitiesFromBody(body = {}, _env, deps = {}) {
 
 export const MODEL_CAPABILITIES_TOOL_DEFINITION = {
   name: "cairnstone_model_capabilities",
-  description: "V7.1 runtime model capability registry. Operational configuration only, never CairnStone accepted-state authority. Includes deterministic mock providers, the V7.1.2 live Workers AI adapter model, and the V7.1.3 OpenAI BYOK adapter model; listing capabilities performs zero model calls and does not indicate whether a BYOK credential is actually configured.",
+  description: "V7.1 runtime model capability registry. Operational configuration only, never CairnStone accepted-state authority. Includes deterministic mock providers, the V7.1.2 live Workers AI adapter model, and the V7.1.3 BYOK adapter models (OpenAI, DeepSeek, Anthropic, Groq, Mistral, Cerebras, SambaNova, xAI/Grok, Kimi/Moonshot); listing capabilities performs zero model calls and does not indicate whether a BYOK credential is actually configured.",
   inputSchema: {
     type: "object",
     properties: {
@@ -946,7 +1252,7 @@ export const MODEL_CAPABILITIES_TOOL_DEFINITION = {
 
 export const MODEL_ROUTE_TOOL_DEFINITION = {
   name: "cairnstone_model_route",
-  description: "V7.1.3 provider-neutral router. Validates a V7.0 context package, deterministically builds request IR, checks runtime model capabilities, and routes to deterministic mocks, the live Workers AI adapter, or a BYOK third-party adapter (OpenAI). Model tool calls are normalized into unexecuted intents; the router never executes tools or grants execution/mutation authority. Third-party credentials are never accepted as tool input -- they resolve server-side from a Worker secret binding by (provider, credential_alias).",
+  description: "V7.1.3 provider-neutral router. Validates a V7.0 context package, deterministically builds request IR, checks runtime model capabilities, and routes to deterministic mocks, the live Workers AI adapter, or a BYOK third-party adapter. Model tool calls are normalized into unexecuted intents; the router never executes tools or grants execution/mutation authority. Third-party credentials are never accepted as tool input -- they resolve server-side from a Worker secret binding by (provider, credential_alias).",
   inputSchema: {
     type: "object",
     required: ["context_package", "route"],
@@ -956,7 +1262,7 @@ export const MODEL_ROUTE_TOOL_DEFINITION = {
         type: "object",
         required: ["provider", "model"],
         properties: {
-          provider: { type: "string", description: "Supported providers in V7.1.3: mock-a, mock-b, workers-ai, openai." },
+          provider: { type: "string", description: "Supported providers in V7.1.3: mock-a, mock-b, workers-ai, openai, deepseek, anthropic, groq, mistral, cerebras, sambanova, grok, kimi." },
           model: { type: "string", description: "Exact model ID from the runtime capability registry." },
           gateway_id: { type: "string", description: "Workers AI Gateway ID. Defaults to 'default'. Route metadata only; never part of package_id or request_ir_id." },
           credential_mode: { type: "string", enum: ["workers_ai_billing", "unified_billing", "byok"], description: "Credential mode for third-party/BYOK providers. Route metadata only; never part of package_id or request_ir_id." },
