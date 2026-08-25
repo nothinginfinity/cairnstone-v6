@@ -180,9 +180,9 @@ test("V7.1.1 capability registry is operational configuration, not accepted-stat
   assert.equal(result.authority, "operational_configuration");
   assert.equal(result.accepted_state_authority, false);
   assert.equal(result.external_model_calls, 0);
-  assert.equal(result.total, 3);
-  assert.deepEqual(result.models.map(item => item.provider).sort(), ["mock-a", "mock-b", "workers-ai"]);
-  assert.equal(DEFAULT_MODEL_CAPABILITY_REGISTRY.length, 3);
+  assert.equal(result.total, 4);
+  assert.deepEqual(result.models.map(item => item.provider).sort(), ["mock-a", "mock-b", "openai", "workers-ai"]);
+  assert.equal(DEFAULT_MODEL_CAPABILITY_REGISTRY.length, 4);
   const workersAi = result.models.find(item => item.provider === "workers-ai");
   assert.equal(workersAi.model, "@cf/meta/llama-3.3-70b-instruct-fp8-fast");
   assert.equal(workersAi.supports.tool_calls, true);
