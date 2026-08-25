@@ -951,6 +951,245 @@ export const TOOL_EXECUTE_TOOL_DEFINITION = {
 };
 
 // ---------------------------------------------------------------------------
+// V7.3.2: mutation stop boundary / durable authorization request
+// ---------------------------------------------------------------------------
+//
+// V7.3.1 already proves that mutation-class intents never execute through
+// cairnstone_tool_execute. V7.3.2 adds the durable object needed at that stop:
+// an immutable pending authorization request that records the exact proposed
+// mutation and the broker decision that requires authorization. This function
+// deliberately has no invokeTool dependency and accepts no approval/grant/
+// execute field. V7.3.3 is the first slice allowed to consume a separately
+// issued authorization and perform a guarded mutation.
+
+export const TOOL_AUTHORIZATION_REQUEST_SCHEMA = "cairnstone-tool-authorization-request-v1";
+export const TOOL_AUTHORIZATION_REQUEST_CHAIN = "cairnstone-v7-tool-authorization-requests";
+const MAX_AUTHORIZATION_ARGUMENT_BYTES = 60000;
+const MAX_AUTHORIZATION_JUSTIFICATION_CHARS = 4000;
+const AUTHORIZATION_BYPASS_FIELDS = Object.freeze([
+  "approved", "authorized", "authorization", "grant", "confirmation", "confirmed",
+  "execute", "execute_now", "execution_authority", "mutation_authority"
+]);
+
+function authorizationBypassField(body, intent) {
+  for (const field of AUTHORIZATION_BYPASS_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(body || {}, field)) return field;
+    if (Object.prototype.hasOwnProperty.call(intent || {}, field)) return `tool_intent.${field}`;
+  }
+  return null;
+}
+
+function authorizationBoundaryExecution() {
+  return {
+    can_execute_now: false,
+    executed: false,
+    tools_executed: 0,
+    target_tool_invoked: false,
+    target_mutation_performed: false,
+    execution_authority: false,
+    mutation_authority: false
+  };
+}
+
+export async function requestToolAuthorizationFromBody(body, _env, deps = {}) {
+  if (!body || typeof body !== "object") return { ok: false, error: "invalid_tool_authorization_request", detail: "body_not_an_object" };
+
+  const intent = body.tool_intent;
+  const bypassField = authorizationBypassField(body, intent);
+  if (bypassField) return { ok: false, error: "authorization_bypass_not_accepted", field: bypassField };
+
+  const pkg = body.context_package;
+  const packageValidation = await validateContextPackage(pkg);
+  if (!packageValidation.ok) return { ...packageValidation, stage: "context_package" };
+
+  if (!intent || typeof intent !== "object") return { ok: false, error: "invalid_tool_intent", detail: "not_an_object" };
+  if (intent.executed === true) return { ok: false, error: "invalid_tool_intent", detail: "tool_intent_already_executed" };
+  if (typeof intent.tool_id !== "string" || !intent.tool_id.trim()) return { ok: false, error: "invalid_tool_intent", detail: "missing_tool_id" };
+  if (intent.arguments !== undefined && !isPlainObject(intent.arguments)) {
+    return { ok: false, error: "invalid_tool_intent", detail: "arguments_not_object" };
+  }
+
+  const registry = Array.isArray(deps.registry) ? deps.registry : DEFAULT_TOOL_BROKER_REGISTRY;
+  if (!registry.every(validateBrokerRegistryEntry)) return { ok: false, error: "tool_registry_invalid" };
+
+  const { toolId, args, entry, capabilityPresent, argsValidation, verdict } = evaluateToolIntentDecision(pkg, intent, registry);
+  const decisionPayload = {
+    package_id: pkg.package_id,
+    intent_id: typeof intent.intent_id === "string" ? intent.intent_id : null,
+    tool_id: toolId,
+    arguments: args,
+    registry: entry ? { connector: entry.connector, handler: entry.handler, risk_class: entry.risk_class, authorization: entry.authorization, available: entry.available === true } : null,
+    capability_present: capabilityPresent,
+    arguments_validation: argsValidation,
+    decision: verdict
+  };
+  const decisionId = "sha256:" + await sha256Text(stableJson(decisionPayload));
+  const execution = authorizationBoundaryExecution();
+
+  if (verdict.decision !== "require_authorization" || !entry || entry.risk_class !== "mutation") {
+    return {
+      ok: true,
+      schema: TOOL_AUTHORIZATION_REQUEST_SCHEMA,
+      request_created: false,
+      authorization_request: null,
+      decision_id: decisionId,
+      package_id: pkg.package_id,
+      intent_id: typeof intent.intent_id === "string" ? intent.intent_id : null,
+      tool_id: toolId,
+      decision: verdict.decision,
+      reason: verdict.reason,
+      authorization_required: verdict.authorization_required,
+      execution,
+      receipt: null,
+      policy: { model_intent_is_execution_authority: false, execution_authority: false, mutation_authority: false, authorization_consumed: false }
+    };
+  }
+
+  if (!["scoped_grant", "human_confirmation"].includes(entry.authorization)) {
+    return {
+      ok: true,
+      schema: TOOL_AUTHORIZATION_REQUEST_SCHEMA,
+      request_created: false,
+      authorization_request: null,
+      decision_id: decisionId,
+      package_id: pkg.package_id,
+      tool_id: toolId,
+      decision: "deny",
+      reason: "unsupported_mutation_authorization_mode",
+      authorization_required: false,
+      execution,
+      receipt: null
+    };
+  }
+
+  const argumentsJson = stableJson(args);
+  const argumentBytes = new TextEncoder().encode(argumentsJson).length;
+  if (argumentBytes > MAX_AUTHORIZATION_ARGUMENT_BYTES) {
+    return { ok: false, error: "authorization_request_arguments_too_large", max_bytes: MAX_AUTHORIZATION_ARGUMENT_BYTES, actual_bytes: argumentBytes };
+  }
+
+  const justification = typeof body.justification === "string"
+    ? body.justification.trim().slice(0, MAX_AUTHORIZATION_JUSTIFICATION_CHARS)
+    : null;
+  const requestIrId = typeof body.request_ir_id === "string" ? body.request_ir_id : null;
+  const model = isPlainObject(body.model) ? { provider: body.model.provider ?? null, model: body.model.model ?? null } : null;
+  const turnId = typeof body.turn_id === "string" ? body.turn_id : null;
+  const requestIdentityPayload = {
+    schema: TOOL_AUTHORIZATION_REQUEST_SCHEMA,
+    package_id: pkg.package_id,
+    request_ir_id: requestIrId,
+    intent_id: typeof intent.intent_id === "string" ? intent.intent_id : null,
+    decision_id: decisionId,
+    tool_id: toolId,
+    arguments: args,
+    risk_class: entry.risk_class,
+    required_authorization: entry.authorization,
+    model,
+    turn_id: turnId,
+    justification
+  };
+  const authorizationRequestId = "sha256:" + await sha256Text(stableJson(requestIdentityPayload));
+  const authorizationRequest = {
+    ...requestIdentityPayload,
+    authorization_request_id: authorizationRequestId,
+    status: "pending",
+    authorization: { required: true, mode: entry.authorization, status: "pending", consumed: false },
+    target: { connector: entry.connector, handler: entry.handler, tool_id: toolId, arguments: args },
+    execution
+  };
+
+  if (typeof deps.createStone !== "function") {
+    return { ok: false, error: "authorization_request_persistence_unavailable", authorization_request_id: authorizationRequestId, execution };
+  }
+
+  let stoneHash = null;
+  try {
+    const created = await deps.createStone({
+      title: `Pending tool authorization: ${toolId}`,
+      author: "cairnstone-v7-tool-broker",
+      content: stableJson(authorizationRequest),
+      path: `tool-authorization-requests/${authorizationRequestId.replace("sha256:", "")}.json`,
+      chain: TOOL_AUTHORIZATION_REQUEST_CHAIN,
+      metadata: {
+        type: "tool-authorization-request",
+        schema: TOOL_AUTHORIZATION_REQUEST_SCHEMA,
+        authorization_request_id: authorizationRequestId,
+        decision_id: decisionId,
+        package_id: pkg.package_id,
+        tool_id: toolId,
+        required_authorization: entry.authorization,
+        status: "pending"
+      },
+      set_as_head: false
+    });
+    if (!created || created.ok !== true || typeof created.stone_hash !== "string") {
+      return { ok: false, error: "authorization_request_persist_failed", authorization_request_id: authorizationRequestId, execution };
+    }
+    stoneHash = created.stone_hash;
+  } catch (_error) {
+    return { ok: false, error: "authorization_request_persist_failed", authorization_request_id: authorizationRequestId, execution };
+  }
+
+  return {
+    ok: true,
+    schema: TOOL_AUTHORIZATION_REQUEST_SCHEMA,
+    request_created: true,
+    authorization_request: authorizationRequest,
+    authorization_request_id: authorizationRequestId,
+    decision_id: decisionId,
+    package_id: pkg.package_id,
+    request_ir_id: requestIrId,
+    intent_id: authorizationRequest.intent_id,
+    tool_id: toolId,
+    decision: "require_authorization",
+    reason: entry.authorization,
+    authorization_required: true,
+    required_authorization: entry.authorization,
+    receipt: { stone_hash: stoneHash, chain: TOOL_AUTHORIZATION_REQUEST_CHAIN },
+    execution,
+    policy: {
+      model_intent_is_execution_authority: false,
+      execution_authority: false,
+      mutation_authority: false,
+      authorization_consumed: false,
+      target_mutation_performed: false
+    }
+  };
+}
+
+export const TOOL_AUTHORIZATION_REQUEST_TOOL_DEFINITION = {
+  name: "cairnstone_tool_authorization_request",
+  description: "V7.3.2 mutation stop boundary: turn one policy-eligible mutation intent into an immutable pending authorization request. Re-derives the same deterministic broker decision and records the exact proposed mutation, package/request/model identities, and required authorization mode. This tool never invokes the target mutation, never consumes approval, and accepts no authorization/grant/execute field; V7.3.3 is the first slice allowed to consume separate authorization and execute a guarded mutation.",
+  inputSchema: {
+    type: "object",
+    required: ["context_package", "tool_intent"],
+    properties: {
+      context_package: { type: "object" },
+      tool_intent: {
+        type: "object",
+        required: ["tool_id"],
+        properties: {
+          intent_id: { type: "string" },
+          tool_id: { type: "string" },
+          arguments: { type: "object" },
+          executed: { type: "boolean" }
+        },
+        additionalProperties: false
+      },
+      request_ir_id: { type: "string" },
+      model: {
+        type: "object",
+        properties: { provider: { type: "string" }, model: { type: "string" } },
+        additionalProperties: false
+      },
+      turn_id: { type: "string" },
+      justification: { type: "string", maxLength: MAX_AUTHORIZATION_JUSTIFICATION_CHARS }
+    },
+    additionalProperties: false
+  }
+};
+
+// ---------------------------------------------------------------------------
 // V7.1.1: router core + capability registry + deterministic mock adapters
 // ---------------------------------------------------------------------------
 
