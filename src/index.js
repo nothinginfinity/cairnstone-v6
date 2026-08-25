@@ -27,6 +27,7 @@ import {
 } from "./agent-bootstrap.js";
 import {
   delegateFromBody,
+  executeToolIntentFromBody,
   modelCapabilitiesFromBody,
   modelRouteFromBody,
   toolPolicyPreviewFromBody,
@@ -34,11 +35,12 @@ import {
   DELEGATE_TOOL_DEFINITION,
   MODEL_CAPABILITIES_TOOL_DEFINITION,
   MODEL_ROUTE_TOOL_DEFINITION,
+  TOOL_EXECUTE_TOOL_DEFINITION,
   TOOL_POLICY_PREVIEW_TOOL_DEFINITION,
   TOOL_REGISTRY_TOOL_DEFINITION
 } from "./model-router.js";
 
-const VERSION = "0.5.9";
+const VERSION = "0.5.10";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -313,6 +315,15 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_model_capabilities") return modelCapabilitiesFromBody(args, env);
   if (name === "cairnstone_tool_registry") return toolRegistryFromBody(args, env);
   if (name === "cairnstone_tool_policy_preview") return toolPolicyPreviewFromBody(args, env);
+  if (name === "cairnstone_tool_execute") return executeToolIntentFromBody(args, env, {
+    // Execution reuses this exact same dispatcher for the handler tool_id,
+    // so an executed read runs through the identical code path a direct
+    // tools/call would use -- no separate/looser execution surface, and
+    // strictly outside any provider adapter (this function never calls a
+    // model).
+    invokeTool: (handlerName, handlerArgs, handlerEnv) => callMcpTool(handlerName, handlerArgs, handlerEnv),
+    createStone: body => createStoneFromBody(body, env)
+  });
   if (name === "cairnstone_model_route") return modelRouteFromBody(args, env);
   if (name === "cairnstone_delegate") return delegateFromBody(args, env, {
     agentBootstrapFromBody: (body, e) => agentBootstrapFromBody(body, e, {
@@ -776,6 +787,7 @@ function mcpTools() {
     MODEL_CAPABILITIES_TOOL_DEFINITION,
     TOOL_REGISTRY_TOOL_DEFINITION,
     TOOL_POLICY_PREVIEW_TOOL_DEFINITION,
+    TOOL_EXECUTE_TOOL_DEFINITION,
     MODEL_ROUTE_TOOL_DEFINITION,
     DELEGATE_TOOL_DEFINITION
   ];
