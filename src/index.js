@@ -28,6 +28,7 @@ import {
 import {
   delegateFromBody,
   executeToolIntentFromBody,
+  requestToolAuthorizationFromBody,
   modelCapabilitiesFromBody,
   modelRouteFromBody,
   toolPolicyPreviewFromBody,
@@ -35,12 +36,13 @@ import {
   DELEGATE_TOOL_DEFINITION,
   MODEL_CAPABILITIES_TOOL_DEFINITION,
   MODEL_ROUTE_TOOL_DEFINITION,
+  TOOL_AUTHORIZATION_REQUEST_TOOL_DEFINITION,
   TOOL_EXECUTE_TOOL_DEFINITION,
   TOOL_POLICY_PREVIEW_TOOL_DEFINITION,
   TOOL_REGISTRY_TOOL_DEFINITION
 } from "./model-router.js";
 
-const VERSION = "0.5.10";
+const VERSION = "0.5.11";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -322,6 +324,12 @@ async function callMcpTool(name, args, env) {
     // strictly outside any provider adapter (this function never calls a
     // model).
     invokeTool: (handlerName, handlerArgs, handlerEnv) => callMcpTool(handlerName, handlerArgs, handlerEnv),
+    createStone: body => createStoneFromBody(body, env)
+  });
+  if (name === "cairnstone_tool_authorization_request") return requestToolAuthorizationFromBody(args, env, {
+    // V7.3.2 is a hard stop: only persist the pending governance artifact.
+    // No invokeTool dependency is supplied, so this path cannot call the
+    // requested mutation even if a caller attempts to smuggle approval.
     createStone: body => createStoneFromBody(body, env)
   });
   if (name === "cairnstone_model_route") return modelRouteFromBody(args, env);
@@ -788,6 +796,7 @@ function mcpTools() {
     TOOL_REGISTRY_TOOL_DEFINITION,
     TOOL_POLICY_PREVIEW_TOOL_DEFINITION,
     TOOL_EXECUTE_TOOL_DEFINITION,
+    TOOL_AUTHORIZATION_REQUEST_TOOL_DEFINITION,
     MODEL_ROUTE_TOOL_DEFINITION,
     DELEGATE_TOOL_DEFINITION
   ];
