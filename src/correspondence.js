@@ -6,6 +6,9 @@ const ALLOWED_STATUSES = new Set(["queued", "delivered", "read", "acked", "archi
 const MAX_MESSAGE_BYTES = 900000;
 const MAX_RECIPIENTS = 25;
 const HANDOFF_SCHEMA = "cairnstone-handoff-v1";
+const GITHUB_INBOX_MIRROR_SCHEMA = "cairnstone-github-inbox-mirror-v1";
+const DEFAULT_GITHUB_INBOX_BRANCH = "main";
+const DEFAULT_GITHUB_INBOX_PREFIX = "cairnstone-inbox";
 const MAX_HANDOFF_TASK_BYTES = 24000;
 const MAX_HANDOFF_REFS = 25;
 
@@ -34,6 +37,16 @@ export const HANDOFF_DISPATCH_TOOL_DEFINITION = {
         properties: {
           owner: { type: "string" }, repo: { type: "string" }, path: { type: "string" },
           commit_sha: { type: "string", description: "Immutable 40-hex commit SHA; mutable refs are rejected." }
+        },
+        additionalProperties: false
+      },
+      github_inbox: {
+        type: "object", required: ["owner", "repo"],
+        description: "Optional external GitHub-backed transport mirror. AC1 remains authority; GitHub is an inspectable asynchronous mirror only.",
+        properties: {
+          owner: { type: "string" }, repo: { type: "string" },
+          branch: { type: "string", description: "Transport branch. Defaults to main; it is never accepted-state authority." },
+          path_prefix: { type: "string", description: "Directory prefix for deterministic per-recipient message files. Defaults to cairnstone-inbox." }
         },
         additionalProperties: false
       },
@@ -148,7 +161,8 @@ export function createCorrespondenceService({
   readRaw,
   now = () => new Date().toISOString(),
   randomUUID = () => crypto.randomUUID(),
-  hash = sha256
+  hash = sha256,
+  mirrorHandoff = null
 }) {
   if (!store) throw new Error("Missing correspondence store");
   if (typeof createStone !== "function") throw new Error("Missing createStone dependency");
@@ -261,6 +275,7 @@ export function createCorrespondenceService({
       const packageId = normalizePackageId(body.package_id);
       const continuationRefs = normalizeContinuationRefs(body.continuation_refs);
       const githubArtifact = normalizeGitHubArtifact(body.github_artifact);
+      const githubInbox = normalizeGitHubInboxTarget(body.github_inbox);
       const messageId = opaqueId(body.message_id || `msg:${randomUUID()}`, "message_id");
       const threadId = opaqueId(body.thread_id || messageId, "thread_id");
       const priority = body.priority === undefined ? "normal" : String(body.priority);
@@ -276,6 +291,7 @@ export function createCorrespondenceService({
         package_id: packageId,
         continuation_refs: continuationRefs,
         github_artifact: githubArtifact,
+        github_inbox: githubInbox,
         policy: handoffPolicy()
       };
       const sent = await this.sendMessage({
@@ -283,13 +299,38 @@ export function createCorrespondenceService({
         intent: "handoff", priority, subject
       });
       if (!sent?.ok) return sent;
-      return {
+      const out = {
         ...sent,
         handoff: {
           schema: HANDOFF_SCHEMA, chain, package_id: packageId, continuation_ref_count: continuationRefs.length,
-          github_artifact: githubArtifact, policy: handoffPolicy()
+          github_artifact: githubArtifact, github_inbox: githubInbox, policy: handoffPolicy()
         }
       };
+      if (githubInbox) {
+        if (typeof mirrorHandoff !== "function") {
+          out.github_inbox_mirror = {
+            ok: false,
+            error: "github_inbox_mirror_unavailable",
+            isolated: true,
+            ac1_message_preserved: true,
+            stone_hash: sent.stone_hash
+          };
+        } else {
+          try {
+            out.github_inbox_mirror = await mirrorHandoff({ target: githubInbox, handoff, sent, subject, priority });
+          } catch (error) {
+            out.github_inbox_mirror = {
+              ok: false,
+              error: "github_inbox_mirror_failed",
+              detail: String(error && error.message ? error.message : error),
+              isolated: true,
+              ac1_message_preserved: true,
+              stone_hash: sent.stone_hash
+            };
+          }
+        }
+      }
+      return out;
     },
 
     async getInbox(body = {}) {
@@ -370,7 +411,8 @@ function createRuntimeService(env, deps) {
     const object = await env.CAIRNSTONE_RAW.get(rawKey);
     return object ? object.text() : null;
   });
-  return createCorrespondenceService({ store, createStone, readRaw, now: deps.now, randomUUID: deps.randomUUID, hash: deps.hash });
+  const mirrorHandoff = deps.mirrorHandoff || (env.GITHUB_TOKEN ? createGitHubInboxMirror(env, { fetchFn: deps.fetchFn }) : null);
+  return createCorrespondenceService({ store, createStone, readRaw, now: deps.now, randomUUID: deps.randomUUID, hash: deps.hash, mirrorHandoff });
 }
 
 function boundedText(value, name, maxBytes) {
@@ -414,14 +456,158 @@ function normalizeGitHubArtifact(value) {
   return { owner, repo, path, commit_sha: commitSha };
 }
 
+function normalizeGitHubInboxTarget(value) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid github_inbox");
+  const owner = githubPart(value.owner, "github_inbox.owner");
+  const repo = githubPart(value.repo, "github_inbox.repo");
+  const branch = String(value.branch || DEFAULT_GITHUB_INBOX_BRANCH).trim();
+  if (!/^[A-Za-z0-9_./-]+$/.test(branch) || branch.includes("..")) throw new Error("Invalid github_inbox.branch");
+  const pathPrefix = String(value.path_prefix || DEFAULT_GITHUB_INBOX_PREFIX).trim().replace(/^\/+|\/+$/g, "");
+  if (!pathPrefix || pathPrefix.includes("..") || pathPrefix.includes("\\")) throw new Error("Invalid github_inbox.path_prefix");
+  return { owner, repo, branch, path_prefix: pathPrefix };
+}
+
 function githubPart(value, name) {
   const text = String(value || "").trim();
   if (!/^[A-Za-z0-9_.-]+$/.test(text)) throw new Error(`Invalid ${name}`);
   return text;
 }
 
+export function createGitHubInboxMirror(env, deps = {}) {
+  const token = String(env?.GITHUB_TOKEN || "").trim();
+  const fetchFn = deps.fetchFn || fetch;
+  return async ({ target, handoff, sent, subject, priority }) => {
+    if (!token) {
+      return { ok: false, error: "github_token_unavailable", isolated: true, ac1_message_preserved: true, stone_hash: sent.stone_hash };
+    }
+    const artifacts = [];
+    const failures = [];
+    for (const recipient of handoff.to) {
+      const path = `${target.path_prefix}/${safePathSegment(recipient)}/${safePathSegment(sent.message_id)}.json`;
+      const payload = JSON.stringify({
+        schema: GITHUB_INBOX_MIRROR_SCHEMA,
+        authority: "ac1_message_stone",
+        ac1: {
+          message_id: sent.message_id,
+          thread_id: sent.thread_id,
+          stone_hash: sent.stone_hash,
+          immutable_message_stone: true
+        },
+        envelope: { subject, priority, recipient },
+        handoff,
+        policy: {
+          transport_mirror_only: true,
+          execution_authority: false,
+          mutation_authority: false,
+          accepted_state_authority: false
+        }
+      }, null, 2) + "\n";
+      const result = await putGitHubMirrorFile({ target, path, payload, token, fetchFn, messageId: sent.message_id });
+      if (result.ok) artifacts.push({ recipient, ...result });
+      else failures.push({ recipient, ...result });
+    }
+    return {
+      ok: failures.length === 0,
+      schema: GITHUB_INBOX_MIRROR_SCHEMA,
+      authority: "ac1_message_stone",
+      ac1_stone_hash: sent.stone_hash,
+      artifacts,
+      failures,
+      isolated: failures.length > 0,
+      ac1_message_preserved: true
+    };
+  };
+}
+
+async function putGitHubMirrorFile({ target, path, payload, token, fetchFn, messageId }) {
+  const api = `https://api.github.com/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/contents/${path.split("/").map(encodeURIComponent).join("/")}`;
+  const headers = {
+    "User-Agent": "cairnstone-v6-worker",
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "Authorization": `Bearer ${token}`
+  };
+  const existingResponse = await fetchFn(`${api}?ref=${encodeURIComponent(target.branch)}`, { headers });
+  if (existingResponse.status === 200) {
+    const existing = await existingResponse.json();
+    const existingText = decodeBase64Utf8(existing.content || "");
+    if (existingText !== payload) {
+      return { ok: false, error: "github_inbox_mirror_conflict", status: 409, owner: target.owner, repo: target.repo, branch: target.branch, path };
+    }
+    const commitSha = await resolveGitHubTransportCommit(target, token, fetchFn);
+    return {
+      ok: true,
+      idempotent_replay: true,
+      owner: target.owner,
+      repo: target.repo,
+      branch: target.branch,
+      path,
+      blob_sha: existing.sha || null,
+      commit_sha: commitSha,
+      html_url: existing.html_url || null
+    };
+  }
+  if (existingResponse.status !== 404) {
+    return { ok: false, error: "github_inbox_lookup_failed", status: existingResponse.status, owner: target.owner, repo: target.repo, branch: target.branch, path };
+  }
+
+  const createdResponse = await fetchFn(api, {
+    method: "PUT",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message: `CairnStone inbox mirror: ${messageId}`,
+      content: encodeBase64Utf8(payload),
+      branch: target.branch
+    })
+  });
+  if (!createdResponse.ok) {
+    return { ok: false, error: "github_inbox_write_failed", status: createdResponse.status, owner: target.owner, repo: target.repo, branch: target.branch, path };
+  }
+  const created = await createdResponse.json();
+  return {
+    ok: true,
+    idempotent_replay: false,
+    owner: target.owner,
+    repo: target.repo,
+    branch: target.branch,
+    path,
+    blob_sha: created.content?.sha || null,
+    commit_sha: created.commit?.sha || null,
+    html_url: created.content?.html_url || null
+  };
+}
+
+async function resolveGitHubTransportCommit(target, token, fetchFn) {
+  const url = `https://api.github.com/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/commits/${encodeURIComponent(target.branch)}`;
+  const response = await fetchFn(url, {
+    headers: {
+      "User-Agent": "cairnstone-v6-worker",
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "Authorization": `Bearer ${token}`
+    }
+  });
+  if (!response.ok) return null;
+  const data = await response.json();
+  return typeof data?.sha === "string" ? data.sha : null;
+}
+
+function encodeBase64Utf8(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function decodeBase64Utf8(value) {
+  const binary = atob(String(value || "").replace(/\s+/g, ""));
+  const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
 function handoffPolicy() {
-  return { transport_only: true, execution_authority: false, mutation_authority: false, accepted_state_authority: false };
+  return { transport_only: true, execution_authority: false, mutation_authority: false, accepted_state_authority: false, external_mirror_authority: false };
 }
 
 function recipientIds(value) {
