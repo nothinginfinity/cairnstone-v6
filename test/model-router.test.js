@@ -267,7 +267,7 @@ test("V7.1.1 rejects credential material at the router boundary", async () => {
   assert.equal(JSON.stringify(result).includes("must-not-enter-router"), false);
 });
 
-test("V7.1.1 rejects implicit/early failover policy", async () => {
+test("V7.1.4 rejects unsupported failover modes", async () => {
   const pkg = await withValidPackageId(baseFixturePackage());
   const result = await modelRouteFromBody({
     context_package: pkg,
@@ -276,7 +276,7 @@ test("V7.1.1 rejects implicit/early failover policy", async () => {
   });
   assert.equal(result.ok, false);
   assert.equal(result.error, "unsupported_route_policy");
-  assert.equal(result.detail, "failover_not_implemented_until_v7_1_4");
+  assert.equal(result.detail, "failover_mode_not_supported");
 });
 
 test("V7.1.1 adapter errors normalize without losing package/request identities", async () => {
