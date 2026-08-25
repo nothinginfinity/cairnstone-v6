@@ -1,6 +1,6 @@
 # CairnStone V7 Roadmap
 
-Status: **V7.2 COMPLETE — runtime 0.5.8 delegation, native AC1 dispatch, optional GitHub Inbox mirror, and the Console Operator UX are live-accepted; V7.3 Permissioned Agent Loop / MCP Tool Broker is the active next phase**
+Status: **V7.2 COMPLETE; V7.3 IN PROGRESS — V7.3.0 broker registry + deterministic policy preview are live-accepted on runtime 0.5.9; V7.3.1 read-only execution loop is next**
 Predecessor baseline: **V6.10 frozen control plane**
 
 ## V7 thesis
@@ -317,6 +317,8 @@ Delegation acceptance should prove:
 
 ### V7.3 — Permissioned Agent Loop / MCP Tool Broker
 
+Status: **IN PROGRESS. V7.3.0 COMPLETE and live-accepted on runtime `0.5.9`; V7.3.1 read-only execution loop is next.** Canonical contract: `docs/V7_3_PERMISSIONED_AGENT_LOOP_MCP_TOOL_BROKER.md`. V7.3.0 adds `cairnstone_tool_registry` and `cairnstone_tool_policy_preview`, with deterministic risk/authorization decisions and an explicit hard boundary that no preview can execute a tool (`can_execute_now:false`, `executed:false`, `tools_executed:0`). Live acceptance run `32890344073` proved automatic-read eligibility, human-confirmed mutation gating, and unchanged chain/path authority.
+
 Turn normalized V7.1 model tool intents into a governed multi-turn execution loop. This is the point where a routed model becomes a real tool-using subagent rather than only a reasoning subcontractor.
 
 Key rule:
@@ -396,7 +398,7 @@ V7.1 Provider-Neutral Router (COMPLETE -- V7.1.0 through V7.1.5, R1-R12 closed)
         ↓
 V7.2 Console + Inbox Dispatch + read-only server-side delegation (COMPLETE — runtime 0.5.8, native AC1 handoff, GitHub mirror, and final Console Operator UX live-accepted)
         ↓
-V7.3 Permissioned Agent Loop + MCP Tool Broker
+V7.3 Permissioned Agent Loop + MCP Tool Broker (IN PROGRESS — V7.3.0 live-accepted; V7.3.1 next)
         ↓
 V7.4 Cross-project agent profiles
         ↓
