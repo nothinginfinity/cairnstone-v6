@@ -633,14 +633,45 @@ test("V7.4.0 authorization list rejects invalid status/decision filters and clam
   assert.equal(clamped.filters.limit, 50);
 });
 
-test("V7.4.0 authorization list decision filter narrows results client-side", async () => {
+test("V7.4.0 approved authorization discovery filters server-side and orders by human decision time", async () => {
   const rows = [
-    { authorization_request_id: "sha256:" + "5".repeat(64), tool_id: "cairnstone_commit_v2", status: "denied", decision: "denied", created_at: "2026-08-26T18:00:00.000Z" },
-    { authorization_request_id: "sha256:" + "6".repeat(64), tool_id: "cairnstone_commit_v2", status: "executed", decision: "approved", created_at: "2026-08-26T17:00:00.000Z" }
+    {
+      authorization_request_id: "sha256:" + "5".repeat(64),
+      tool_id: "cairnstone_commit_v2",
+      status: "executed",
+      decision: "approved",
+      created_at: "2026-08-26T19:00:00.000Z",
+      issued_at: "2026-08-26T19:01:00.000Z"
+    },
+    {
+      authorization_request_id: "sha256:" + "6".repeat(64),
+      tool_id: "cairnstone_commit_v2",
+      status: "executed",
+      decision: "approved",
+      created_at: "2026-08-26T17:00:00.000Z",
+      issued_at: "2026-08-26T20:00:00.000Z"
+    },
+    {
+      authorization_request_id: "sha256:" + "7".repeat(64),
+      tool_id: "cairnstone_commit_v2",
+      status: "denied",
+      decision: "denied",
+      created_at: "2026-08-26T20:30:00.000Z",
+      issued_at: "2026-08-26T20:31:00.000Z"
+    }
   ];
-  const deps = { listAuthorizations: async () => ({ ok: true, total: rows.length, authorizations: rows }) };
-  const result = await listToolAuthorizationsCompactFromBody({ decision: "approved" }, {}, deps);
+  let received = null;
+  const deps = {
+    listAuthorizations: async body => {
+      received = body;
+      return { ok: true, total: rows.length, authorizations: rows };
+    }
+  };
+  const result = await listToolAuthorizationsCompactFromBody({ decision: "approved", limit: 5 }, {}, deps);
   assert.equal(result.ok, true);
-  assert.equal(result.total, 1);
+  assert.equal(received.decision, "approved");
+  assert.equal(result.total, 2);
   assert.equal(result.authorizations[0].authorization_request_id, rows[1].authorization_request_id);
+  assert.equal(result.authorizations[1].authorization_request_id, rows[0].authorization_request_id);
+  assert.equal(result.authorizations.some(entry => entry.decision === "denied"), false);
 });
