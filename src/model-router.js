@@ -15,7 +15,8 @@ import { hashablePayload, sha256Text, stableJson } from "./agent-bootstrap.js";
 import {
   classifyGroundingTask,
   getAgentProfile,
-  planProfileGroundingReads
+  planProfileGroundingReads,
+  profileAllowsChain
 } from "./profiles.js";
 
 export const AGENT_CONTEXT_SCHEMA = "cairnstone-agent-context-v1";
@@ -2683,7 +2684,7 @@ function compactProfileMetadata(profile) {
 
 export const DELEGATE_TOOL_DEFINITION = {
   name: "cairnstone_delegate",
-  description: "V7.2/V7.4: bounded server-side delegation. Without profile_id it preserves the original V7.2 read-only path with zero tool execution. With an accepted V7.4 profile such as cairnstone-maintainer, CairnStone may execute only profile-allowlisted automatic reads through the V7.3 broker before routing, then sends the model zero tools. Returns compact text, profile/grounding evidence, identities, usage, and diagnostics; grants zero execution/mutation authority to the model or profile.",
+  description: "V7.2/V7.4: bounded server-side delegation. Without profile_id it preserves the original V7.2 read-only path with zero tool execution. With an accepted V7.4 profile from the cross-project registry (e.g. cairnstone-maintainer, repo-debugger, release-reviewer), CairnStone may execute only profile-allowlisted automatic reads through the V7.3 broker before routing, then sends the model zero tools. Returns compact text, profile/grounding evidence, identities, usage, and diagnostics; grants zero execution/mutation authority to the model or profile.",
   inputSchema: {
     type: "object",
     required: ["actor_id", "task", "chain", "route"],
@@ -2741,7 +2742,7 @@ export const DELEGATE_TOOL_DEFINITION = {
         additionalProperties: false
       },
       include_inbox: { type: "boolean", description: "Include the non-mutating AC1 inbox snapshot in the server-side V7.0 package. Defaults to true." },
-      profile_id: { type: "string", description: "Optional V7.4 reusable agent profile identity. 'cairnstone-maintainer' activates deterministic operational-state grounding before the model call." }
+      profile_id: { type: "string", description: "Optional V7.4 reusable agent profile identity from the cross-project profile registry (e.g. 'cairnstone-maintainer', 'repo-debugger', 'release-reviewer'). Activates deterministic operational-state grounding before the model call." }
     },
     additionalProperties: false
   }
@@ -2773,13 +2774,14 @@ export async function delegateFromBody(body, env, deps = {}) {
         return { ...delegationFailure(profileResult?.error || "agent_profile_not_found"), profile_id: profileId };
       }
       profile = profileResult.profile;
-      if (profile.scope?.chain !== chain) {
-        return { ...delegationFailure("agent_profile_scope_mismatch", "profile_chain_does_not_match_requested_chain"), profile: compactProfileMetadata(profile) };
+      const chainAllowed = typeof deps.profileAllowsChain === "function" ? deps.profileAllowsChain : profileAllowsChain;
+      if (!chainAllowed(profile, chain)) {
+        return { ...delegationFailure("agent_profile_scope_mismatch", "profile_chain_not_permitted_for_this_profile"), profile: compactProfileMetadata(profile) };
       }
       effectiveActorId = profile.ac1_identity?.actor_id || actorId;
       const classify = typeof deps.classifyGroundingTask === "function" ? deps.classifyGroundingTask : classifyGroundingTask;
       const planReads = typeof deps.planProfileGroundingReads === "function" ? deps.planProfileGroundingReads : planProfileGroundingReads;
-      const classification = classify(task);
+      const classification = classify(profile, task, { chain });
       const readPlan = planReads(profile, classification);
       if (!readPlan || readPlan.ok !== true) {
         return { ...delegationFailure(readPlan?.error || "profile_grounding_plan_failed"), profile: compactProfileMetadata(profile), grounding: { classification, degraded: true } };
