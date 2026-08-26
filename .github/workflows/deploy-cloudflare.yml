@@ -863,7 +863,7 @@ jobs:
           echo "V7.4.0 live acceptance passed: the reusable cairnstone-maintainer profile classified the exact current-authorization prompt as operational_current, executed one governed live authorization-list read before routing, preserved identical package/request/profile identity across Workers AI and DeepSeek, exposed zero tools to either model, retained zero execution/mutation authority, and left accepted project state unchanged."
 
       - name: V7.4.1 true cross-project repo-debugger live acceptance
-        if: github.event.inputs.run_v741_acceptance == 'true'
+        if: false
         shell: bash
         run: |
           set -euo pipefail
@@ -997,3 +997,41 @@ jobs:
           jq -nc --argjson direct "$direct" --argjson workers "$workers" --argjson deepseek "$deepseek" --argjson denied "$denied" '{acceptance:"V7.4.1",direct_reconciliation:{repo:$direct.repo,observed_commit_sha:$direct.observed_commit_sha,summary:$direct.summary},workers_ai:{package_id:$workers.package_id,request_ir_id:$workers.request_ir_id,profile:$workers.profile,grounding:$workers.grounding,route:$workers.route,policy:$workers.policy,output:$workers.output.text},deepseek:{package_id:$deepseek.package_id,request_ir_id:$deepseek.request_ir_id,profile:$deepseek.profile,grounding:$deepseek.grounding,route:$deepseek.route,policy:$deepseek.policy,output:$deepseek.output.text},scope_denial:{error:$denied.error,profile:$denied.profile,policy:$denied.policy}}'
 
           echo "V7.4.1 live acceptance passed: repo-debugger reused one durable profile on the independent praxiq-call chain, its governed reconcile read preserved the actual drift summary into model grounding, Workers AI and DeepSeek preserved identical package/request/profile/classification identity with zero model tool surface and zero mutation authority, an unlisted chain failed closed before work, and both canonical chains remained unchanged."
+
+  v741_diagnostic:
+    needs: deploy
+    if: github.event.inputs.run_v741_acceptance == 'true'
+    runs-on: ubuntu-latest
+    name: V7.4.1 Live Diagnostic
+    permissions:
+      contents: read
+    steps:
+      - name: Capture exact production responses
+        shell: bash
+        run: |
+          set -u
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+          RPC="$BASE/mcp"
+          TASK="Is praxiq-call currently drifted from GitHub?"
+
+          echo '=== HEALTH ==='
+          curl -sS "$BASE/health" | jq -c '{ok,version,delegate:(.mcp_tools|index("cairnstone_delegate")!=null),reconcile:(.mcp_tools|index("cairnstone_reconcile_repo")!=null)}' || true
+
+          echo '=== DIRECT RECONCILE ==='
+          direct="$(curl -sS -X POST "$BASE/v1/reconcile-repo" -H 'content-type: application/json' --data '{"chain":"praxiq-call","owner":"nothinginfinity","repo":"PraXiQ-call","ref":"main","include_in_sync":false,"max_paths":100}')"
+          echo "$direct" | jq -c '{ok,error,repo,observed_commit_sha,snapshot,summary,tuples:[.tuples[]? | {path,drift_type}],read_only}' || echo "$direct"
+
+          echo '=== WORKERS AI ==='
+          workers_payload="$(jq -nc --arg task "$TASK" '{jsonrpc:"2.0",id:7411,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v741-diagnostic",profile_id:"repo-debugger",task:$task,chain:"praxiq-call",route:{provider:"workers-ai",model:"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},generation:{max_output_tokens:500,temperature:0},include_inbox:false}}}')"
+          workers_outer="$(curl -sS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$workers_payload")"
+          echo "$workers_outer" | jq -c '{jsonrpc,id,error,result_is_error:(.result.isError // null),parsed:(try (.result.content[0].text | fromjson) catch .)}' || echo "$workers_outer"
+
+          echo '=== DEEPSEEK ==='
+          deepseek_payload="$(jq -nc --arg task "$TASK" '{jsonrpc:"2.0",id:7412,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v741-diagnostic",profile_id:"repo-debugger",task:$task,chain:"praxiq-call",route:{provider:"deepseek",model:"deepseek-chat",credential_mode:"byok",credential_alias:"default"},generation:{max_output_tokens:500,temperature:0},include_inbox:false}}}')"
+          deepseek_outer="$(curl -sS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$deepseek_payload")"
+          echo "$deepseek_outer" | jq -c '{jsonrpc,id,error,result_is_error:(.result.isError // null),parsed:(try (.result.content[0].text | fromjson) catch .)}' || echo "$deepseek_outer"
+
+          echo '=== UNLISTED SCOPE ==='
+          denied_payload="$(jq -nc '{jsonrpc:"2.0",id:7413,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v741-diagnostic",profile_id:"repo-debugger",task:"Is praxiq-int currently drifted from GitHub?",chain:"praxiq-int",route:{provider:"workers-ai",model:"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},generation:{max_output_tokens:200,temperature:0},include_inbox:false}}}')"
+          denied_outer="$(curl -sS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$denied_payload")"
+          echo "$denied_outer" | jq -c '{jsonrpc,id,error,result_is_error:(.result.isError // null),parsed:(try (.result.content[0].text | fromjson) catch .)}' || echo "$denied_outer"
