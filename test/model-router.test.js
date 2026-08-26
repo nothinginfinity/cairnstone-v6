@@ -471,6 +471,57 @@ test("V7.4 repo-debugger (a second registry profile) grounds a repo-drift questi
   assert.equal(result.policy.mutation_authority, false);
 });
 
+test("V7.4.1 repo-debugger reuses one durable profile on praxiq-call and still fails closed on unlisted chains", async () => {
+  const events = [];
+  const captured = {};
+  const allowed = await delegateFromBody({
+    actor_id: "test:caller",
+    profile_id: "repo-debugger",
+    task: "Is praxiq-call currently drifted from GitHub?",
+    chain: "praxiq-call",
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" }
+  }, {}, {
+    agentBootstrapFromBody: async args => { events.push(`bootstrap:${args.capabilities?.supports_tool_calls === true ? "grounding" : "final"}`); return profileBootstrapFixture(args); },
+    executeReadToolIntent: async body => {
+      events.push("live-read");
+      assert.equal(body.tool_intent.tool_id, "cairnstone_reconcile_repo");
+      assert.deepEqual(body.tool_intent.arguments, { chain: "praxiq-call" });
+      return { ok: true, executed: true, result: { ok: true, summary: { changed: 1, added: 0, removed: 0 } } };
+    },
+    modelRouteFromBody: async body => { events.push("route"); return successfulProfileRoute(body.context_package, captured); }
+  });
+
+  assert.equal(allowed.ok, true);
+  assert.deepEqual(events, ["bootstrap:grounding", "live-read", "bootstrap:final", "route"]);
+  assert.equal(allowed.profile.profile_id, "repo-debugger");
+  assert.equal(allowed.profile.version, "0.1.1");
+  assert.deepEqual(allowed.profile.scope.allowed_chains, ["praxiq-call"]);
+  assert.equal(allowed.grounding.classification.matched_rule, "repo_drift_live_check");
+  assert.equal(allowed.grounding.live_reads_executed, 1);
+  assert.equal(allowed.policy.tools_exposed_to_model, 0);
+  assert.equal(allowed.policy.tools_executed, 1);
+  assert.equal(allowed.policy.execution_authority, false);
+  assert.equal(allowed.policy.mutation_authority, false);
+  assert.deepEqual(captured.contextPackage.capabilities.available_tools, []);
+  assert.equal(captured.contextPackage.capabilities.supports_tool_calls, false);
+
+  let touched = false;
+  const denied = await delegateFromBody({
+    actor_id: "test:caller",
+    profile_id: "repo-debugger",
+    task: "Is this chain currently drifted from GitHub?",
+    chain: "unlisted-project-chain",
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" }
+  }, {}, {
+    agentBootstrapFromBody: async args => { touched = true; return profileBootstrapFixture(args); },
+    executeReadToolIntent: async () => { touched = true; return { ok: true, executed: true }; },
+    modelRouteFromBody: async () => { touched = true; return { ok: true }; }
+  });
+  assert.equal(denied.ok, false);
+  assert.equal(denied.error, "agent_profile_scope_mismatch");
+  assert.equal(touched, false);
+});
+
 test("V7.4 release-reviewer (a third registry profile) grounds a doc-freshness question via cairnstone_get_source_freshness", async () => {
   const events = [];
   const result = await delegateFromBody({
