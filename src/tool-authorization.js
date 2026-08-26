@@ -163,10 +163,24 @@ export async function listToolAuthorizationsFromBody(body, env, deps = {}) {
   if (typeof deps.listAuthorizations === "function") return deps.listAuthorizations(body);
   if (!env?.CAIRNSTONE_DB) return { ok: false, error: "authorization_lifecycle_db_unavailable" };
   const status = typeof body?.status === "string" && body.status.trim() ? body.status.trim() : null;
+  const decision = typeof body?.decision === "string" && body.decision.trim() ? body.decision.trim() : null;
   const limit = clampInt(body?.limit, 1, 200, 50);
-  const result = status
-    ? await env.CAIRNSTONE_DB.prepare("SELECT * FROM tool_authorizations WHERE status = ? ORDER BY created_at DESC LIMIT ?").bind(status, limit).all()
-    : await env.CAIRNSTONE_DB.prepare("SELECT * FROM tool_authorizations ORDER BY created_at DESC LIMIT ?").bind(limit).all();
+  let result;
+  if (status && decision) {
+    result = await env.CAIRNSTONE_DB.prepare(
+      "SELECT * FROM tool_authorizations WHERE status = ? AND decision = ? ORDER BY COALESCE(issued_at, created_at) DESC, created_at DESC LIMIT ?"
+    ).bind(status, decision, limit).all();
+  } else if (decision) {
+    result = await env.CAIRNSTONE_DB.prepare(
+      "SELECT * FROM tool_authorizations WHERE decision = ? ORDER BY COALESCE(issued_at, created_at) DESC, created_at DESC LIMIT ?"
+    ).bind(decision, limit).all();
+  } else if (status) {
+    result = await env.CAIRNSTONE_DB.prepare(
+      "SELECT * FROM tool_authorizations WHERE status = ? ORDER BY created_at DESC LIMIT ?"
+    ).bind(status, limit).all();
+  } else {
+    result = await env.CAIRNSTONE_DB.prepare("SELECT * FROM tool_authorizations ORDER BY created_at DESC LIMIT ?").bind(limit).all();
+  }
   return { ok: true, total: result.results?.length || 0, authorizations: (result.results || []).map(rowToAuthorization) };
 }
 
@@ -319,12 +333,21 @@ export async function listToolAuthorizationsCompactFromBody(body, env, deps = {}
   }
   const limit = clampInt(body?.limit, 1, AUTHORIZATION_LIST_MAX_LIMIT, AUTHORIZATION_LIST_DEFAULT_LIMIT);
 
-  const raw = await listToolAuthorizationsFromBody({ status, limit: AUTHORIZATION_LIST_FETCH_LIMIT }, env, deps);
+  const raw = await listToolAuthorizationsFromBody({ status, decision, limit: AUTHORIZATION_LIST_FETCH_LIMIT }, env, deps);
   if (!raw.ok) return raw;
 
   let authorizations = Array.isArray(raw.authorizations) ? raw.authorizations : [];
-  if (decision) authorizations = authorizations.filter(entry => entry.decision === decision);
-  const truncatedByFetchLimit = !decision && !status && raw.total === AUTHORIZATION_LIST_FETCH_LIMIT;
+  if (decision) {
+    authorizations = authorizations
+      .filter(entry => entry.decision === decision)
+      .sort((a, b) => {
+        const aTime = Date.parse(a.issued_at || a.created_at || "") || 0;
+        const bTime = Date.parse(b.issued_at || b.created_at || "") || 0;
+        if (aTime !== bTime) return bTime - aTime;
+        return (Date.parse(b.created_at || "") || 0) - (Date.parse(a.created_at || "") || 0);
+      });
+  }
+  const truncatedByFetchLimit = raw.total === AUTHORIZATION_LIST_FETCH_LIMIT;
   authorizations = authorizations.slice(0, limit);
 
   return {
