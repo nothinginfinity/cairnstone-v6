@@ -75,6 +75,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v741_acceptance:
+        description: "Run V7.4.1 true cross-project repo-debugger acceptance against praxiq-call"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   deploy:
@@ -850,3 +858,139 @@ jobs:
             '{acceptance:"V7.4.0",canonical_head:$head,package_id:$package,request_ir_id:$request,live_authorizations:[$live.authorizations[]|{authorization_request_id,tool_id,status,decision,decided_at,consumed,consumed_at,outcome}],workers_ai:{profile:$workers.profile,grounding:$workers.grounding,route:$workers.route,policy:$workers.policy,output:$workers.output.text},deepseek:{profile:$deepseek.profile,grounding:$deepseek.grounding,route:$deepseek.route,policy:$deepseek.policy,output:$deepseek.output.text}}'
 
           echo "V7.4.0 live acceptance passed: the reusable cairnstone-maintainer profile classified the exact current-authorization prompt as operational_current, executed one governed live authorization-list read before routing, preserved identical package/request/profile identity across Workers AI and DeepSeek, exposed zero tools to either model, retained zero execution/mutation authority, and left accepted project state unchanged."
+
+      - name: V7.4.1 true cross-project repo-debugger live acceptance
+        if: github.event.inputs.run_v741_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+          RPC="$BASE/mcp"
+          TASK="Is praxiq-call currently drifted from GitHub?"
+
+          health="$(curl -fsS "$BASE/health")"
+          echo "$health" | jq -e '
+            .ok == true and
+            .version == "0.5.19" and
+            ((.mcp_tools | index("cairnstone_delegate")) != null) and
+            ((.mcp_tools | index("cairnstone_reconcile_repo")) != null)
+          ' >/dev/null
+
+          before_v7="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
+          before_v7_head="$(echo "$before_v7" | jq -r '.canonical_head.hash')"
+          before_v7_paths="$(echo "$before_v7" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          before_prax="$(curl -fsS "$BASE/v2/chains/praxiq-call/resume")"
+          before_prax_head="$(echo "$before_prax" | jq -r '.canonical_head.hash')"
+          before_prax_paths="$(echo "$before_prax" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+
+          direct="$(curl -fsS -X POST "$BASE/v1/reconcile-repo" -H 'content-type: application/json' --data '{"chain":"praxiq-call","owner":"nothinginfinity","repo":"PraXiQ-call","ref":"main","include_in_sync":false,"max_paths":100}')"
+          echo "$direct" | jq -e '
+            .ok == true and
+            .repo == "nothinginfinity/PraXiQ-call" and
+            .snapshot.immutable == true and
+            .snapshot.tree_truncated == false and
+            .summary.drifted >= 1 and
+            .summary.total_paths >= .summary.drifted and
+            .read_only.chain_heads_written == false and
+            .read_only.path_heads_written == false and
+            .read_only.stones_written == false
+          ' >/dev/null
+          direct_summary="$(echo "$direct" | jq -c '.summary')"
+
+          workers_payload="$(jq -nc --arg task "$TASK" '{jsonrpc:"2.0",id:7411,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v741-acceptance",profile_id:"repo-debugger",task:$task,chain:"praxiq-call",route:{provider:"workers-ai",model:"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},generation:{max_output_tokens:500,temperature:0},include_inbox:false}}}')"
+          workers_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$workers_payload")"
+          workers="$(echo "$workers_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$workers" | jq -e --argjson summary "$direct_summary" '
+            .ok == true and
+            .schema == "cairnstone-delegation-result-v1" and
+            .caller_actor_id == "github-actions:v741-acceptance" and
+            .actor_id == "cairnstone:repo-debugger" and
+            .profile.profile_id == "repo-debugger" and
+            .profile.version == "0.1.1" and
+            (.profile.scope.allowed_chains | index("praxiq-call")) != null and
+            .profile.execution_authority == false and
+            .profile.mutation_authority == false and
+            .grounding.classification.grounding_class == "operational_current" and
+            .grounding.classification.domain == "repo_state" and
+            .grounding.classification.matched_rule == "repo_drift_live_check" and
+            .grounding.current_claim_source == "live_operational_read" and
+            .grounding.degraded == false and
+            .grounding.live_reads_executed == 1 and
+            .grounding.live_reads[0].tool_id == "cairnstone_reconcile_repo" and
+            .grounding.live_reads[0].summary == $summary and
+            .grounding.live_reads[0].drifted == ($summary.drifted > 0) and
+            .grounding.live_reads[0].read_only.chain_heads_written == false and
+            .grounding.live_reads[0].read_only.path_heads_written == false and
+            .grounding.live_reads[0].read_only.stones_written == false and
+            (.grounding.read_receipts | length) == 1 and
+            (.grounding.read_receipts[0].stone_hash | test("^[0-9a-f]{64}$")) and
+            .route.provider == "workers-ai" and
+            .policy.tools_exposed_to_model == 0 and
+            .policy.tools_executed == 1 and
+            .policy.execution_authority == false and
+            .policy.mutation_authority == false and
+            .policy.accepted_state_mutation == false and
+            .diagnostics.profile_live_reads_executed == 1 and
+            (.output.text | length) > 0
+          ' >/dev/null
+
+          package_id="$(echo "$workers" | jq -r '.package_id')"
+          request_ir_id="$(echo "$workers" | jq -r '.request_ir_id')"
+          profile_json="$(echo "$workers" | jq -c '.profile')"
+          classification_json="$(echo "$workers" | jq -c '.grounding.classification')"
+
+          deepseek_payload="$(jq -nc --arg task "$TASK" '{jsonrpc:"2.0",id:7412,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v741-acceptance",profile_id:"repo-debugger",task:$task,chain:"praxiq-call",route:{provider:"deepseek",model:"deepseek-chat",credential_mode:"byok",credential_alias:"default"},generation:{max_output_tokens:500,temperature:0},include_inbox:false}}}')"
+          deepseek_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$deepseek_payload")"
+          deepseek="$(echo "$deepseek_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$deepseek" | jq -e --arg package "$package_id" --arg request "$request_ir_id" --argjson profile "$profile_json" --argjson classification "$classification_json" --argjson summary "$direct_summary" '
+            .ok == true and
+            .schema == "cairnstone-delegation-result-v1" and
+            .package_id == $package and
+            .request_ir_id == $request and
+            .profile == $profile and
+            .grounding.classification == $classification and
+            .grounding.current_claim_source == "live_operational_read" and
+            .grounding.degraded == false and
+            .grounding.live_reads_executed == 1 and
+            .grounding.live_reads[0].summary == $summary and
+            .grounding.live_reads[0].drifted == ($summary.drifted > 0) and
+            (.grounding.read_receipts | length) == 1 and
+            (.grounding.read_receipts[0].stone_hash | test("^[0-9a-f]{64}$")) and
+            .route.provider == "deepseek" and
+            .route.model == "deepseek-chat" and
+            .route.credential_mode == "byok" and
+            .policy.tools_exposed_to_model == 0 and
+            .policy.tools_executed == 1 and
+            .policy.execution_authority == false and
+            .policy.mutation_authority == false and
+            .policy.accepted_state_mutation == false and
+            .diagnostics.profile_live_reads_executed == 1 and
+            (.output.text | length) > 0
+          ' >/dev/null
+
+          denied_payload="$(jq -nc '{jsonrpc:"2.0",id:7413,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v741-acceptance",profile_id:"repo-debugger",task:"Is praxiq-int currently drifted from GitHub?",chain:"praxiq-int",route:{provider:"workers-ai",model:"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},generation:{max_output_tokens:200,temperature:0},include_inbox:false}}}')"
+          denied_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$denied_payload")"
+          denied="$(echo "$denied_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$denied" | jq -e '
+            .ok == false and
+            .error == "agent_profile_scope_mismatch" and
+            .profile.profile_id == "repo-debugger" and
+            .policy.tools_executed == 0 and
+            .policy.execution_authority == false and
+            .policy.mutation_authority == false
+          ' >/dev/null
+
+          after_v7="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
+          after_v7_head="$(echo "$after_v7" | jq -r '.canonical_head.hash')"
+          after_v7_paths="$(echo "$after_v7" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          after_prax="$(curl -fsS "$BASE/v2/chains/praxiq-call/resume")"
+          after_prax_head="$(echo "$after_prax" | jq -r '.canonical_head.hash')"
+          after_prax_paths="$(echo "$after_prax" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          test "$before_v7_head" = "$after_v7_head"
+          test "$before_v7_paths" = "$after_v7_paths"
+          test "$before_prax_head" = "$after_prax_head"
+          test "$before_prax_paths" = "$after_prax_paths"
+
+          jq -nc --argjson direct "$direct" --argjson workers "$workers" --argjson deepseek "$deepseek" --argjson denied "$denied" '{acceptance:"V7.4.1",direct_reconciliation:{repo:$direct.repo,observed_commit_sha:$direct.observed_commit_sha,summary:$direct.summary},workers_ai:{package_id:$workers.package_id,request_ir_id:$workers.request_ir_id,profile:$workers.profile,grounding:$workers.grounding,route:$workers.route,policy:$workers.policy,output:$workers.output.text},deepseek:{package_id:$deepseek.package_id,request_ir_id:$deepseek.request_ir_id,profile:$deepseek.profile,grounding:$deepseek.grounding,route:$deepseek.route,policy:$deepseek.policy,output:$deepseek.output.text},scope_denial:{error:$denied.error,profile:$denied.profile,policy:$denied.policy}}'
+
+          echo "V7.4.1 live acceptance passed: repo-debugger reused one durable profile on the independent praxiq-call chain, its governed reconcile read preserved the actual drift summary into model grounding, Workers AI and DeepSeek preserved identical package/request/profile/classification identity with zero model tool surface and zero mutation authority, an unlisted chain failed closed before work, and both canonical chains remained unchanged."
