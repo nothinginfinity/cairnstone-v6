@@ -118,10 +118,19 @@ export async function agentBootstrapFromBody(body, env, deps) {
     let actorId;
     let task;
     let chain;
+    let instructionsChain;
     try {
       actorId = requiredActorId(body && body.actor_id, "actor_id");
       task = requiredText(body && body.task, "task", TASK_MAX_LENGTH);
       chain = requiredText(body && body.chain, "chain", 300);
+      // Internal-only V7.4 cross-project mode. `instructions_chain` is
+      // intentionally absent from the public MCP input schema, so callers
+      // cannot redirect canonical instructions. A validated profile may pass
+      // its owning chain here while the target chain remains project-state
+      // authority and memory scope.
+      instructionsChain = body && typeof body.instructions_chain === "string" && body.instructions_chain.trim()
+        ? requiredText(body.instructions_chain, "instructions_chain", 300)
+        : chain;
     } catch (error) {
       return { ok: false, error: mapValidationError(error) };
     }
@@ -137,8 +146,19 @@ export async function agentBootstrapFromBody(body, env, deps) {
     const resume = snapshot1.resume;
 
     // ---- Canonical instructions: accepted path HEAD only, never mutable main ----
-    const instructions = await loadCanonicalInstructions(env, resume, DEFAULT_INSTRUCTIONS_PATH);
-    if (!instructions.ok) return instructions;
+    // Cross-project V7.4 profiles may reuse the profile owner's canonical
+    // instructions while compiling authority/memory from a different allowed
+    // project chain. Both chains are independently snapshotted and race-
+    // checked; the instructions chain never becomes target project authority.
+    const instructionsSnapshot1 = instructionsChain === chain
+      ? snapshot1
+      : await captureAuthoritySnapshot(env, instructionsChain, deps);
+    if (!instructionsSnapshot1.ok) {
+      return { ...instructionsSnapshot1, error: "canonical_instructions_chain_unavailable", instructions_chain: instructionsChain };
+    }
+    const instructions = await loadCanonicalInstructions(env, instructionsSnapshot1.resume, DEFAULT_INSTRUCTIONS_PATH);
+    if (!instructions.ok) return { ...instructions, instructions_chain: instructionsChain };
+    if (instructionsChain !== chain) instructions.value.authority_chain = instructionsChain;
 
     // ---- AC1 coordination snapshot: non-mutating listing only ----
     let coordination = { recipient_id: actorId, unread_count: 0, items: [] };
@@ -228,6 +248,18 @@ export async function agentBootstrapFromBody(body, env, deps) {
     if (!snapshot2.ok) return snapshot2;
     if (!sameAuthoritySnapshot(snapshot1, snapshot2)) {
       return { ok: false, error: "context_compile_race", chain, detail: "chain_or_path_heads_changed_during_compile" };
+    }
+    if (instructionsChain !== chain) {
+      const instructionsSnapshot2 = await captureAuthoritySnapshot(env, instructionsChain, deps);
+      if (!instructionsSnapshot2.ok || !sameAuthoritySnapshot(instructionsSnapshot1, instructionsSnapshot2)) {
+        return {
+          ok: false,
+          error: "context_compile_race",
+          chain,
+          instructions_chain: instructionsChain,
+          detail: "canonical_instructions_chain_or_path_heads_changed_during_compile"
+        };
+      }
     }
     const skillsManifestRecheck = await deps.listSkillsFromBody({ chain: skillsResult.value.chain }, env);
     if (!skillsManifestRecheck || skillsManifestRecheck.ok === false ||
@@ -670,7 +702,8 @@ export function hashablePayload(packageBody) {
       stone_hash: packageBody.instructions.stone_hash,
       commit_sha: packageBody.instructions.commit_sha,
       content_identity: packageBody.instructions.content_identity,
-      truncated: packageBody.instructions.truncated
+      truncated: packageBody.instructions.truncated,
+      ...(packageBody.instructions.authority_chain ? { authority_chain: packageBody.instructions.authority_chain } : {})
     },
     inbox_snapshot: packageBody.coordination.items
       .map(item => ({ message_id: item.message_id, stone_hash: item.stone_hash, status: item.status }))
