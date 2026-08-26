@@ -522,8 +522,8 @@ test("V7.4.1 repo-debugger reuses one durable profile on praxiq-call and still f
   assert.equal(allowed.policy.mutation_authority, false);
   assert.deepEqual(captured.contextPackage.capabilities.available_tools, []);
   assert.equal(captured.contextPackage.capabilities.supports_tool_calls, false);
-  assert.match(captured.contextPackage.request.task, /\"drifted\":4/);
-  assert.match(captured.contextPackage.request.task, /src\\/index\\.js/);
+  assert.ok(captured.contextPackage.request.task.includes('"drifted":4'));
+  assert.ok(captured.contextPackage.request.task.includes("src/index.js"));
 
   let touched = false;
   const denied = await delegateFromBody({
