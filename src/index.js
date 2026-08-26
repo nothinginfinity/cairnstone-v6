@@ -29,6 +29,7 @@ import {
   delegateFromBody,
   executeToolIntentFromBody,
   requestToolAuthorizationFromBody,
+  prepareToolAuthorizationFromBody,
   modelCapabilitiesFromBody,
   modelRouteFromBody,
   toolPolicyPreviewFromBody,
@@ -37,6 +38,7 @@ import {
   MODEL_CAPABILITIES_TOOL_DEFINITION,
   MODEL_ROUTE_TOOL_DEFINITION,
   TOOL_AUTHORIZATION_REQUEST_TOOL_DEFINITION,
+  TOOL_AUTHORIZATION_PREPARE_TOOL_DEFINITION,
   TOOL_EXECUTE_TOOL_DEFINITION,
   TOOL_POLICY_PREVIEW_TOOL_DEFINITION,
   TOOL_REGISTRY_TOOL_DEFINITION
@@ -49,7 +51,7 @@ import {
   persistPendingAuthorizationRecord
 } from "./tool-authorization.js";
 
-const VERSION = "0.5.13";
+const VERSION = "0.5.14";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -499,6 +501,19 @@ async function callMcpTool(name, args, env) {
     // model).
     invokeTool: (handlerName, handlerArgs, handlerEnv) => callMcpTool(handlerName, handlerArgs, handlerEnv),
     createStone: body => createStoneFromBody(body, env)
+  });
+  if (name === "cairnstone_tool_authorization_prepare") return prepareToolAuthorizationFromBody(args, env, {
+    agentBootstrapFromBody: (body, e) => agentBootstrapFromBody(body, e, {
+      resumeChainFromBody,
+      getInboxFromBody: (inboxBody, inboxEnv) => getInboxFromBody(inboxBody, inboxEnv, { createStone: b => createStoneFromBody(b, inboxEnv) }),
+      resolveSkillsFromBody,
+      getSkillBundleFromBody,
+      listSkillsFromBody,
+      version: VERSION
+    }),
+    createStone: body => createStoneFromBody(body, env),
+    getExistingAuthorization: authorizationRequestId => getToolAuthorizationFromBody({ authorization_request_id: authorizationRequestId }, env),
+    persistPendingAuthorization: record => persistPendingAuthorizationRecord(record, env)
   });
   if (name === "cairnstone_tool_authorization_request") return requestToolAuthorizationFromBody(args, env, {
     // V7.3.2 remains a hard stop for the model-facing MCP surface: persist
@@ -972,6 +987,7 @@ function mcpTools() {
     TOOL_REGISTRY_TOOL_DEFINITION,
     TOOL_POLICY_PREVIEW_TOOL_DEFINITION,
     TOOL_EXECUTE_TOOL_DEFINITION,
+    TOOL_AUTHORIZATION_PREPARE_TOOL_DEFINITION,
     TOOL_AUTHORIZATION_REQUEST_TOOL_DEFINITION,
     MODEL_ROUTE_TOOL_DEFINITION,
     DELEGATE_TOOL_DEFINITION
