@@ -51,7 +51,7 @@ import {
   persistPendingAuthorizationRecord
 } from "./tool-authorization.js";
 
-const VERSION = "0.5.14";
+const VERSION = "0.5.15";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
