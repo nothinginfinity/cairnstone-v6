@@ -1,6 +1,6 @@
 # CairnStone V7 Roadmap
 
-Status: **V7.3 COMPLETE; V7.4 IN PROGRESS — V7.4.0 operational-state grounding + first reusable `cairnstone-maintainer` profile are live-accepted on runtime 0.5.19; broader cross-project profile generalization (registry, cross-project chain scope, declarative grounding-classification rule engine, `repo-debugger` and `release-reviewer` profiles) is now also live-accepted at commit `7672381c9ad3977f1e760bc19e574be0aad50c22` — see `project-memory/evidence/v74-profile-generalization-acceptance.md`; V7.4 remains open for further profile-catalog growth, and V7.5 stays gated until V7.4 is declared fully complete**
+Status: **V7.3 COMPLETE; V7.4 COMPLETE — V7.4.0 operational grounding, generalized provider-neutral profile registry/rules, and V7.4.1 true cross-project profile reuse are live-accepted on runtime 0.5.19. `repo-debugger` now runs against the independent `praxiq-call` chain while its canonical instructions remain sourced from the profile-owning CairnStone chain under dual-chain race protection. Final strict acceptance run `33020784647` at runtime/workflow commit `8a780939fe69eca2dd075b7a45162af78c3fbd6e` passed targeted + full regression checks, deployment, real Workers AI and DeepSeek routing under identical package/request/profile/classification identity, exact live repo-drift grounding, fail-closed unlisted-chain scope, and unchanged accepted state on both chains. V7.5 is now the next phase; its gate is lifted but V7.5 is NOT STARTED.**
 Predecessor baseline: **V6.10 frozen control plane**
 
 ## V7 thesis
@@ -346,7 +346,7 @@ V7.3 acceptance should include a real bounded coding/debug loop: delegated model
 
 ### V7.4 — Cross-project agent profiles + reusable subagent identities
 
-Status: **IN PROGRESS. V7.4.0 COMPLETE and live-accepted on runtime `0.5.19`.** V7.4.0 establishes the first reusable provider-neutral profile, `cairnstone-maintainer`, plus deterministic grounding classes. For operational-current authorization questions, the profile executes one allowlisted live read through the V7.3 broker before model routing; accepted chain/path HEADs remain accepted-state authority and historical evidence remains explanatory only. The exact regression prompt `What are the most recent authorizations I approved` passed live cross-provider acceptance on Workers AI and DeepSeek in run `33009483267` at runtime source commit `c193d16b09b484e1824b6f00de03d1f15304e34b`, preserving identical package/request/profile identity while exposing zero tools to either model and granting zero execution/mutation authority. Approval discovery is ordered by human decision time (`issued_at`) rather than pending-request creation time. V7.4 remains open for broader cross-project profile catalog/generalization.
+Status: **COMPLETE. V7.4.0 and V7.4.1 are live-accepted on runtime `0.5.19`.** V7.4.0 established the first reusable provider-neutral profile, `cairnstone-maintainer`, deterministic grounding classes, and real Workers AI/DeepSeek operational-current grounding. The broader V7.4 generalization then replaced profile-specific branching with `AGENT_PROFILE_REGISTRY`, explicit `scope.allowed_chains`, and declarative JSON-serializable grounding-classification rules, adding `repo-debugger` and `release-reviewer` without expanding the mutation/execution surface. V7.4.1 closed the literal cross-project requirement: `repo-debugger` was explicitly allowed on the independent `praxiq-call` chain, and strict live run `33020784647` at commit `8a780939fe69eca2dd075b7a45162af78c3fbd6e` proved a real `cairnstone_reconcile_repo` read against PraXiQ, identical provider-neutral package/request/profile/classification identity on Workers AI and DeepSeek, zero tools exposed to either model, zero mutation/execution authority, fail-closed rejection of unlisted `praxiq-int`, and unchanged CairnStone + PraXiQ accepted state. That proof uncovered and fixed two real cross-project gaps: reconciliation evidence is now preserved in bounded model grounding, and V7.0 bootstrap can internally source canonical instructions from the validated profile-owning chain while keeping the target project chain authoritative for project state/memory and race-checking both chains. This satisfies the V7.4 acceptance criterion; additional profile-catalog growth is incremental rather than a gate.
 
 Create reusable provider-neutral agent profiles that configure how a CairnStone agent operates without becoming accepted project-memory authority.
 
@@ -368,6 +368,8 @@ Target examples include `repo-debugger`, `release-reviewer`, `cairnstone-maintai
 V7.4 acceptance should prove the same profile can run on at least two compatible providers, use the same permitted MCP/tool surface, preserve the same CairnStone authority boundary, and produce comparable receipts/evidence while provider/model remains an outer runtime choice.
 
 ### V7.5 — x402 / paid sub-agent runtime
+
+Status: **NEXT / NOT STARTED.** The V7.4 gate is lifted by the completed V7.4.1 true cross-project acceptance. No V7.5 implementation or payment authority is implied by that closure.
 
 Expose selected V7.4 profiles as bounded, metered agent services callable by other agents or applications.
 
@@ -402,9 +404,9 @@ V7.2 Console + Inbox Dispatch + read-only server-side delegation (COMPLETE — r
         ↓
 V7.3 Permissioned Agent Loop + MCP Tool Broker (COMPLETE — V7.3.0 through V7.3.3 live-accepted)
         ↓
-V7.4 Cross-project agent profiles (IN PROGRESS — V7.4.0 operational grounding + cairnstone-maintainer live-accepted)
+V7.4 Cross-project agent profiles (COMPLETE — V7.4.0 + generalized profile system + V7.4.1 true cross-project acceptance)
         ↓
-V7.5 x402 paid sub-agent runtime
+V7.5 x402 paid sub-agent runtime (NEXT — gate lifted, NOT STARTED)
 ```
 
 Do not skip V7.0.
