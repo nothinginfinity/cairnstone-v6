@@ -55,7 +55,7 @@ import {
   TOOL_AUTHORIZATION_LIST_TOOL_DEFINITION
 } from "./tool-authorization.js";
 
-const VERSION = "0.5.18";
+const VERSION = "0.5.19";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
