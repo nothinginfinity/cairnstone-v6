@@ -41,8 +41,15 @@ import {
   TOOL_POLICY_PREVIEW_TOOL_DEFINITION,
   TOOL_REGISTRY_TOOL_DEFINITION
 } from "./model-router.js";
+import {
+  authorizeToolRequestFromBody,
+  executeAuthorizedToolFromBody,
+  getToolAuthorizationFromBody,
+  listToolAuthorizationsFromBody,
+  persistPendingAuthorizationRecord
+} from "./tool-authorization.js";
 
-const VERSION = "0.5.12";
+const VERSION = "0.5.13";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -67,6 +74,45 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/freshness-status") return json(await getFreshnessStatusFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/reconcile-repo") return json(await reconcileRepoFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/set-path-head") return json(await setPathHeadFromBody(await request.json(), env));
+
+      // V7.3.3 trusted human-confirmation boundary. Deliberately REST-only:
+      // these endpoints are NOT MCP tools and therefore cannot be invoked by
+      // a model/provider tool intent. The caller must present a separately
+      // configured operator bearer token.
+      if (url.pathname === "/v1/tool-authorizations" && request.method === "GET") {
+        const auth = await requireOperatorAuthorization(request, env);
+        if (!auth.ok) return json(auth, auth.status || 401);
+        return json(await listToolAuthorizationsFromBody({ status: url.searchParams.get("status") || undefined, limit: url.searchParams.get("limit") || undefined }, env));
+      }
+      const authorizationMatch = url.pathname.match(/^\/v1\/tool-authorizations\/([^/]+)$/);
+      if (authorizationMatch && request.method === "GET") {
+        const auth = await requireOperatorAuthorization(request, env);
+        if (!auth.ok) return json(auth, auth.status || 401);
+        return json(await getToolAuthorizationFromBody({ authorization_request_id: decodeURIComponent(authorizationMatch[1]) }, env));
+      }
+      const authorizationDecisionMatch = url.pathname.match(/^\/v1\/tool-authorizations\/([^/]+)\/decision$/);
+      if (authorizationDecisionMatch && request.method === "POST") {
+        const auth = await requireOperatorAuthorization(request, env);
+        if (!auth.ok) return json(auth, auth.status || 401);
+        const decisionBody = await request.json();
+        return json(await authorizeToolRequestFromBody({
+          ...decisionBody,
+          authorization_request_id: decodeURIComponent(authorizationDecisionMatch[1]),
+          authorization_subject: auth.subject,
+          authorization_method: auth.method
+        }, env, guardedAuthorizationDeps(env)));
+      }
+      const authorizationExecuteMatch = url.pathname.match(/^\/v1\/tool-authorizations\/([^/]+)\/execute$/);
+      if (authorizationExecuteMatch && request.method === "POST") {
+        const auth = await requireOperatorAuthorization(request, env);
+        if (!auth.ok) return json(auth, auth.status || 401);
+        const executeBody = await request.json();
+        return json(await executeAuthorizedToolFromBody({
+          ...executeBody,
+          authorization_request_id: decodeURIComponent(authorizationExecuteMatch[1])
+        }, env, guardedAuthorizationDeps(env)));
+      }
+
       if (request.method === "POST" && url.pathname === "/v1/import-v5-bundle") return json(await importV5BundleFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/search") return json(await searchStonesFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v1/query-expand") return json(await queryAndExpandFromBody(await request.json(), env));
@@ -173,6 +219,10 @@ function routes() {
     "POST /v1/freshness-status",
     "POST /v1/reconcile-repo",
     "POST /v1/set-path-head",
+    "GET /v1/tool-authorizations",
+    "GET /v1/tool-authorizations/:authorization_request_id",
+    "POST /v1/tool-authorizations/:authorization_request_id/decision",
+    "POST /v1/tool-authorizations/:authorization_request_id/execute",
     "POST /v1/import-v5-bundle",
     "GET /v1/stones/:hash",
     "GET /v1/stones/:hash/lod/:level",
@@ -327,10 +377,11 @@ async function callMcpTool(name, args, env) {
     createStone: body => createStoneFromBody(body, env)
   });
   if (name === "cairnstone_tool_authorization_request") return requestToolAuthorizationFromBody(args, env, {
-    // V7.3.2 is a hard stop: only persist the pending governance artifact.
-    // No invokeTool dependency is supplied, so this path cannot call the
-    // requested mutation even if a caller attempts to smuggle approval.
-    createStone: body => createStoneFromBody(body, env)
+    // V7.3.2 remains a hard stop for the model-facing MCP surface: persist
+    // the immutable pending request plus its mutable lifecycle envelope, but
+    // supply no mutation invocation or approval capability here.
+    createStone: body => createStoneFromBody(body, env),
+    persistPendingAuthorization: record => persistPendingAuthorizationRecord(record, env)
   });
   if (name === "cairnstone_model_route") return modelRouteFromBody(args, env);
   if (name === "cairnstone_delegate") return delegateFromBody(args, env, {
