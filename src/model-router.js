@@ -2816,6 +2816,7 @@ export async function delegateFromBody(body, env, deps = {}) {
       if (!chainAllowed(profile, chain)) {
         return { ...delegationFailure("agent_profile_scope_mismatch", "profile_chain_not_permitted_for_this_profile"), profile: compactProfileMetadata(profile) };
       }
+      const profileInstructionsChain = profile.scope?.chain && profile.scope.chain !== chain ? profile.scope.chain : null;
       effectiveActorId = profile.ac1_identity?.actor_id || actorId;
       const classify = typeof deps.classifyGroundingTask === "function" ? deps.classifyGroundingTask : classifyGroundingTask;
       const planReads = typeof deps.planProfileGroundingReads === "function" ? deps.planProfileGroundingReads : planProfileGroundingReads;
@@ -2842,6 +2843,7 @@ export async function delegateFromBody(body, env, deps = {}) {
           actor_id: effectiveActorId,
           task,
           chain,
+          ...(profileInstructionsChain ? { instructions_chain: profileInstructionsChain } : {}),
           capabilities: {
             tools: readPlan.reads.map(read => ({ id: read.tool_id, available: true, class: "read" })),
             supports_tool_calls: true
@@ -2912,6 +2914,7 @@ export async function delegateFromBody(body, env, deps = {}) {
       actor_id: effectiveActorId,
       task: taskForBootstrap,
       chain,
+      ...(profile && profile.scope?.chain && profile.scope.chain !== chain ? { instructions_chain: profile.scope.chain } : {}),
       capabilities: { tools: [], supports_tool_calls: false },
       limits: body.limits,
       include_inbox: body.include_inbox !== false
