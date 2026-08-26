@@ -2575,8 +2575,10 @@ export const MODEL_CAPABILITIES_TOOL_DEFINITION = {
 
 // V7.2 -- bounded read-only server-side delegation.
 // Composes V7.0 bootstrap + V7.1 routing inside the Worker. The full context
-// package stays server-side; no tools are exposed or executed. Multi-turn tool
-// execution remains a V7.3 concern.
+// package stays server-side. The legacy/unprofiled path exposes and executes
+// no tools; an optional V7.4 profile may perform narrowly allowlisted governed
+// server-side reads through the V7.3 broker before routing, while the model
+// itself still receives zero tools and zero execution/mutation authority.
 export const DELEGATION_RESULT_SCHEMA = "cairnstone-delegation-result-v1";
 const DELEGATION_MAX_TASK_LENGTH = 4000;
 const DELEGATION_MAX_OUTPUT_TOKENS = 2048;
@@ -2681,7 +2683,7 @@ function compactProfileMetadata(profile) {
 
 export const DELEGATE_TOOL_DEFINITION = {
   name: "cairnstone_delegate",
-  description: "V7.2: bounded read-only server-side delegation. Compiles V7.0 accepted state and routes through V7.1 entirely inside CairnStone, returning compact text, identities, evidence refs, usage, and diagnostics instead of the full context package. Exposes zero tools and grants zero execution/mutation authority; tool execution remains deferred to V7.3.",
+  description: "V7.2/V7.4: bounded server-side delegation. Without profile_id it preserves the original V7.2 read-only path with zero tool execution. With an accepted V7.4 profile such as cairnstone-maintainer, CairnStone may execute only profile-allowlisted automatic reads through the V7.3 broker before routing, then sends the model zero tools. Returns compact text, profile/grounding evidence, identities, usage, and diagnostics; grants zero execution/mutation authority to the model or profile.",
   inputSchema: {
     type: "object",
     required: ["actor_id", "task", "chain", "route"],
