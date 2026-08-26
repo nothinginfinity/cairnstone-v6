@@ -3050,7 +3050,7 @@ function compactDelegationFailure(value) {
   return { error: value.error || null, detail: value.detail || null };
 }
 
-function delegationFailure(error, detail) {
+function delegationFailure(error, detail, readToolsExecuted = 0) {
   return { ok: false, error, ...(detail ? { detail } : {}), policy: delegationReadOnlyPolicy(readToolsExecuted) };
 }
 
