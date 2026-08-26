@@ -278,14 +278,31 @@ test("V7.3.3 identical pending request retry reuses the first immutable request 
     schema: "cairnstone-agent-context-v1",
     ok: true,
     package_id: "sha256:" + "0".repeat(64),
+    actor: { actor_id: "test:v733-request-replay" },
+    request: { task: "propose one guarded mutation", chain: "v733-request-replay" },
+    authority: {
+      chain_head: { stone_hash: "a".repeat(64), path: "project-memory/start.md", repo: null, commit_sha: null },
+      path_heads: []
+    },
+    instructions: {
+      path: "docs/AI_OPERATING_GUIDE.md",
+      stone_hash: "b".repeat(64),
+      commit_sha: "c".repeat(40),
+      content_identity: { sha256: "d".repeat(64), git_blob_sha: "e".repeat(40), bytes: 1 },
+      truncated: false
+    },
+    coordination: { items: [] },
+    skills: { manifest_head: "f".repeat(64), accepted_bundle: { skills: [] } },
+    memory: { retrieval_policy: { authority_first: true }, items: [] },
+    capabilities: { available_tools: ["cairnstone_commit_v2"], missing_required_tools: [] },
+    limits: { effective_max_package_bytes: 64000 },
     policy: {
       accepted_state_only_for_authority: true,
       mutable_branch_is_authority: false,
       execution_authority: false,
       mutation_authority: false,
       provider_credentials_in_package: false
-    },
-    capabilities: { available_tools: ["cairnstone_commit_v2"] }
+    }
   };
   pkg.package_id = await recomputePackageId(pkg);
   const args = {
