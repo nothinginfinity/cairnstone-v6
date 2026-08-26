@@ -863,7 +863,7 @@ jobs:
           echo "V7.4.0 live acceptance passed: the reusable cairnstone-maintainer profile classified the exact current-authorization prompt as operational_current, executed one governed live authorization-list read before routing, preserved identical package/request/profile identity across Workers AI and DeepSeek, exposed zero tools to either model, retained zero execution/mutation authority, and left accepted project state unchanged."
 
       - name: V7.4.1 true cross-project repo-debugger live acceptance
-        if: false
+        if: github.event.inputs.run_v741_acceptance == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -1000,7 +1000,7 @@ jobs:
 
   v741_diagnostic:
     needs: deploy
-    if: github.event.inputs.run_v741_acceptance == 'true'
+    if: false
     runs-on: ubuntu-latest
     name: V7.4.1 Live Diagnostic
     permissions:
