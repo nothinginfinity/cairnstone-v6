@@ -67,6 +67,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v740_acceptance:
+        description: "Run V7.4.0 reusable-profile operational grounding cross-provider acceptance after deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   deploy:
