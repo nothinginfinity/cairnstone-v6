@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canonicalAuthorizationArgumentDigest } from "../src/model-router.js";
+import {
+  canonicalAuthorizationArgumentDigest,
+  recomputePackageId,
+  requestToolAuthorizationFromBody
+} from "../src/model-router.js";
 import {
   authorizeToolRequestFromBody,
   executeAuthorizedToolFromBody,
@@ -249,4 +253,93 @@ test("V7.3.3 human-confirmation execution requires a concurrency guard", async (
   assert.equal(execution.error, "authorization_guard_required");
   assert.equal(h.invokeCount, 0);
   assert.equal(h.state.status, "authorized");
+});
+
+test("V7.3.3 approval revalidates stored request digest and current broker policy before granting", async () => {
+  const tampered = await makeHarness();
+  tampered.state.request.target.arguments.content = "tampered after proposal";
+  const digestFailure = await approve(tampered);
+  assert.equal(digestFailure.ok, false);
+  assert.equal(digestFailure.error, "authorization_argument_digest_mismatch");
+  assert.equal(tampered.state.status, "pending");
+  assert.equal(tampered.state.grant_stone_hash, null);
+
+  const policyChanged = await makeHarness();
+  policyChanged.deps.validateRegisteredMutation = async () => ({ ok: false, error: "authorized_tool_policy_changed" });
+  const policyFailure = await approve(policyChanged);
+  assert.equal(policyFailure.ok, false);
+  assert.equal(policyFailure.error, "authorized_tool_policy_changed");
+  assert.equal(policyChanged.state.status, "pending");
+  assert.equal(policyChanged.state.grant_stone_hash, null);
+});
+
+test("V7.3.3 identical pending request retry reuses the first immutable request Stone", async () => {
+  const pkg = {
+    schema: "cairnstone-agent-context-v1",
+    ok: true,
+    package_id: "sha256:" + "0".repeat(64),
+    policy: {
+      accepted_state_only_for_authority: true,
+      mutable_branch_is_authority: false,
+      execution_authority: false,
+      mutation_authority: false,
+      provider_credentials_in_package: false
+    },
+    capabilities: { available_tools: ["cairnstone_commit_v2"] }
+  };
+  pkg.package_id = await recomputePackageId(pkg);
+  const args = {
+    chain: "v733-request-replay",
+    author: "test:v733",
+    path: "acceptance/replay.txt",
+    content: "same immutable proposal"
+  };
+  const body = {
+    context_package: pkg,
+    tool_intent: {
+      intent_id: "intent:v733-request-replay",
+      tool_id: "cairnstone_commit_v2",
+      arguments: args
+    },
+    request_ir_id: "sha256:" + "1".repeat(64),
+    model: { provider: "workers-ai", model: "fixture" },
+    turn_id: "turn:v733-request-replay",
+    guard: { type: "path_head", chain: args.chain, path: args.path, expected_value: null }
+  };
+
+  let existing = null;
+  let createCount = 0;
+  const deps = {
+    getExistingAuthorization: async () => existing
+      ? { ok: true, authorization: clone(existing) }
+      : { ok: false, error: "authorization_not_found" },
+    createStone: async () => ({ ok: true, stone_hash: `request-stone-${++createCount}` }),
+    persistPendingAuthorization: async record => {
+      const request = JSON.parse(record.request_json);
+      existing = {
+        authorization_request_id: record.authorization_request_id,
+        request_stone_hash: record.request_stone_hash,
+        argument_digest: record.argument_digest,
+        required_authorization: record.required_authorization,
+        status: "pending",
+        tool_id: request.tool_id,
+        package_id: request.package_id,
+        request_ir_id: request.request_ir_id,
+        decision_id: request.decision_id,
+        request
+      };
+      return { ok: true, authorization: existing };
+    }
+  };
+
+  const first = await requestToolAuthorizationFromBody(body, {}, deps);
+  const replay = await requestToolAuthorizationFromBody(body, {}, deps);
+  assert.equal(first.ok, true);
+  assert.equal(first.request_created, true);
+  assert.equal(replay.ok, true);
+  assert.equal(replay.request_created, false);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.authorization_request_id, first.authorization_request_id);
+  assert.equal(replay.receipt.stone_hash, first.receipt.stone_hash);
+  assert.equal(createCount, 1);
 });
