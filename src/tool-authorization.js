@@ -251,6 +251,114 @@ export const TOOL_AUTHORIZATION_STATUS_TOOL_DEFINITION = {
   }
 };
 
+export const TOOL_AUTHORIZATION_LIST_SCHEMA = "cairnstone-tool-authorization-list-v1";
+const AUTHORIZATION_LIST_DEFAULT_LIMIT = 20;
+const AUTHORIZATION_LIST_MAX_LIMIT = 50;
+const AUTHORIZATION_LIST_FETCH_LIMIT = 200;
+export const AUTHORIZATION_LIST_ALLOWED_STATUS = Object.freeze([
+  "pending", "deciding", "authorized", "denied", "expired", "authorization_failed",
+  "consuming", "executed", "guard_failed", "execution_failed"
+]);
+export const AUTHORIZATION_LIST_ALLOWED_DECISION = Object.freeze(["approved", "denied"]);
+const AUTHORIZATION_LIST_TERMINAL_STATUSES = ["executed", "guard_failed", "execution_failed", "denied", "expired", "authorization_failed"];
+
+function compactAuthorizationListEntry(authorization) {
+  let execution = null;
+  try {
+    execution = authorization.execution_result_json ? JSON.parse(authorization.execution_result_json) : null;
+  } catch {
+    execution = null;
+  }
+  const consumed = Boolean(authorization.consumption_id);
+  const terminal = AUTHORIZATION_LIST_TERMINAL_STATUSES.includes(authorization.status);
+  const guard = execution?.guard || null;
+  return {
+    authorization_request_id: authorization.authorization_request_id,
+    tool_id: authorization.tool_id,
+    status: authorization.status,
+    decision: authorization.decision || null,
+    created_at: authorization.created_at,
+    decided_at: authorization.issued_at || null,
+    consumed,
+    consumed_at: authorization.consumed_at || null,
+    terminal,
+    request_stone_hash: authorization.request_stone_hash,
+    grant_stone_hash: authorization.grant_stone_hash || null,
+    denial_stone_hash: authorization.denial_stone_hash || null,
+    execution_receipt_stone_hash: authorization.execution_receipt_stone_hash || null,
+    guard: guard ? { type: guard.type || null, matched: guard.matched === true } : null,
+    outcome: execution
+      ? {
+          executed: execution.executed === true,
+          mutation_performed: execution.mutation_performed === true,
+          error: execution.error || authorization.error_type || null
+        }
+      : (authorization.error_type ? { executed: false, mutation_performed: false, error: authorization.error_type } : null)
+  };
+}
+
+// V7.4.0: bounded, read-only discovery of recent authorization lifecycle
+// records. cairnstone_tool_authorization_status can verify one already-known
+// request id; this primitive answers "what are my most recent approvals"
+// from a fresh context, which status alone cannot. Built directly on top of
+// listToolAuthorizationsFromBody (already used by the operator-only REST
+// GET /v1/tool-authorizations route) but returns only an explicit
+// allowlisted projection of safe fields -- it never spreads the underlying
+// authorization/request/target object, so stored mutation arguments,
+// justification text, model identity, and any other non-listed field can
+// never leak through this MCP-facing surface even if the underlying row
+// shape changes later.
+export async function listToolAuthorizationsCompactFromBody(body, env, deps = {}) {
+  const status = typeof body?.status === "string" && body.status.trim() ? body.status.trim() : null;
+  if (status && !AUTHORIZATION_LIST_ALLOWED_STATUS.includes(status)) {
+    return { ok: false, error: "invalid_status_filter", allowed: AUTHORIZATION_LIST_ALLOWED_STATUS };
+  }
+  const decision = typeof body?.decision === "string" && body.decision.trim() ? body.decision.trim() : null;
+  if (decision && !AUTHORIZATION_LIST_ALLOWED_DECISION.includes(decision)) {
+    return { ok: false, error: "invalid_decision_filter", allowed: AUTHORIZATION_LIST_ALLOWED_DECISION };
+  }
+  const limit = clampInt(body?.limit, 1, AUTHORIZATION_LIST_MAX_LIMIT, AUTHORIZATION_LIST_DEFAULT_LIMIT);
+
+  const raw = await listToolAuthorizationsFromBody({ status, limit: AUTHORIZATION_LIST_FETCH_LIMIT }, env, deps);
+  if (!raw.ok) return raw;
+
+  let authorizations = Array.isArray(raw.authorizations) ? raw.authorizations : [];
+  if (decision) authorizations = authorizations.filter(entry => entry.decision === decision);
+  const truncatedByFetchLimit = !decision && !status && raw.total === AUTHORIZATION_LIST_FETCH_LIMIT;
+  authorizations = authorizations.slice(0, limit);
+
+  return {
+    ok: true,
+    schema: TOOL_AUTHORIZATION_LIST_SCHEMA,
+    total: authorizations.length,
+    filters: { status, decision, limit },
+    authorizations: authorizations.map(compactAuthorizationListEntry),
+    truncated: truncatedByFetchLimit,
+    policy: {
+      read_only: true,
+      operator_authorization_required: false,
+      execution_authority: false,
+      mutation_authority: false,
+      arguments_exposed: false,
+      operator_credentials_exposed: false
+    }
+  };
+}
+
+export const TOOL_AUTHORIZATION_LIST_TOOL_DEFINITION = {
+  name: "cairnstone_tool_authorization_list",
+  description: "V7.4.0 read-only bounded discovery of recent tool authorization lifecycle records, most recent first. Answers 'what are my most recent approvals/pending authorizations' from a fresh context, which cairnstone_tool_authorization_status alone cannot since it requires an already-known id. Returns only compact non-secret metadata per record: request id, tool id, status, decision, created/decided/consumed timestamps, consumed/terminal flags, receipt/grant/denial Stone identities, and a compact guard/outcome summary. Never exposes stored target mutation arguments, justification text, operator credentials, or any execution/mutation authority. Use cairnstone_tool_authorization_status afterward for full lifecycle detail on one selected id.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      status: { type: "string", enum: [...AUTHORIZATION_LIST_ALLOWED_STATUS] },
+      decision: { type: "string", enum: [...AUTHORIZATION_LIST_ALLOWED_DECISION] },
+      limit: { type: "number", minimum: 1, maximum: AUTHORIZATION_LIST_MAX_LIMIT }
+    },
+    additionalProperties: false
+  }
+};
+
 async function createEvidenceStone(deps, body) {
   if (typeof deps.createStone !== "function") return { ok: false, error: "authorization_evidence_persistence_unavailable" };
   const created = await deps.createStone(body);
