@@ -10,7 +10,9 @@ import {
 import {
   authorizeToolRequestFromBody,
   executeAuthorizedToolFromBody,
+  getToolAuthorizationStatusFromBody,
   TOOL_AUTHORIZATION_DECISION_SCHEMA,
+  TOOL_AUTHORIZATION_STATUS_SCHEMA,
   TOOL_AUTHORIZED_EXECUTION_RECEIPT_SCHEMA
 } from "../src/tool-authorization.js";
 
@@ -197,6 +199,54 @@ test("V7.3.3 unchanged guard executes stored arguments exactly once and replay n
   assert.equal(replay.replayed, true);
   assert.equal(replay.idempotent_replay, true);
   assert.equal(h.invokeCount, 1);
+});
+
+test("V7.3.3 read-only status proves executed authorization consumption without exposing mutation arguments", async () => {
+  const h = await makeHarness();
+  await approve(h);
+  await executeAuthorizedToolFromBody({ authorization_request_id: REQUEST_ID }, {}, h.deps);
+  const status = await getToolAuthorizationStatusFromBody({ authorization_request_id: REQUEST_ID }, {}, h.deps);
+  assert.equal(status.ok, true);
+  assert.equal(status.schema, TOOL_AUTHORIZATION_STATUS_SCHEMA);
+  assert.equal(status.status, "executed");
+  assert.equal(status.consumed, true);
+  assert.ok(status.consumption_id);
+  assert.ok(status.consumed_at);
+  assert.equal(status.terminal, true);
+  assert.equal(status.outcome.executed, true);
+  assert.equal(status.outcome.mutation_performed, true);
+  assert.equal(status.outcome.error, null);
+  assert.equal(status.replay.safe_no_second_mutation, true);
+  assert.equal(status.replay.behavior, "idempotent_replay_returns_existing_result");
+  assert.equal(status.policy.read_only, true);
+  assert.equal(status.policy.operator_authorization_required, false);
+  assert.equal(status.policy.execution_authority, false);
+  assert.equal(status.policy.mutation_authority, false);
+  assert.equal(status.policy.arguments_exposed, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(status, "request"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(status, "target"), false);
+  assert.equal(h.invokeCount, 1);
+});
+
+test("V7.3.3 read-only status reports stale-guard consumption and zero mutation", async () => {
+  const h = await makeHarness({ observedGuardValue: "changed-head" });
+  await approve(h);
+  await executeAuthorizedToolFromBody({ authorization_request_id: REQUEST_ID }, {}, h.deps);
+  const status = await getToolAuthorizationStatusFromBody({ authorization_request_id: REQUEST_ID }, {}, h.deps);
+  assert.equal(status.ok, true);
+  assert.equal(status.status, "guard_failed");
+  assert.equal(status.consumed, true);
+  assert.ok(status.consumption_id);
+  assert.equal(status.terminal, true);
+  assert.equal(status.outcome.executed, false);
+  assert.equal(status.outcome.mutation_performed, false);
+  assert.equal(status.outcome.error, "authorization_guard_mismatch");
+  assert.equal(status.outcome.guard.expected_value, null);
+  assert.equal(status.outcome.guard.observed_value, "changed-head");
+  assert.equal(status.outcome.guard.matched, false);
+  assert.equal(status.replay.safe_no_second_mutation, true);
+  assert.equal(status.replay.behavior, "non_executable_or_already_claimed");
+  assert.equal(h.invokeCount, 0);
 });
 
 test("V7.3.3 concurrent consumers cannot both claim one authorization", async () => {
