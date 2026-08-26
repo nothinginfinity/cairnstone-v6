@@ -35,6 +35,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v70_authority_acceptance:
+        description: "Run V7.0 authority-first retrieval correctness acceptance after deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       run_v72_acceptance:
         description: "Run V7.2 bounded read-only delegation live acceptance after deploy"
         required: false
@@ -90,6 +98,78 @@ jobs:
 
       - name: Deploy Worker
         run: npx wrangler deploy --config wrangler.toml
+
+      - name: V7.0 authority-first retrieval correctness acceptance
+        if: github.event.inputs.run_v70_authority_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+          RPC="$BASE/mcp"
+
+          health=""
+          for attempt in {1..10}; do
+            health="$(curl -fsS "$BASE/health" || true)"
+            if echo "$health" | jq -e '.ok == true and .version == "0.5.12" and ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null) and ((.mcp_tools | index("cairnstone_delegate")) != null)' >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          echo "$health" | jq -e '.ok == true and .version == "0.5.12" and ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null) and ((.mcp_tools | index("cairnstone_delegate")) != null)' >/dev/null
+
+          before="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
+          before_head="$(echo "$before" | jq -r '.canonical_head.hash')"
+          roadmap_head="$(echo "$before" | jq -r '.path_heads[] | select(.path == "docs/ROADMAP_V7.md") | .stone_hash')"
+          before_paths="$(echo "$before" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          test -n "$before_head"
+          test -n "$roadmap_head"
+
+          current_payload="$(jq -nc '{jsonrpc:"2.0",id:701,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v70-authority-acceptance",task:"what'"'"'s next in the roadmap",chain:"cairnstone-v6-project-memory",include_inbox:false,limits:{max_inbox_items:0}}}}')"
+          current_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$current_payload")"
+          current="$(echo "$current_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$current" | jq -e --arg head "$before_head" --arg roadmap "$roadmap_head" '
+            .ok == true and
+            .schema == "cairnstone-agent-context-v1" and
+            .memory.retrieval_policy.authority_first == true and
+            .memory.retrieval_policy.current_state_query == true and
+            .memory.retrieval_policy.same_path_historical_suppression == true and
+            .memory.retrieval_policy.historical_same_path_suppressed >= 1 and
+            (.memory.retrieval_policy.ordering == ["CHAIN_HEAD","PATH_HEAD","HISTORICAL"]) and
+            any(.memory.items[]; .authority_class == "CHAIN_HEAD" and .stone_hash == $head) and
+            any(.memory.items[]; .authority_class == "PATH_HEAD" and .path == "docs/ROADMAP_V7.md" and .stone_hash == $roadmap) and
+            (all(.memory.items[]; (.path != "docs/ROADMAP_V7.md") or (.authority_class != "HISTORICAL")))
+          ' >/dev/null
+
+          historical_payload="$(jq -nc '{jsonrpc:"2.0",id:702,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v70-authority-acceptance",task:"How did the roadmap change before V7.3.3?",chain:"cairnstone-v6-project-memory",include_inbox:false,limits:{max_inbox_items:0}}}}')"
+          historical_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$historical_payload")"
+          historical="$(echo "$historical_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$historical" | jq -e '
+            .ok == true and
+            .memory.retrieval_policy.authority_first == true and
+            .memory.retrieval_policy.current_state_query == false and
+            .memory.retrieval_policy.same_path_historical_suppression == false and
+            .memory.retrieval_policy.historical_same_path_suppressed == 0 and
+            any(.memory.items[]; .path == "docs/ROADMAP_V7.md" and .authority_class == "HISTORICAL")
+          ' >/dev/null
+
+          delegated_payload="$(jq -nc '{jsonrpc:"2.0",id:703,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v70-authority-acceptance",task:"what'"'"'s next in the roadmap",chain:"cairnstone-v6-project-memory",route:{provider:"workers-ai",model:"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},generation:{max_output_tokens:300,temperature:0},include_inbox:false}}}')"
+          delegated_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$delegated_payload")"
+          delegated="$(echo "$delegated_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$delegated" | jq -e '
+            .ok == true and
+            .schema == "cairnstone-delegation-result-v1" and
+            .route.provider == "workers-ai" and
+            .policy.tools_executed == 0 and
+            .policy.execution_authority == false and
+            .policy.mutation_authority == false and
+            (.output.text | test("V7\\.3\\.3"; "i"))
+          ' >/dev/null
+
+          after="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
+          after_head="$(echo "$after" | jq -r '.canonical_head.hash')"
+          after_paths="$(echo "$after" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          test "$before_head" = "$after_head"
+          test "$before_paths" = "$after_paths"
+
+          echo "V7.0 authority-first retrieval acceptance passed: current queries ranked accepted authority first and suppressed superseded same-path roadmap history, explicit history retained it, and live Workers AI answered V7.3.3 while accepted state remained unchanged."
 
       - name: V6.2.1 live correctness acceptance
         if: github.event.inputs.run_v621_acceptance == 'true'
