@@ -179,6 +179,78 @@ export async function getToolAuthorizationFromBody(body, env, deps = {}) {
   return { ok: true, authorization };
 }
 
+export const TOOL_AUTHORIZATION_STATUS_SCHEMA = "cairnstone-tool-authorization-status-v1";
+
+export async function getToolAuthorizationStatusFromBody(body, env, deps = {}) {
+  const result = await getToolAuthorizationFromBody(body, env, deps);
+  if (!result.ok) return result;
+  const authorization = result.authorization;
+  let execution = null;
+  try {
+    execution = authorization.execution_result_json ? JSON.parse(authorization.execution_result_json) : null;
+  } catch {
+    execution = null;
+  }
+  const consumed = Boolean(authorization.consumption_id);
+  const terminal = ["executed", "guard_failed", "execution_failed", "denied", "expired", "authorization_failed"].includes(authorization.status);
+  const replaySafe = consumed || terminal;
+  const replayBehavior = authorization.status === "executed" && execution
+    ? "idempotent_replay_returns_existing_result"
+    : replaySafe
+      ? "non_executable_or_already_claimed"
+      : "not_yet_consumed";
+  const guard = execution?.guard || null;
+  return {
+    ok: true,
+    schema: TOOL_AUTHORIZATION_STATUS_SCHEMA,
+    authorization_request_id: authorization.authorization_request_id,
+    request_stone_hash: authorization.request_stone_hash,
+    tool_id: authorization.tool_id,
+    argument_digest: authorization.argument_digest,
+    required_authorization: authorization.required_authorization,
+    status: authorization.status,
+    decision: authorization.decision || null,
+    consumed,
+    consumption_id: authorization.consumption_id || null,
+    consumed_at: authorization.consumed_at || null,
+    terminal,
+    grant_stone_hash: authorization.grant_stone_hash || null,
+    denial_stone_hash: authorization.denial_stone_hash || null,
+    execution_receipt_stone_hash: authorization.execution_receipt_stone_hash || null,
+    outcome: {
+      executed: execution?.executed === true,
+      mutation_performed: execution?.mutation_performed === true,
+      error: execution?.error || authorization.error_type || null,
+      guard: guard ? {
+        type: guard.type || null,
+        expected_value: Object.prototype.hasOwnProperty.call(guard, "expected_value") ? guard.expected_value : null,
+        observed_value: Object.prototype.hasOwnProperty.call(guard, "observed_value") ? guard.observed_value : null,
+        matched: guard.matched === true
+      } : null
+    },
+    replay: { safe_no_second_mutation: replaySafe, behavior: replayBehavior },
+    policy: {
+      read_only: true,
+      operator_authorization_required: false,
+      execution_authority: false,
+      mutation_authority: false,
+      arguments_exposed: false,
+      operator_credentials_exposed: false
+    }
+  };
+}
+
+export const TOOL_AUTHORIZATION_STATUS_TOOL_DEFINITION = {
+  name: "cairnstone_tool_authorization_status",
+  description: "V7.3.3 read-only lifecycle inspection for one authorization request. Reports whether the one-time authorization has been consumed and its terminal execution/guard outcome without exposing target arguments, operator credentials, approval capability, or mutation authority.",
+  inputSchema: {
+    type: "object",
+    required: ["authorization_request_id"],
+    properties: { authorization_request_id: { type: "string" } },
+    additionalProperties: false
+  }
+};
+
 async function createEvidenceStone(deps, body) {
   if (typeof deps.createStone !== "function") return { ok: false, error: "authorization_evidence_persistence_unavailable" };
   const created = await deps.createStone(body);
