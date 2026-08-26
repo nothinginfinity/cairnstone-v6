@@ -723,3 +723,127 @@ jobs:
           fi
 
           echo "V7.3.2 live acceptance passed: a real mutation proposal produced a durable pending human-confirmation request, both authorization-request and execution surfaces performed zero target mutation, bypass fields were rejected, and accepted project state was unchanged."
+
+      - name: V7.4.0 reusable-profile operational grounding cross-provider acceptance
+        if: github.event.inputs.run_v740_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+          RPC="$BASE/mcp"
+          TASK="What are the most recent authorizations I approved"
+
+          health="$(curl -fsS "$BASE/health")"
+          echo "$health" | jq -e '
+            .ok == true and
+            .version == "0.5.18" and
+            ((.mcp_tools | index("cairnstone_tool_authorization_list")) != null) and
+            ((.mcp_tools | index("cairnstone_tool_authorization_status")) != null) and
+            ((.mcp_tools | index("cairnstone_delegate")) != null)
+          ' >/dev/null
+
+          before="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
+          before_head="$(echo "$before" | jq -r '.canonical_head.hash')"
+          before_paths="$(echo "$before" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          test -n "$before_head"
+
+          live_payload="$(jq -nc '{jsonrpc:"2.0",id:7400,method:"tools/call",params:{name:"cairnstone_tool_authorization_list",arguments:{decision:"approved",limit:5}}}')"
+          live_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$live_payload")"
+          live="$(echo "$live_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$live" | jq -e '
+            .ok == true and
+            .schema == "cairnstone-tool-authorization-list-v1" and
+            .filters.decision == "approved" and
+            (.authorizations | length) >= 2 and
+            all(.authorizations[]; .decision == "approved") and
+            .policy.read_only == true and
+            .policy.execution_authority == false and
+            .policy.mutation_authority == false and
+            .policy.operator_credentials_exposed == false
+          ' >/dev/null
+          live_ids="$(echo "$live" | jq -c '[.authorizations[:3][] | .authorization_request_id]')"
+
+          workers_payload="$(jq -nc --arg task "$TASK" '{jsonrpc:"2.0",id:7401,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v740-acceptance",profile_id:"cairnstone-maintainer",task:$task,chain:"cairnstone-v6-project-memory",route:{provider:"workers-ai",model:"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},generation:{max_output_tokens:600,temperature:0},include_inbox:false}}}')"
+          workers_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$workers_payload")"
+          workers="$(echo "$workers_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$workers" | jq -e --argjson ids "$live_ids" '
+            .ok == true and
+            .schema == "cairnstone-delegation-result-v1" and
+            .caller_actor_id == "github-actions:v740-acceptance" and
+            .actor_id == "cairnstone:cairnstone-maintainer" and
+            .profile.profile_id == "cairnstone-maintainer" and
+            .profile.version == "0.1.0" and
+            .profile.execution_authority == false and
+            .profile.mutation_authority == false and
+            .grounding.schema == "cairnstone-profile-grounding-v1" and
+            .grounding.classification.grounding_class == "operational_current" and
+            .grounding.classification.intent == "recent_approved_authorizations" and
+            .grounding.current_claim_source == "live_operational_read" and
+            .grounding.degraded == false and
+            .grounding.live_reads_executed == 1 and
+            .grounding.precedence == ["LIVE_OPERATIONAL_READ","CHAIN_HEAD","PATH_HEAD","HISTORICAL"] and
+            .grounding.live_reads[0].tool_id == "cairnstone_tool_authorization_list" and
+            .grounding.live_reads[0].filters.decision == "approved" and
+            ([.grounding.live_reads[0].authorizations[].authorization_request_id] == $ids) and
+            (.grounding.read_receipts | length) == 1 and
+            (.grounding.read_receipts[0].stone_hash | test("^[0-9a-f]{64}$")) and
+            .route.provider == "workers-ai" and
+            .policy.delegation_mode == "read_only" and
+            .policy.tools_exposed_to_model == 0 and
+            .policy.tools_executed == 1 and
+            .policy.execution_authority == false and
+            .policy.mutation_authority == false and
+            .policy.accepted_state_mutation == false and
+            .diagnostics.profile_live_reads_executed == 1 and
+            (.output.text | length) > 0
+          ' >/dev/null
+
+          package_id="$(echo "$workers" | jq -r '.package_id')"
+          request_ir_id="$(echo "$workers" | jq -r '.request_ir_id')"
+          profile_json="$(echo "$workers" | jq -c '.profile')"
+          classification_json="$(echo "$workers" | jq -c '.grounding.classification')"
+
+          deepseek_payload="$(jq -nc --arg task "$TASK" '{jsonrpc:"2.0",id:7402,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v740-acceptance",profile_id:"cairnstone-maintainer",task:$task,chain:"cairnstone-v6-project-memory",route:{provider:"deepseek",model:"deepseek-chat",credential_mode:"byok",credential_alias:"default"},generation:{max_output_tokens:600,temperature:0},include_inbox:false}}}')"
+          deepseek_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$deepseek_payload")"
+          deepseek="$(echo "$deepseek_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$deepseek" | jq -e --arg package "$package_id" --arg request "$request_ir_id" --argjson profile "$profile_json" --argjson classification "$classification_json" --argjson ids "$live_ids" '
+            .ok == true and
+            .schema == "cairnstone-delegation-result-v1" and
+            .package_id == $package and
+            .request_ir_id == $request and
+            .profile == $profile and
+            .grounding.classification == $classification and
+            .grounding.current_claim_source == "live_operational_read" and
+            .grounding.degraded == false and
+            .grounding.live_reads_executed == 1 and
+            ([.grounding.live_reads[0].authorizations[].authorization_request_id] == $ids) and
+            (.grounding.read_receipts | length) == 1 and
+            (.grounding.read_receipts[0].stone_hash | test("^[0-9a-f]{64}$")) and
+            .route.provider == "deepseek" and
+            .route.model == "deepseek-chat" and
+            .route.credential_mode == "byok" and
+            .policy.tools_exposed_to_model == 0 and
+            .policy.tools_executed == 1 and
+            .policy.execution_authority == false and
+            .policy.mutation_authority == false and
+            .policy.accepted_state_mutation == false and
+            .diagnostics.profile_live_reads_executed == 1 and
+            (.output.text | length) > 0
+          ' >/dev/null
+
+          after="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
+          after_head="$(echo "$after" | jq -r '.canonical_head.hash')"
+          after_paths="$(echo "$after" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          test "$before_head" = "$after_head"
+          test "$before_paths" = "$after_paths"
+
+          jq -nc \
+            --arg head "$before_head" \
+            --arg package "$package_id" \
+            --arg request "$request_ir_id" \
+            --argjson live "$live" \
+            --argjson workers "$workers" \
+            --argjson deepseek "$deepseek" \
+            '{acceptance:"V7.4.0",canonical_head:$head,package_id:$package,request_ir_id:$request,live_authorizations:[$live.authorizations[]|{authorization_request_id,tool_id,status,decision,decided_at,consumed,consumed_at,outcome}],workers_ai:{profile:$workers.profile,grounding:$workers.grounding,route:$workers.route,policy:$workers.policy,output:$workers.output.text},deepseek:{profile:$deepseek.profile,grounding:$deepseek.grounding,route:$deepseek.route,policy:$deepseek.policy,output:$deepseek.output.text}}'
+
+          echo "V7.4.0 live acceptance passed: the reusable cairnstone-maintainer profile classified the exact current-authorization prompt as operational_current, executed one governed live authorization-list read before routing, preserved identical package/request/profile identity across Workers AI and DeepSeek, exposed zero tools to either model, retained zero execution/mutation authority, and left accepted project state unchanged."
