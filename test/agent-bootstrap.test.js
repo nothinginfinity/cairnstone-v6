@@ -21,14 +21,42 @@ function makeEnv() {
   };
 }
 
-function resumeStateWithHead(hash) {
+function resumeStateWithHead(hash, extraPathHeads = []) {
   return {
     ok: true,
     canonical_head: { hash, path: null, repo: null, commit_sha: null },
     path_heads: [
-      { path: INSTRUCTIONS_PATH, stone_hash: "instructions-stone", repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A }
+      { path: INSTRUCTIONS_PATH, stone_hash: "instructions-stone", repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A },
+      ...extraPathHeads
     ]
   };
+}
+
+function makeMemoryEnv({ rows, refs, raw }) {
+  const env = makeEnv();
+  env.CAIRNSTONE_DB = {
+    prepare(sql) {
+      let bound = [];
+      return {
+        bind(...args) { bound = args; return this; },
+        async all() {
+          if (sql.includes("FROM refs_fts WHERE")) return { results: rows };
+          return { results: [] };
+        },
+        async first() {
+          if (sql.includes("SELECT * FROM refs WHERE ref_id = ?")) return refs[bound[0]] || null;
+          return null;
+        }
+      };
+    }
+  };
+  env.CAIRNSTONE_RAW = {
+    async get(key) {
+      if (!Object.prototype.hasOwnProperty.call(raw, key)) return null;
+      return { async text() { return raw[key]; } };
+    }
+  };
+  return env;
 }
 
 function makeDeps(overrides = {}) {
@@ -187,6 +215,97 @@ test("V7.0 Test I (regression guard): impossible byte budget fails closed withou
     assert.equal(result.error, "package_size_limit_exceeded");
     assert.ok(result.limits.package_bytes > result.limits.effective_max_package_bytes);
     assert.ok(result.limits.instructions_bytes > 0, "instructions must still be measured, never silently omitted");
+  } finally {
+    restore();
+  }
+});
+
+test("V7.0 authority-first retrieval: current roadmap question ranks accepted authority first and suppresses superseded same-path history", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    const roadmapPath = "docs/ROADMAP_V7.md";
+    const chainHead = "chain-head-stable";
+    const roadmapHead = "roadmap-current";
+    const rows = [
+      { ref_id: "hist-roadmap-1", stone_hash: "roadmap-old-1", path: roadmapPath, score: -9 },
+      { ref_id: "hist-other", stone_hash: "other-old", path: "project-memory/older-note.md", score: -8 },
+      { ref_id: "hist-roadmap-2", stone_hash: "roadmap-old-2", path: roadmapPath, score: -7 },
+      { ref_id: "chain-head-ref", stone_hash: chainHead, path: "project-memory/current-start.md", score: -6 },
+      { ref_id: "roadmap-head-ref", stone_hash: roadmapHead, path: roadmapPath, score: -5 }
+    ];
+    const refs = Object.fromEntries(rows.map(row => [row.ref_id, {
+      ref_id: row.ref_id,
+      raw_key: `raw/${row.ref_id}`,
+      line_start: 1,
+      line_end: 1
+    }]));
+    const raw = Object.fromEntries(rows.map(row => [
+      `raw/${row.ref_id}`,
+      row.ref_id === "roadmap-head-ref" ? "V7.3.3 is next" : row.ref_id
+    ]));
+    const deps = makeDeps({
+      resumeChainFromBody: async () => resumeStateWithHead(chainHead, [
+        { path: roadmapPath, stone_hash: roadmapHead, repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A }
+      ])
+    });
+
+    const result = await agentBootstrapFromBody(
+      { actor_id: "test:authority", task: "what's next in the roadmap", chain: "cairnstone-v6-project-memory" },
+      makeMemoryEnv({ rows, refs, raw }),
+      deps
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.memory.retrieval_policy.authority_first, true);
+    assert.equal(result.memory.retrieval_policy.current_state_query, true);
+    assert.equal(result.memory.retrieval_policy.historical_same_path_suppressed, 2);
+    assert.deepEqual(result.memory.items.map(item => item.authority_class), ["CHAIN_HEAD", "PATH_HEAD", "HISTORICAL"]);
+    const roadmapItems = result.memory.items.filter(item => item.path === roadmapPath);
+    assert.equal(roadmapItems.length, 1);
+    assert.equal(roadmapItems[0].stone_hash, roadmapHead);
+    assert.equal(roadmapItems[0].authority_class, "PATH_HEAD");
+  } finally {
+    restore();
+  }
+});
+
+test("V7.0 authority-first retrieval: explicit historical roadmap question keeps superseded same-path evidence after current authority", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    const roadmapPath = "docs/ROADMAP_V7.md";
+    const chainHead = "chain-head-stable";
+    const roadmapHead = "roadmap-current";
+    const rows = [
+      { ref_id: "hist-roadmap-1", stone_hash: "roadmap-old-1", path: roadmapPath, score: -9 },
+      { ref_id: "hist-roadmap-2", stone_hash: "roadmap-old-2", path: roadmapPath, score: -8 },
+      { ref_id: "chain-head-ref", stone_hash: chainHead, path: "project-memory/current-start.md", score: -7 },
+      { ref_id: "roadmap-head-ref", stone_hash: roadmapHead, path: roadmapPath, score: -6 }
+    ];
+    const refs = Object.fromEntries(rows.map(row => [row.ref_id, {
+      ref_id: row.ref_id,
+      raw_key: `raw/${row.ref_id}`,
+      line_start: 1,
+      line_end: 1
+    }]));
+    const raw = Object.fromEntries(rows.map(row => [`raw/${row.ref_id}`, row.ref_id]));
+    const deps = makeDeps({
+      resumeChainFromBody: async () => resumeStateWithHead(chainHead, [
+        { path: roadmapPath, stone_hash: roadmapHead, repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A }
+      ])
+    });
+
+    const result = await agentBootstrapFromBody(
+      { actor_id: "test:history", task: "How did the roadmap change before V7.3.3?", chain: "cairnstone-v6-project-memory" },
+      makeMemoryEnv({ rows, refs, raw }),
+      deps
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.memory.retrieval_policy.authority_first, true);
+    assert.equal(result.memory.retrieval_policy.current_state_query, false);
+    assert.equal(result.memory.retrieval_policy.historical_same_path_suppressed, 0);
+    assert.deepEqual(result.memory.items.map(item => item.authority_class), ["CHAIN_HEAD", "PATH_HEAD", "HISTORICAL", "HISTORICAL"]);
+    assert.equal(result.memory.items.filter(item => item.path === roadmapPath && item.authority_class === "HISTORICAL").length, 2);
   } finally {
     restore();
   }
