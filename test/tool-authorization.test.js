@@ -11,7 +11,9 @@ import {
   authorizeToolRequestFromBody,
   executeAuthorizedToolFromBody,
   getToolAuthorizationStatusFromBody,
+  listToolAuthorizationsCompactFromBody,
   TOOL_AUTHORIZATION_DECISION_SCHEMA,
+  TOOL_AUTHORIZATION_LIST_SCHEMA,
   TOOL_AUTHORIZATION_STATUS_SCHEMA,
   TOOL_AUTHORIZED_EXECUTION_RECEIPT_SCHEMA
 } from "../src/tool-authorization.js";
@@ -535,4 +537,110 @@ test("V7.3.3 schema-repair migration matches the lifecycle columns used by the r
     assert.match(repair, new RegExp(`\\b${column}\\b`), `repair migration must define ${column}`);
     assert.equal(runtime.includes(column), true, `runtime must reference ${column}`);
   }
+});
+
+test("V7.4.0 authorization list discovery returns compact non-secret metadata only, most recent first", async () => {
+  const execExecuted = JSON.stringify({
+    executed: true,
+    mutation_performed: true,
+    error: null,
+    guard: { type: "path_head", expected_value: null, observed_value: null, matched: true }
+  });
+  const execGuardFailed = JSON.stringify({
+    executed: false,
+    mutation_performed: false,
+    error: "authorization_guard_mismatch",
+    guard: { type: "path_head", expected_value: null, observed_value: "changed-head", matched: false }
+  });
+  const rows = [
+    {
+      authorization_request_id: "sha256:" + "1".repeat(64),
+      tool_id: "cairnstone_commit_v2",
+      status: "executed",
+      decision: "approved",
+      created_at: "2026-08-26T18:00:00.000Z",
+      issued_at: "2026-08-26T18:00:01.000Z",
+      consumption_id: "sha256:" + "2".repeat(64),
+      consumed_at: "2026-08-26T18:00:02.000Z",
+      request_stone_hash: "stone-request-1",
+      grant_stone_hash: "stone-grant-1",
+      denial_stone_hash: null,
+      execution_receipt_stone_hash: "stone-receipt-1",
+      execution_result_json: execExecuted,
+      error_type: null,
+      target: { tool_id: "cairnstone_commit_v2", arguments: { secret_field: "must-not-leak" } },
+      justification: "should not leak either",
+      model: { provider: "anthropic", model: "should-not-leak" }
+    },
+    {
+      authorization_request_id: "sha256:" + "3".repeat(64),
+      tool_id: "cairnstone_commit_v2",
+      status: "guard_failed",
+      decision: "approved",
+      created_at: "2026-08-26T17:00:00.000Z",
+      issued_at: "2026-08-26T17:00:01.000Z",
+      consumption_id: "sha256:" + "4".repeat(64),
+      consumed_at: "2026-08-26T17:00:02.000Z",
+      request_stone_hash: "stone-request-2",
+      grant_stone_hash: "stone-grant-2",
+      denial_stone_hash: null,
+      execution_receipt_stone_hash: "stone-receipt-2",
+      execution_result_json: execGuardFailed,
+      error_type: "authorization_guard_mismatch",
+      target: { tool_id: "cairnstone_commit_v2", arguments: { secret_field: "must-not-leak" } },
+      justification: "should not leak either",
+      model: { provider: "anthropic", model: "should-not-leak" }
+    }
+  ];
+  const deps = { listAuthorizations: async () => ({ ok: true, total: rows.length, authorizations: rows }) };
+
+  const result = await listToolAuthorizationsCompactFromBody({}, {}, deps);
+  assert.equal(result.ok, true);
+  assert.equal(result.schema, TOOL_AUTHORIZATION_LIST_SCHEMA);
+  assert.equal(result.total, 2);
+  assert.equal(result.authorizations.length, 2);
+  assert.equal(result.authorizations[0].authorization_request_id, rows[0].authorization_request_id);
+  assert.equal(result.authorizations[0].status, "executed");
+  assert.equal(result.authorizations[0].outcome.mutation_performed, true);
+  assert.equal(result.authorizations[1].status, "guard_failed");
+  assert.equal(result.authorizations[1].outcome.mutation_performed, false);
+  assert.equal(result.authorizations[1].outcome.error, "authorization_guard_mismatch");
+  assert.equal(result.policy.read_only, true);
+  assert.equal(result.policy.arguments_exposed, false);
+  assert.equal(result.policy.operator_authorization_required, false);
+
+  for (const entry of result.authorizations) {
+    assert.equal(Object.prototype.hasOwnProperty.call(entry, "target"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(entry, "arguments"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(entry, "justification"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(entry, "model"), false);
+    assert.equal(JSON.stringify(entry).includes("must-not-leak"), false);
+  }
+});
+
+test("V7.4.0 authorization list rejects invalid status/decision filters and clamps limit", async () => {
+  const deps = { listAuthorizations: async () => ({ ok: true, total: 0, authorizations: [] }) };
+  const badStatus = await listToolAuthorizationsCompactFromBody({ status: "not-a-real-status" }, {}, deps);
+  assert.equal(badStatus.ok, false);
+  assert.equal(badStatus.error, "invalid_status_filter");
+
+  const badDecision = await listToolAuthorizationsCompactFromBody({ decision: "maybe" }, {}, deps);
+  assert.equal(badDecision.ok, false);
+  assert.equal(badDecision.error, "invalid_decision_filter");
+
+  const clamped = await listToolAuthorizationsCompactFromBody({ limit: 9999 }, {}, deps);
+  assert.equal(clamped.ok, true);
+  assert.equal(clamped.filters.limit, 50);
+});
+
+test("V7.4.0 authorization list decision filter narrows results client-side", async () => {
+  const rows = [
+    { authorization_request_id: "sha256:" + "5".repeat(64), tool_id: "cairnstone_commit_v2", status: "denied", decision: "denied", created_at: "2026-08-26T18:00:00.000Z" },
+    { authorization_request_id: "sha256:" + "6".repeat(64), tool_id: "cairnstone_commit_v2", status: "executed", decision: "approved", created_at: "2026-08-26T17:00:00.000Z" }
+  ];
+  const deps = { listAuthorizations: async () => ({ ok: true, total: rows.length, authorizations: rows }) };
+  const result = await listToolAuthorizationsCompactFromBody({ decision: "approved" }, {}, deps);
+  assert.equal(result.ok, true);
+  assert.equal(result.total, 1);
+  assert.equal(result.authorizations[0].authorization_request_id, rows[1].authorization_request_id);
 });
