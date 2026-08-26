@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import {
   canonicalAuthorizationArgumentDigest,
@@ -444,4 +445,44 @@ test("V7.3.3 compact prepare compiles context server-side and creates only a pen
   assert.equal(createCount, 1);
   assert.ok(persisted);
   assert.equal(persisted.guard.expected_value, null);
+});
+
+test("V7.3.3 schema-repair migration matches the lifecycle columns used by the runtime", async () => {
+  const repair = await readFile(new URL("../migrations/0010_v7_3_3_tool_authorizations_schema_repair.sql", import.meta.url), "utf8");
+  const runtime = await readFile(new URL("../src/tool-authorization.js", import.meta.url), "utf8");
+
+  assert.match(repair, /ALTER TABLE tool_authorizations RENAME TO tool_authorizations_v733_legacy/);
+  assert.match(repair, /DROP INDEX IF EXISTS idx_tool_authorizations_tool/);
+  assert.match(repair, /CREATE TABLE tool_authorizations/);
+
+  const requiredColumns = [
+    "authorization_request_id",
+    "request_stone_hash",
+    "request_json",
+    "argument_digest",
+    "required_authorization",
+    "status",
+    "decision",
+    "authorization_subject",
+    "authorization_method",
+    "grant_stone_hash",
+    "denial_stone_hash",
+    "issued_at",
+    "expires_at",
+    "consumption_id",
+    "consumed_at",
+    "guard_type",
+    "guard_expected",
+    "guard_observed",
+    "guard_matched",
+    "execution_receipt_stone_hash",
+    "execution_result_json",
+    "error_type",
+    "created_at",
+    "updated_at"
+  ];
+  for (const column of requiredColumns) {
+    assert.match(repair, new RegExp(`\\b${column}\\b`), `repair migration must define ${column}`);
+    assert.equal(runtime.includes(column), true, `runtime must reference ${column}`);
+  }
 });
