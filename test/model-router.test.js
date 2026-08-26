@@ -486,7 +486,22 @@ test("V7.4.1 repo-debugger reuses one durable profile on praxiq-call and still f
       events.push("live-read");
       assert.equal(body.tool_intent.tool_id, "cairnstone_reconcile_repo");
       assert.deepEqual(body.tool_intent.arguments, { chain: "praxiq-call" });
-      return { ok: true, executed: true, result: { ok: true, summary: { changed: 1, added: 0, removed: 0 } } };
+      return {
+        ok: true,
+        executed: true,
+        result: {
+          ok: true,
+          repo: "nothinginfinity/PraXiQ-call",
+          observed_commit_sha: "05e6f0e40c95d7f217fa1550bdb098923b300c81",
+          snapshot: { immutable: true, tree_truncated: false, observed_files: 10, accepted_paths: 7 },
+          summary: { added: 3, changed: 1, removed: 0, in_sync: 6, unknown: 0, total_paths: 10, drifted: 4 },
+          tuples: [
+            { path: ".github/workflows/deploy.yml", drift_type: "added", current_stone_hash: null, accepted_commit_sha: null, observed_commit_sha: "05e6f0e40c95d7f217fa1550bdb098923b300c81" },
+            { path: "src/index.js", drift_type: "changed", current_stone_hash: "3b164a1e", accepted_commit_sha: "f1adaf2da5bee3303e22e88c02fac1e18ac6374e", observed_commit_sha: "05e6f0e40c95d7f217fa1550bdb098923b300c81" }
+          ],
+          read_only: { chain_heads_written: false, path_heads_written: false, stones_written: false }
+        }
+      };
     },
     modelRouteFromBody: async body => { events.push("route"); return successfulProfileRoute(body.context_package, captured); }
   });
@@ -498,12 +513,17 @@ test("V7.4.1 repo-debugger reuses one durable profile on praxiq-call and still f
   assert.deepEqual(allowed.profile.scope.allowed_chains, ["praxiq-call"]);
   assert.equal(allowed.grounding.classification.matched_rule, "repo_drift_live_check");
   assert.equal(allowed.grounding.live_reads_executed, 1);
+  assert.equal(allowed.grounding.live_reads[0].summary.drifted, 4);
+  assert.equal(allowed.grounding.live_reads[0].drifted, true);
+  assert.equal(allowed.grounding.live_reads[0].tuples[0].drift_type, "added");
   assert.equal(allowed.policy.tools_exposed_to_model, 0);
   assert.equal(allowed.policy.tools_executed, 1);
   assert.equal(allowed.policy.execution_authority, false);
   assert.equal(allowed.policy.mutation_authority, false);
   assert.deepEqual(captured.contextPackage.capabilities.available_tools, []);
   assert.equal(captured.contextPackage.capabilities.supports_tool_calls, false);
+  assert.match(captured.contextPackage.request.task, /\"drifted\":4/);
+  assert.match(captured.contextPackage.request.task, /src\\/index\\.js/);
 
   let touched = false;
   const denied = await delegateFromBody({
