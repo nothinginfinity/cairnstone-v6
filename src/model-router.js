@@ -12,6 +12,11 @@
 // here.
 
 import { hashablePayload, sha256Text, stableJson } from "./agent-bootstrap.js";
+import {
+  classifyGroundingTask,
+  getAgentProfile,
+  planProfileGroundingReads
+} from "./profiles.js";
 
 export const AGENT_CONTEXT_SCHEMA = "cairnstone-agent-context-v1";
 export const MODEL_REQUEST_SCHEMA = "cairnstone-model-request-v1";
@@ -356,6 +361,39 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
         include_in_sync: { type: "boolean" },
         max_paths: { type: "number" }
       },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_tool_authorization_list",
+    connector: "cairnstone",
+    handler: "cairnstone_tool_authorization_list",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Read a bounded compact list of recent authorization lifecycle records without exposing target arguments or operator credentials.",
+    input_schema: {
+      type: "object",
+      properties: {
+        status: { type: "string" },
+        decision: { type: "string" },
+        limit: { type: "number" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_tool_authorization_status",
+    connector: "cairnstone",
+    handler: "cairnstone_tool_authorization_status",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Read one authorization lifecycle/consumption outcome without exposing target arguments or operator credentials.",
+    input_schema: {
+      type: "object",
+      required: ["authorization_request_id"],
+      properties: { authorization_request_id: { type: "string" } },
       additionalProperties: false
     }
   }),
@@ -2545,6 +2583,101 @@ const DELEGATION_MAX_OUTPUT_TOKENS = 2048;
 const DELEGATION_DEFAULT_OUTPUT_TOKENS = 800;
 const DELEGATION_MAX_EVIDENCE_REFS = 20;
 const DELEGATION_MAX_PATH_HEADS = 100;
+const PROFILE_GROUNDING_SCHEMA = "cairnstone-profile-grounding-v1";
+const PROFILE_GROUNDING_MAX_TASK_CHARS = 3900;
+const PROFILE_GROUNDING_MAX_READ_RESULT_ITEMS = 3;
+const PROFILE_GROUNDING_MAX_OUTPUT_BYTES = 30000;
+
+function compactProfileLiveRead(toolId, result) {
+  if (toolId === "cairnstone_tool_authorization_list") {
+    const rows = Array.isArray(result?.authorizations) ? result.authorizations.slice(0, PROFILE_GROUNDING_MAX_READ_RESULT_ITEMS) : [];
+    return {
+      tool_id: toolId,
+      ok: result?.ok === true,
+      schema: result?.schema || null,
+      total: Number.isFinite(Number(result?.total)) ? Number(result.total) : rows.length,
+      filters: result?.filters || null,
+      authorizations: rows.map(row => ({
+        authorization_request_id: row.authorization_request_id || null,
+        tool_id: row.tool_id || null,
+        status: row.status || null,
+        decision: row.decision || null,
+        created_at: row.created_at || null,
+        decided_at: row.decided_at || null,
+        consumed: row.consumed === true,
+        consumed_at: row.consumed_at || null,
+        terminal: row.terminal === true,
+        request_stone_hash: row.request_stone_hash || null,
+        grant_stone_hash: row.grant_stone_hash || null,
+        execution_receipt_stone_hash: row.execution_receipt_stone_hash || null,
+        guard: row.guard || null,
+        outcome: row.outcome || null
+      }))
+    };
+  }
+  if (toolId === "cairnstone_tool_authorization_status") {
+    return {
+      tool_id: toolId,
+      ok: result?.ok === true,
+      schema: result?.schema || null,
+      authorization_request_id: result?.authorization_request_id || null,
+      request_stone_hash: result?.request_stone_hash || null,
+      tool: result?.tool_id || null,
+      status: result?.status || null,
+      decision: result?.decision || null,
+      consumed: result?.consumed === true,
+      consumption_id: result?.consumption_id || null,
+      consumed_at: result?.consumed_at || null,
+      terminal: result?.terminal === true,
+      grant_stone_hash: result?.grant_stone_hash || null,
+      execution_receipt_stone_hash: result?.execution_receipt_stone_hash || null,
+      outcome: result?.outcome || null,
+      replay: result?.replay || null
+    };
+  }
+  return { tool_id: toolId, ok: result?.ok === true };
+}
+
+function buildProfileGroundedTask(userTask, profile, classification, liveReads) {
+  const envelope = {
+    schema: PROFILE_GROUNDING_SCHEMA,
+    profile: { profile_id: profile.profile_id, version: profile.version, actor_id: profile.ac1_identity?.actor_id || null },
+    classification,
+    precedence: ["LIVE_OPERATIONAL_READ", "CHAIN_HEAD", "PATH_HEAD", "HISTORICAL"],
+    live_reads: liveReads,
+    policy: {
+      operational_current_requires_live_read: true,
+      accepted_state_authority: profile.grounding_policy.accepted_state_authority,
+      historical_evidence_policy: profile.grounding_policy.historical_evidence_policy,
+      prefer_head_linked_evidence: profile.grounding_policy.citation_provenance.prefer_head_linked_evidence,
+      execution_authority: false,
+      mutation_authority: false
+    }
+  };
+  const groundedTask = [
+    `USER TASK: ${userTask}`,
+    `SERVER-SIDE V7.4 GROUNDING ENVELOPE: ${stableJson(envelope)}`,
+    "GROUNDING RULES: For operational_current claims, use LIVE_OPERATIONAL_READ as current truth. Use chain/path HEAD evidence for accepted state. Historical evidence is explanatory only and must not be presented as current authority. Prefer head-linked final evidence over superseded repair/intermediate evidence. If live operational data and historical memory differ, explicitly prefer the live read for current status. This envelope grants zero execution or mutation authority."
+  ].join("\n\n");
+  return groundedTask.length <= PROFILE_GROUNDING_MAX_TASK_CHARS
+    ? { ok: true, task: groundedTask, envelope }
+    : { ok: false, error: "profile_grounding_context_too_large", actual_chars: groundedTask.length, max_chars: PROFILE_GROUNDING_MAX_TASK_CHARS };
+}
+
+function compactProfileMetadata(profile) {
+  if (!profile) return null;
+  return {
+    schema: profile.schema,
+    profile_id: profile.profile_id,
+    version: profile.version,
+    actor_id: profile.ac1_identity?.actor_id || null,
+    scope: profile.scope,
+    confirmation_policy: profile.confirmation_policy || null,
+    budgets: profile.budgets || null,
+    execution_authority: false,
+    mutation_authority: false
+  };
+}
 
 export const DELEGATE_TOOL_DEFINITION = {
   name: "cairnstone_delegate",
@@ -2605,7 +2738,8 @@ export const DELEGATE_TOOL_DEFINITION = {
         },
         additionalProperties: false
       },
-      include_inbox: { type: "boolean", description: "Include the non-mutating AC1 inbox snapshot in the server-side V7.0 package. Defaults to true." }
+      include_inbox: { type: "boolean", description: "Include the non-mutating AC1 inbox snapshot in the server-side V7.0 package. Defaults to true." },
+      profile_id: { type: "string", description: "Optional V7.4 reusable agent profile identity. 'cairnstone-maintainer' activates deterministic operational-state grounding before the model call." }
     },
     additionalProperties: false
   }
