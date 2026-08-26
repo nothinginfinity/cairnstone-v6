@@ -1301,6 +1301,115 @@ export const TOOL_AUTHORIZATION_REQUEST_TOOL_DEFINITION = {
   }
 };
 
+// V7.3.3 client-interop bridge: compile the V7.0 package server-side so MCP
+// clients do not need to round-trip the large/deep context_package object.
+// This remains a proposal-only surface: it can create the same immutable
+// pending authorization request as cairnstone_tool_authorization_request, but
+// it has no approval, grant consumption, target invocation, or operator-token
+// capability.
+export const TOOL_AUTHORIZATION_PREPARE_TOOL_DEFINITION = {
+  name: "cairnstone_tool_authorization_prepare",
+  description: "V7.3.3 client-safe compact authorization proposal. Accepts actor/task/chain plus one human-confirmation mutation intent and guard, compiles the authoritative V7.0 context package server-side, then creates the same immutable pending authorization request as cairnstone_tool_authorization_request. Never approves or executes the mutation and never accepts operator credentials.",
+  inputSchema: {
+    type: "object",
+    required: ["actor_id", "task", "chain", "tool_intent"],
+    properties: {
+      actor_id: { type: "string" },
+      task: { type: "string", maxLength: 4000 },
+      chain: { type: "string" },
+      tool_intent: {
+        type: "object",
+        required: ["tool_id"],
+        properties: {
+          intent_id: { type: "string" },
+          tool_id: { type: "string" },
+          arguments: { type: "object" },
+          executed: { type: "boolean" }
+        },
+        additionalProperties: false
+      },
+      request_ir_id: { type: "string" },
+      model: {
+        type: "object",
+        properties: { provider: { type: "string" }, model: { type: "string" } },
+        additionalProperties: false
+      },
+      turn_id: { type: "string" },
+      justification: { type: "string", maxLength: MAX_AUTHORIZATION_JUSTIFICATION_CHARS },
+      guard: {
+        type: "object",
+        required: ["type", "chain", "expected_value"],
+        properties: {
+          type: { type: "string", enum: ["path_head", "chain_head"] },
+          chain: { type: "string" },
+          path: { type: "string" },
+          expected_value: { type: ["string", "null"] }
+        },
+        additionalProperties: false
+      }
+    },
+    additionalProperties: false
+  }
+};
+
+export async function prepareToolAuthorizationFromBody(body, env, deps = {}) {
+  if (!body || typeof body !== "object") return { ok: false, error: "invalid_tool_authorization_prepare", detail: "body_not_an_object" };
+
+  const intent = body.tool_intent;
+  const bypassField = authorizationBypassField(body, intent);
+  if (bypassField) return { ok: false, error: "authorization_bypass_not_accepted", field: bypassField };
+  if (!intent || typeof intent !== "object") return { ok: false, error: "invalid_tool_intent", detail: "not_an_object" };
+  if (intent.executed === true) return { ok: false, error: "invalid_tool_intent", detail: "tool_intent_already_executed" };
+  const toolId = typeof intent.tool_id === "string" ? intent.tool_id.trim() : "";
+  if (!toolId) return { ok: false, error: "invalid_tool_intent", detail: "missing_tool_id" };
+
+  const registry = Array.isArray(deps.registry) ? deps.registry : DEFAULT_TOOL_BROKER_REGISTRY;
+  if (!registry.every(validateBrokerRegistryEntry)) return { ok: false, error: "tool_registry_invalid" };
+  const entry = registry.find(item => item.tool_id === toolId) || null;
+  if (!entry || entry.risk_class !== "mutation" || entry.authorization !== "human_confirmation" || entry.available !== true) {
+    return { ok: false, error: "authorization_prepare_tool_not_human_confirmed_mutation", tool_id: toolId };
+  }
+
+  if (typeof deps.agentBootstrapFromBody !== "function") {
+    return { ok: false, error: "authorization_prepare_bootstrap_unavailable" };
+  }
+
+  const bootstrap = await deps.agentBootstrapFromBody({
+    actor_id: body.actor_id,
+    task: body.task,
+    chain: body.chain,
+    capabilities: {
+      tools: [{ id: toolId, available: true, class: "mutation" }],
+      supports_tool_calls: true
+    },
+    limits: {
+      max_skills: 1,
+      max_memory_hits: 0,
+      max_memory_bytes: 0,
+      max_inbox_items: 0,
+      max_package_bytes: 50000
+    },
+    include_inbox: false
+  }, env);
+  if (!bootstrap || bootstrap.ok !== true) {
+    return {
+      ok: false,
+      error: "authorization_prepare_bootstrap_failed",
+      detail: bootstrap?.error || "unknown"
+    };
+  }
+
+  return requestToolAuthorizationFromBody({
+    context_package: bootstrap,
+    tool_intent: intent,
+    ...(typeof body.request_ir_id === "string" ? { request_ir_id: body.request_ir_id } : {}),
+    ...(isPlainObject(body.model) ? { model: body.model } : {}),
+    ...(typeof body.turn_id === "string" ? { turn_id: body.turn_id } : {}),
+    ...(typeof body.justification === "string" ? { justification: body.justification } : {}),
+    ...(Object.prototype.hasOwnProperty.call(body, "guard") ? { guard: body.guard } : {})
+  }, env, deps);
+}
+
 // ---------------------------------------------------------------------------
 // V7.1.1: router core + capability registry + deterministic mock adapters
 // ---------------------------------------------------------------------------
