@@ -750,6 +750,7 @@ jobs:
           live_payload="$(jq -nc '{jsonrpc:"2.0",id:7400,method:"tools/call",params:{name:"cairnstone_tool_authorization_list",arguments:{decision:"approved",limit:5}}}')"
           live_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$live_payload")"
           live="$(echo "$live_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$live" | jq -c '{phase:"v740-live-list",ok,schema,total,filters,authorizations:[.authorizations[]|{authorization_request_id,tool_id,status,decision,created_at,decided_at,consumed,consumed_at,terminal,outcome}],policy}'
           echo "$live" | jq -e '
             .ok == true and
             .schema == "cairnstone-tool-authorization-list-v1" and
@@ -766,6 +767,7 @@ jobs:
           workers_payload="$(jq -nc --arg task "$TASK" '{jsonrpc:"2.0",id:7401,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v740-acceptance",profile_id:"cairnstone-maintainer",task:$task,chain:"cairnstone-v6-project-memory",route:{provider:"workers-ai",model:"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},generation:{max_output_tokens:600,temperature:0},include_inbox:false}}}')"
           workers_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$workers_payload")"
           workers="$(echo "$workers_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$workers" | jq -c '{phase:"v740-workers",ok,error,detail,actor_id,caller_actor_id,package_id,request_ir_id,profile,grounding,route,policy,diagnostics,output:{text:.output.text,finish_reason:.output.finish_reason}}'
           echo "$workers" | jq -e --argjson ids "$live_ids" '
             .ok == true and
             .schema == "cairnstone-delegation-result-v1" and
@@ -806,6 +808,7 @@ jobs:
           deepseek_payload="$(jq -nc --arg task "$TASK" '{jsonrpc:"2.0",id:7402,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v740-acceptance",profile_id:"cairnstone-maintainer",task:$task,chain:"cairnstone-v6-project-memory",route:{provider:"deepseek",model:"deepseek-chat",credential_mode:"byok",credential_alias:"default"},generation:{max_output_tokens:600,temperature:0},include_inbox:false}}}')"
           deepseek_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$deepseek_payload")"
           deepseek="$(echo "$deepseek_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$deepseek" | jq -c '{phase:"v740-deepseek",ok,error,detail,actor_id,caller_actor_id,package_id,request_ir_id,profile,grounding,route,policy,diagnostics,output:{text:.output.text,finish_reason:.output.finish_reason}}'
           echo "$deepseek" | jq -e --arg package "$package_id" --arg request "$request_ir_id" --argjson profile "$profile_json" --argjson classification "$classification_json" --argjson ids "$live_ids" '
             .ok == true and
             .schema == "cairnstone-delegation-result-v1" and
