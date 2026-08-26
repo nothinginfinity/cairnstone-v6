@@ -216,6 +216,27 @@ export async function authorizeToolRequestFromBody(body, env, deps = {}) {
   let current = await store.load(id);
   if (!current) return { ok: false, error: "authorization_not_found", authorization_request_id: id };
 
+  // Re-verify the exact immutable request identity at the human-decision
+  // boundary, not only later at execution. A corrupted lifecycle envelope or
+  // changed broker policy can never be converted into a grant.
+  const request = current.request;
+  if (!request || request.authorization_request_id !== id || !isObject(request.target) || !isObject(request.target.arguments)) {
+    return { ok: false, error: "authorization_request_corrupt", authorization_request_id: id };
+  }
+  const recomputedDigest = await argumentDigest(request.target.arguments);
+  if (recomputedDigest !== current.argument_digest || request.argument_digest !== current.argument_digest) {
+    return { ok: false, error: "authorization_argument_digest_mismatch", authorization_request_id: id };
+  }
+  if (request.tool_id !== current.tool_id || request.target.tool_id !== current.tool_id || request.required_authorization !== current.required_authorization) {
+    return { ok: false, error: "authorization_request_identity_mismatch", authorization_request_id: id };
+  }
+  if (typeof deps.validateRegisteredMutation === "function") {
+    const registry = await deps.validateRegisteredMutation(current.tool_id, current.required_authorization);
+    if (!registry || registry.ok !== true) {
+      return { ok: false, error: registry?.error || "authorized_tool_policy_changed", authorization_request_id: id };
+    }
+  }
+
   if (current.status === "executed" && decision === "approved") {
     return {
       ok: true,
