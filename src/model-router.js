@@ -2757,10 +2757,118 @@ export async function delegateFromBody(body, env, deps = {}) {
     const route = body.route && typeof body.route === "object" ? body.route : null;
     if (!route) return delegationFailure("invalid_delegation_request", "route_not_an_object");
     const generation = normalizeDelegationGeneration(body.generation);
+    const profileId = typeof body.profile_id === "string" && body.profile_id.trim() ? body.profile_id.trim() : null;
+    let profile = null;
+    let effectiveActorId = actorId;
+    let taskForBootstrap = task;
+    let grounding = null;
+    let readToolsExecuted = 0;
+
+    if (profileId) {
+      const profileResolver = typeof deps.getAgentProfile === "function" ? deps.getAgentProfile : getAgentProfile;
+      const profileResult = profileResolver(profileId);
+      if (!profileResult || profileResult.ok !== true) {
+        return { ...delegationFailure(profileResult?.error || "agent_profile_not_found"), profile_id: profileId };
+      }
+      profile = profileResult.profile;
+      if (profile.scope?.chain !== chain) {
+        return { ...delegationFailure("agent_profile_scope_mismatch", "profile_chain_does_not_match_requested_chain"), profile: compactProfileMetadata(profile) };
+      }
+      effectiveActorId = profile.ac1_identity?.actor_id || actorId;
+      const classify = typeof deps.classifyGroundingTask === "function" ? deps.classifyGroundingTask : classifyGroundingTask;
+      const planReads = typeof deps.planProfileGroundingReads === "function" ? deps.planProfileGroundingReads : planProfileGroundingReads;
+      const classification = classify(task);
+      const readPlan = planReads(profile, classification);
+      if (!readPlan || readPlan.ok !== true) {
+        return { ...delegationFailure(readPlan?.error || "profile_grounding_plan_failed"), profile: compactProfileMetadata(profile), grounding: { classification, degraded: true } };
+      }
+      if (readPlan.reads.length > profile.grounding_policy.max_live_read_turns) {
+        return { ...delegationFailure("profile_grounding_read_budget_exceeded"), profile: compactProfileMetadata(profile), grounding: { classification, degraded: true } };
+      }
+
+      const liveReads = [];
+      const readReceipts = [];
+      if (readPlan.reads.length) {
+        if (typeof deps.executeReadToolIntent !== "function") {
+          return {
+            ...delegationFailure("profile_live_read_unavailable", "operational_current requires a live read before model routing"),
+            profile: compactProfileMetadata(profile),
+            grounding: { schema: PROFILE_GROUNDING_SCHEMA, classification, degraded: true, live_reads: [] }
+          };
+        }
+        const groundingBootstrap = await deps.agentBootstrapFromBody({
+          actor_id: effectiveActorId,
+          task,
+          chain,
+          capabilities: {
+            tools: readPlan.reads.map(read => ({ id: read.tool_id, available: true, class: "read" })),
+            supports_tool_calls: true
+          },
+          limits: body.limits,
+          include_inbox: false
+        }, env);
+        if (!groundingBootstrap || groundingBootstrap.ok !== true) {
+          return {
+            ...delegationFailure("profile_grounding_bootstrap_failed", groundingBootstrap?.error || "unknown"),
+            profile: compactProfileMetadata(profile),
+            grounding: { schema: PROFILE_GROUNDING_SCHEMA, classification, degraded: true, live_reads: [] }
+          };
+        }
+
+        for (let index = 0; index < readPlan.reads.length; index += 1) {
+          const read = readPlan.reads[index];
+          const intentId = "sha256:" + await sha256Text(stableJson({
+            profile_id: profile.profile_id,
+            profile_version: profile.version,
+            package_id: groundingBootstrap.package_id,
+            ordinal: index,
+            tool_id: read.tool_id,
+            arguments: read.arguments
+          }));
+          const executed = await deps.executeReadToolIntent({
+            context_package: groundingBootstrap,
+            tool_intent: { intent_id: intentId, tool_id: read.tool_id, arguments: read.arguments, executed: false },
+            execution_allowlist: [read.tool_id],
+            turn_id: `profile-grounding:${profile.profile_id}`,
+            budgets: {
+              max_output_bytes: PROFILE_GROUNDING_MAX_OUTPUT_BYTES,
+              max_tool_calls_per_turn: profile.grounding_policy.max_live_read_turns,
+              turn_tool_calls_so_far: readToolsExecuted
+            }
+          }, env);
+          if (!executed || executed.ok !== true || executed.executed !== true) {
+            return {
+              ...delegationFailure("profile_live_read_failed", executed?.execution_denied_reason || executed?.error || "unknown"),
+              profile: compactProfileMetadata(profile),
+              grounding: { schema: PROFILE_GROUNDING_SCHEMA, classification, degraded: true, live_reads: liveReads }
+            };
+          }
+          readToolsExecuted += 1;
+          liveReads.push(compactProfileLiveRead(read.tool_id, executed.result));
+          if (executed.receipt?.stone_hash) readReceipts.push({ tool_id: read.tool_id, stone_hash: executed.receipt.stone_hash, chain: executed.receipt.chain || null });
+        }
+      }
+
+      const grounded = buildProfileGroundedTask(task, profile, classification, liveReads);
+      if (!grounded.ok) {
+        return { ...delegationFailure(grounded.error), profile: compactProfileMetadata(profile), grounding: { schema: PROFILE_GROUNDING_SCHEMA, classification, degraded: true, live_reads: liveReads } };
+      }
+      taskForBootstrap = grounded.task;
+      grounding = {
+        schema: PROFILE_GROUNDING_SCHEMA,
+        classification,
+        precedence: grounded.envelope.precedence,
+        live_reads: liveReads,
+        read_receipts: readReceipts,
+        live_reads_executed: readToolsExecuted,
+        degraded: false,
+        current_claim_source: classification.grounding_class === "operational_current" ? "live_operational_read" : "accepted_or_historical_evidence"
+      };
+    }
 
     const bootstrap = await deps.agentBootstrapFromBody({
-      actor_id: actorId,
-      task,
+      actor_id: effectiveActorId,
+      task: taskForBootstrap,
       chain,
       capabilities: { tools: [], supports_tool_calls: false },
       limits: body.limits,
