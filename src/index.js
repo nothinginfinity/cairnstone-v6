@@ -49,11 +49,13 @@ import {
   getToolAuthorizationFromBody,
   getToolAuthorizationStatusFromBody,
   listToolAuthorizationsFromBody,
+  listToolAuthorizationsCompactFromBody,
   persistPendingAuthorizationRecord,
-  TOOL_AUTHORIZATION_STATUS_TOOL_DEFINITION
+  TOOL_AUTHORIZATION_STATUS_TOOL_DEFINITION,
+  TOOL_AUTHORIZATION_LIST_TOOL_DEFINITION
 } from "./tool-authorization.js";
 
-const VERSION = "0.5.16";
+const VERSION = "0.5.17";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -505,6 +507,7 @@ async function callMcpTool(name, args, env) {
     createStone: body => createStoneFromBody(body, env)
   });
   if (name === "cairnstone_tool_authorization_status") return getToolAuthorizationStatusFromBody(args, env);
+  if (name === "cairnstone_tool_authorization_list") return listToolAuthorizationsCompactFromBody(args, env);
   if (name === "cairnstone_tool_authorization_prepare") return prepareToolAuthorizationFromBody(args, env, {
     agentBootstrapFromBody: (body, e) => agentBootstrapFromBody(body, e, {
       resumeChainFromBody,
@@ -991,6 +994,7 @@ function mcpTools() {
     TOOL_POLICY_PREVIEW_TOOL_DEFINITION,
     TOOL_EXECUTE_TOOL_DEFINITION,
     TOOL_AUTHORIZATION_STATUS_TOOL_DEFINITION,
+    TOOL_AUTHORIZATION_LIST_TOOL_DEFINITION,
     TOOL_AUTHORIZATION_PREPARE_TOOL_DEFINITION,
     TOOL_AUTHORIZATION_REQUEST_TOOL_DEFINITION,
     MODEL_ROUTE_TOOL_DEFINITION,
