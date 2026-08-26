@@ -55,7 +55,7 @@ import {
   TOOL_AUTHORIZATION_LIST_TOOL_DEFINITION
 } from "./tool-authorization.js";
 
-const VERSION = "0.5.17";
+const VERSION = "0.5.18";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -539,7 +539,11 @@ async function callMcpTool(name, args, env) {
       listSkillsFromBody,
       version: VERSION
     }),
-    modelRouteFromBody
+    modelRouteFromBody,
+    executeReadToolIntent: (body, e) => executeToolIntentFromBody(body, e, {
+      invokeTool: (handlerName, handlerArgs, handlerEnv) => callMcpTool(handlerName, handlerArgs, handlerEnv),
+      createStone: stoneBody => createStoneFromBody(stoneBody, e)
+    })
   });
   return { ok: false, error: "unknown_tool", name };
 }
