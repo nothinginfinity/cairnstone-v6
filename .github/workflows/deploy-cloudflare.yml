@@ -736,7 +736,7 @@ jobs:
           health="$(curl -fsS "$BASE/health")"
           echo "$health" | jq -e '
             .ok == true and
-            .version == "0.5.18" and
+            .version == "0.5.19" and
             ((.mcp_tools | index("cairnstone_tool_authorization_list")) != null) and
             ((.mcp_tools | index("cairnstone_tool_authorization_status")) != null) and
             ((.mcp_tools | index("cairnstone_delegate")) != null)
