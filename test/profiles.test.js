@@ -218,6 +218,13 @@ test("V7.4 profileAllowsChain permits a profile's primary scope chain and its al
   assert.equal(profileAllowsChain(CAIRNSTONE_MAINTAINER_PROFILE, "cairnstone-v6-project-memory"), true);
   assert.equal(profileAllowsChain(CAIRNSTONE_MAINTAINER_PROFILE, "some-other-chain"), false);
 
+  // V7.4.1: repo-debugger is now explicitly accepted for one real second
+  // project chain, while every unlisted chain still fails closed.
+  assert.equal(REPO_DEBUGGER_PROFILE.version, "0.1.1");
+  assert.deepEqual(REPO_DEBUGGER_PROFILE.scope.allowed_chains, ["praxiq-call"]);
+  assert.equal(profileAllowsChain(REPO_DEBUGGER_PROFILE, "praxiq-call"), true);
+  assert.equal(profileAllowsChain(REPO_DEBUGGER_PROFILE, "unlisted-project-memory"), false);
+
   const multiChainProfile = structuredClone(REPO_DEBUGGER_PROFILE);
   multiChainProfile.scope.allowed_chains = ["another-project-memory"];
   assert.equal(profileAllowsChain(multiChainProfile, "cairnstone-v6-project-memory"), true);
