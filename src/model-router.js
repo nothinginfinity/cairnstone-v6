@@ -1124,6 +1124,60 @@ export async function requestToolAuthorizationFromBody(body, _env, deps = {}) {
     execution
   };
 
+  // Exact retries of the same model intent/request identity are idempotent.
+  // Reuse the first immutable request Stone instead of minting a second Stone
+  // with the same authorization_request_id but a different creation timestamp.
+  if (typeof deps.getExistingAuthorization === "function") {
+    try {
+      const existingResult = await deps.getExistingAuthorization(authorizationRequestId);
+      const existing = existingResult && existingResult.ok === true ? existingResult.authorization : null;
+      if (existing) {
+        const sameIdentity = existing.authorization_request_id === authorizationRequestId &&
+          existing.argument_digest === argumentDigest &&
+          existing.tool_id === toolId &&
+          existing.package_id === pkg.package_id &&
+          existing.decision_id === decisionId &&
+          existing.request?.authorization_request_id === authorizationRequestId;
+        if (!sameIdentity) {
+          return { ok: false, error: "authorization_request_idempotency_conflict", authorization_request_id: authorizationRequestId, execution };
+        }
+        return {
+          ok: true,
+          schema: TOOL_AUTHORIZATION_REQUEST_SCHEMA,
+          request_created: false,
+          idempotent_replay: true,
+          authorization_request: existing.request,
+          authorization_request_id: authorizationRequestId,
+          decision_id: decisionId,
+          package_id: pkg.package_id,
+          request_ir_id: requestIrId,
+          intent_id: authorizationRequest.intent_id,
+          tool_id: toolId,
+          decision: "require_authorization",
+          reason: entry.authorization,
+          authorization_required: true,
+          required_authorization: entry.authorization,
+          argument_digest: argumentDigest,
+          guard: existing.request?.guard ?? guard,
+          receipt: existing.request_stone_hash ? { stone_hash: existing.request_stone_hash, chain: TOOL_AUTHORIZATION_REQUEST_CHAIN } : null,
+          execution,
+          lifecycle_status: existing.status,
+          policy: {
+            model_intent_is_execution_authority: false,
+            execution_authority: false,
+            mutation_authority: false,
+            authorization_consumed: ["consuming", "executed", "guard_failed", "execution_failed"].includes(existing.status),
+            target_mutation_performed: existing.status === "executed"
+          }
+        };
+      }
+    } catch (_error) {
+      // A lifecycle read failure must not silently create duplicate immutable
+      // request evidence. Fail closed and let the caller retry the read.
+      return { ok: false, error: "authorization_lifecycle_read_failed", authorization_request_id: authorizationRequestId, execution };
+    }
+  }
+
   if (typeof deps.createStone !== "function") {
     return { ok: false, error: "authorization_request_persistence_unavailable", authorization_request_id: authorizationRequestId, execution };
   }
