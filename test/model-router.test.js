@@ -481,7 +481,12 @@ test("V7.4.1 repo-debugger reuses one durable profile on praxiq-call and still f
     chain: "praxiq-call",
     route: { provider: "mock-a", model: "mock-a/text-tools-v1" }
   }, {}, {
-    agentBootstrapFromBody: async args => { events.push(`bootstrap:${args.capabilities?.supports_tool_calls === true ? "grounding" : "final"}`); return profileBootstrapFixture(args); },
+    agentBootstrapFromBody: async args => {
+      events.push(`bootstrap:${args.capabilities?.supports_tool_calls === true ? "grounding" : "final"}`);
+      assert.equal(args.chain, "praxiq-call");
+      assert.equal(args.instructions_chain, "cairnstone-v6-project-memory");
+      return profileBootstrapFixture(args);
+    },
     executeReadToolIntent: async body => {
       events.push("live-read");
       assert.equal(body.tool_intent.tool_id, "cairnstone_reconcile_repo");
