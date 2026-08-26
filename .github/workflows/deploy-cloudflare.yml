@@ -102,6 +102,9 @@ jobs:
 
       - run: npm install
 
+      - name: V7.4.1 targeted cross-project regression
+        run: node --test --test-name-pattern="V7.4.1 repo-debugger reuses one durable profile" test/model-router.test.js
+
       - name: Syntax and regression tests
         run: npm run check
 
