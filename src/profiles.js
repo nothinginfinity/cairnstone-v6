@@ -187,5 +187,156 @@ export function validateAgentProfile(profile) {
     }
   }
 
+  if (profile.budgets !== undefined) {
+    const budgets = profile.budgets;
+    if (!isObject(budgets)) {
+      pushError(errors, "budgets", "when present, must be an object");
+    } else {
+      const positiveIntegerFields = ["max_context_tokens", "max_output_tokens", "delegation_depth"];
+      for (const field of positiveIntegerFields) {
+        if (!Number.isInteger(budgets[field]) || budgets[field] < 1) {
+          pushError(errors, `budgets.${field}`, "must be a positive integer");
+        }
+      }
+    }
+  }
+
   return errors.length === 0 ? { ok: true, errors: [] } : { ok: false, errors };
+}
+
+function cloneProfile(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+export const CAIRNSTONE_MAINTAINER_PROFILE = Object.freeze({
+  schema: AGENT_PROFILE_SCHEMA_V1,
+  profile_id: "cairnstone-maintainer",
+  version: "0.1.0",
+  scope: { chain: "cairnstone-v6-project-memory" },
+  ac1_identity: { actor_id: "cairnstone:cairnstone-maintainer" },
+  grounding_policy: {
+    grounding_classes_enabled: [...GROUNDING_CLASSES],
+    live_read_tools_by_domain: {
+      tool_authorizations: ["cairnstone_tool_authorization_list", "cairnstone_tool_authorization_status"]
+    },
+    accepted_state_authority: "chain_head_and_path_head",
+    historical_evidence_policy: "graph_linked_evidence_only",
+    fallback_on_unavailable_live_read: "fail_closed_explicit_degraded",
+    citation_provenance: { require_citations: true, prefer_head_linked_evidence: true },
+    max_live_read_turns: 4
+  },
+  tool_allowlist: [
+    "cairnstone_tool_authorization_list",
+    "cairnstone_tool_authorization_status",
+    "cairnstone_resume_chain",
+    "cairnstone_find_v2",
+    "cairnstone_expand"
+  ],
+  confirmation_policy: { human_confirmation_required_for_mutation: true },
+  budgets: {
+    max_context_tokens: 90000,
+    max_output_tokens: 1200,
+    delegation_depth: 1
+  },
+  execution_authority: false,
+  mutation_authority: false
+});
+
+export function getAgentProfile(profileId) {
+  if (profileId !== CAIRNSTONE_MAINTAINER_PROFILE.profile_id) {
+    return { ok: false, error: "agent_profile_not_found", profile_id: profileId || null };
+  }
+  const profile = cloneProfile(CAIRNSTONE_MAINTAINER_PROFILE);
+  const validation = validateAgentProfile(profile);
+  if (!validation.ok) return { ok: false, error: "agent_profile_invalid", errors: validation.errors };
+  return { ok: true, profile };
+}
+
+const AUTHORIZATION_ID_RE = /sha256:[0-9a-f]{64}/i;
+
+export function classifyGroundingTask(task) {
+  const original = typeof task === "string" ? task.trim() : "";
+  const text = original.toLowerCase();
+  const authorizationId = original.match(AUTHORIZATION_ID_RE)?.[0]?.toLowerCase() || null;
+  const mentionsAuthorization = /\bauthori[sz]ation(s)?\b|\bapproval(s)?\b|\bapproved\b/.test(text);
+  const asksCurrent = /\b(current|currently|latest|most recent|recent|still|now|already|pending|approved)\b/.test(text);
+  const asksStatus = /\b(status|executed|consumed|replayed|pending|failed|succeeded|complete|completed)\b/.test(text);
+
+  if (authorizationId && mentionsAuthorization && (asksCurrent || asksStatus)) {
+    return {
+      grounding_class: "operational_current",
+      domain: "tool_authorizations",
+      intent: "authorization_status",
+      authorization_request_id: authorizationId,
+      matched_rule: "known_authorization_live_status"
+    };
+  }
+
+  if (mentionsAuthorization && asksCurrent) {
+    return {
+      grounding_class: "operational_current",
+      domain: "tool_authorizations",
+      intent: /\bpending\b/.test(text) && !/\bapproved\b/.test(text)
+        ? "recent_pending_authorizations"
+        : "recent_approved_authorizations",
+      matched_rule: "authorization_discovery_live_first"
+    };
+  }
+
+  if (/\b(current|canonical|accepted|latest)\b/.test(text) && /\b(head|accepted state|project[- ]memory|path head|chain head)\b/.test(text)) {
+    return {
+      grounding_class: "accepted_state",
+      domain: "cairnstone_authority",
+      intent: "canonical_accepted_state",
+      matched_rule: "accepted_authority_query"
+    };
+  }
+
+  if (/\b(why|how|explain|reason|what happened|history|historical)\b/.test(text)) {
+    return {
+      grounding_class: "historical_explanatory",
+      domain: "project_memory",
+      intent: "historical_explanation",
+      matched_rule: "historical_explanatory_query"
+    };
+  }
+
+  return {
+    grounding_class: "historical_explanatory",
+    domain: "project_memory",
+    intent: "general_grounded_reasoning",
+    matched_rule: "default_non_operational"
+  };
+}
+
+export function planProfileGroundingReads(profile, classification) {
+  const validation = validateAgentProfile(profile);
+  if (!validation.ok) return { ok: false, error: "agent_profile_invalid", errors: validation.errors };
+  if (!classification || !profile.grounding_policy.grounding_classes_enabled.includes(classification.grounding_class)) {
+    return { ok: false, error: "grounding_class_not_enabled", grounding_class: classification?.grounding_class || null };
+  }
+  if (classification.grounding_class !== "operational_current") {
+    return { ok: true, reads: [] };
+  }
+
+  const domainTools = new Set(profile.grounding_policy.live_read_tools_by_domain[classification.domain] || []);
+  const profileAllowlist = new Set(profile.tool_allowlist || []);
+  const reads = [];
+  if (classification.intent === "authorization_status") {
+    reads.push({
+      tool_id: "cairnstone_tool_authorization_status",
+      arguments: { authorization_request_id: classification.authorization_request_id }
+    });
+  } else if (classification.intent === "recent_pending_authorizations") {
+    reads.push({ tool_id: "cairnstone_tool_authorization_list", arguments: { status: "pending", limit: 5 } });
+  } else {
+    reads.push({ tool_id: "cairnstone_tool_authorization_list", arguments: { decision: "approved", limit: 5 } });
+  }
+
+  for (const read of reads) {
+    if (!domainTools.has(read.tool_id) || !profileAllowlist.has(read.tool_id)) {
+      return { ok: false, error: "profile_live_read_not_allowed", tool_id: read.tool_id, domain: classification.domain };
+    }
+  }
+  return { ok: true, reads };
 }
