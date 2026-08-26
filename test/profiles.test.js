@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  AGENT_PROFILE_REGISTRY,
   AGENT_PROFILE_SCHEMA_V1,
   CAIRNSTONE_MAINTAINER_PROFILE,
   GROUNDING_CLASSES,
+  RELEASE_REVIEWER_PROFILE,
+  REPO_DEBUGGER_PROFILE,
   classifyGroundingTask,
   getAgentProfile,
   planProfileGroundingReads,
+  profileAllowsChain,
   validateAgentProfile
 } from "../src/profiles.js";
 
@@ -186,4 +190,122 @@ test("V7.4.0 profile budgets must be positive integers", () => {
   const result = validateAgentProfile(profile);
   assert.equal(result.ok, false);
   assert.ok(result.errors.some(e => e.startsWith("budgets.max_output_tokens:")));
+});
+
+// ---------------------------------------------------------------------------
+// V7.4 broader profile generalization: registry, cross-project chain scope,
+// and the declarative classification-rule engine for non-maintainer domains.
+// ---------------------------------------------------------------------------
+
+test("V7.4 the profile registry resolves all three accepted profiles", () => {
+  assert.deepEqual(Object.keys(AGENT_PROFILE_REGISTRY).sort(), ["cairnstone-maintainer", "release-reviewer", "repo-debugger"]);
+  for (const profileId of Object.keys(AGENT_PROFILE_REGISTRY)) {
+    const resolved = getAgentProfile(profileId);
+    assert.equal(resolved.ok, true, profileId);
+    assert.equal(resolved.profile.profile_id, profileId);
+    assert.equal(resolved.profile.execution_authority, false);
+    assert.equal(resolved.profile.mutation_authority, false);
+    assert.deepEqual(validateAgentProfile(resolved.profile), { ok: true, errors: [] });
+  }
+});
+
+test("V7.4 getAgentProfile fails closed for an unknown profile id without throwing", () => {
+  assert.deepEqual(getAgentProfile("not-a-real-profile"), { ok: false, error: "agent_profile_not_found", profile_id: "not-a-real-profile" });
+  assert.deepEqual(getAgentProfile(undefined), { ok: false, error: "agent_profile_not_found", profile_id: null });
+});
+
+test("V7.4 profileAllowsChain permits a profile's primary scope chain and its allowed_chains, and nothing else", () => {
+  assert.equal(profileAllowsChain(CAIRNSTONE_MAINTAINER_PROFILE, "cairnstone-v6-project-memory"), true);
+  assert.equal(profileAllowsChain(CAIRNSTONE_MAINTAINER_PROFILE, "some-other-chain"), false);
+
+  const multiChainProfile = structuredClone(REPO_DEBUGGER_PROFILE);
+  multiChainProfile.scope.allowed_chains = ["another-project-memory"];
+  assert.equal(profileAllowsChain(multiChainProfile, "cairnstone-v6-project-memory"), true);
+  assert.equal(profileAllowsChain(multiChainProfile, "another-project-memory"), true);
+  assert.equal(profileAllowsChain(multiChainProfile, "unlisted-project-memory"), false);
+});
+
+test("V7.4 scope.allowed_chains must be an array of non-empty strings when present", () => {
+  const profile = validProfile({ scope: { chain: "cairnstone-v6-project-memory", allowed_chains: ["", "ok-chain"] } });
+  const result = validateAgentProfile(profile);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some(e => e.startsWith("scope.allowed_chains:")));
+});
+
+test("V7.4 repo-debugger classifies a repo-drift question as operational_current and plans cairnstone_reconcile_repo", () => {
+  const classification = classifyGroundingTask(REPO_DEBUGGER_PROFILE, "Is cairnstone-v6-project-memory currently drifted from GitHub?", { chain: "cairnstone-v6-project-memory" });
+  assert.equal(classification.grounding_class, "operational_current");
+  assert.equal(classification.domain, "repo_state");
+  assert.equal(classification.matched_rule, "repo_drift_live_check");
+  const plan = planProfileGroundingReads(REPO_DEBUGGER_PROFILE, classification);
+  assert.equal(plan.ok, true);
+  assert.deepEqual(plan.reads, [{ tool_id: "cairnstone_reconcile_repo", arguments: { chain: "cairnstone-v6-project-memory" } }]);
+});
+
+test("V7.4 repo-debugger classifies a path-freshness question and extracts the referenced path", () => {
+  const classification = classifyGroundingTask(REPO_DEBUGGER_PROFILE, "Is src/index.js still up to date?", { chain: "cairnstone-v6-project-memory" });
+  assert.equal(classification.grounding_class, "operational_current");
+  assert.equal(classification.matched_rule, "repo_path_freshness_check");
+  assert.equal(classification.extracted_value, "src/index.js");
+  const plan = planProfileGroundingReads(REPO_DEBUGGER_PROFILE, classification);
+  assert.deepEqual(plan.reads, [{ tool_id: "cairnstone_get_source_freshness", arguments: { chain: "cairnstone-v6-project-memory", path: "src/index.js" } }]);
+});
+
+test("V7.4 repo-debugger explanatory history does not trigger a live read", () => {
+  const classification = classifyGroundingTask(REPO_DEBUGGER_PROFILE, "Why did that regression happen last week?", { chain: "cairnstone-v6-project-memory" });
+  assert.equal(classification.grounding_class, "historical_explanatory");
+  assert.deepEqual(planProfileGroundingReads(REPO_DEBUGGER_PROFILE, classification), { ok: true, reads: [] });
+});
+
+test("V7.4 release-reviewer classifies a release-doc freshness question and extracts the path", () => {
+  const classification = classifyGroundingTask(RELEASE_REVIEWER_PROFILE, "Is the changelog still current?", { chain: "cairnstone-v6-project-memory" });
+  // No file extension in this phrasing, so the path extractor legitimately finds nothing and the rule cannot fire.
+  assert.equal(classification.grounding_class, "historical_explanatory");
+
+  const withPath = classifyGroundingTask(RELEASE_REVIEWER_PROFILE, "Is docs/ROADMAP_V7.md still current?", { chain: "cairnstone-v6-project-memory" });
+  assert.equal(withPath.grounding_class, "operational_current");
+  assert.equal(withPath.domain, "release_docs");
+  assert.equal(withPath.matched_rule, "release_doc_freshness_check");
+  assert.equal(withPath.extracted_value, "docs/ROADMAP_V7.md");
+  const plan = planProfileGroundingReads(RELEASE_REVIEWER_PROFILE, withPath);
+  assert.deepEqual(plan.reads, [{ tool_id: "cairnstone_get_source_freshness", arguments: { chain: "cairnstone-v6-project-memory", path: "docs/ROADMAP_V7.md" } }]);
+});
+
+test("V7.4 a profile whose tool_allowlist is missing the domain tool fails closed for repo-debugger too", () => {
+  const profile = structuredClone(REPO_DEBUGGER_PROFILE);
+  profile.tool_allowlist = profile.tool_allowlist.filter(id => id !== "cairnstone_reconcile_repo");
+  const classification = classifyGroundingTask(profile, "Is cairnstone-v6-project-memory currently drifted from GitHub?", { chain: "cairnstone-v6-project-memory" });
+  const plan = planProfileGroundingReads(profile, classification);
+  assert.equal(plan.ok, false);
+  assert.equal(plan.error, "profile_live_read_not_allowed");
+});
+
+test("V7.4 a classification_rules entry must declare reads only when operational_current", () => {
+  const profile = validProfile();
+  profile.grounding_policy.classification_rules = [
+    { id: "bad-rule", grounding_class: "historical_explanatory", domain: "x", intent: "y", all_of_groups: [{ any_of: ["x"] }], reads_template: [{ tool_id: "cairnstone_resume_chain", arguments: {} }] }
+  ];
+  const result = validateAgentProfile(profile);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some(e => e.includes("only operational_current rules may declare live reads")));
+});
+
+test("V7.4 an operational_current classification_rules entry without any reads fails validation", () => {
+  const profile = validProfile();
+  profile.grounding_policy.classification_rules = [
+    { id: "bad-rule", grounding_class: "operational_current", domain: "x", intent: "y", all_of_groups: [{ any_of: ["x"] }], reads_template: [] }
+  ];
+  const result = validateAgentProfile(profile);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some(e => e.includes("must declare at least one read")));
+});
+
+test("V7.4 an unknown extractor name in a classification rule fails validation", () => {
+  const profile = validProfile();
+  profile.grounding_policy.classification_rules = [
+    { id: "bad-rule", grounding_class: "operational_current", domain: "x", intent: "y", require_extract: "made_up_extractor", all_of_groups: [{ any_of: ["x"] }], reads_template: [{ tool_id: "cairnstone_resume_chain", arguments: {} }] }
+  ];
+  const result = validateAgentProfile(profile);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some(e => e.includes("unknown extractor")));
 });
