@@ -312,6 +312,130 @@ async function handleMcpRpc(rpc, env) {
   }
 }
 
+async function secureOperatorTokenMatches(provided, expected) {
+  if (typeof provided !== "string" || typeof expected !== "string" || !provided || !expected) return false;
+  const encoder = new TextEncoder();
+  const [left, right] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(provided)),
+    crypto.subtle.digest("SHA-256", encoder.encode(expected))
+  ]);
+  const a = new Uint8Array(left);
+  const b = new Uint8Array(right);
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+async function requireOperatorAuthorization(request, env) {
+  const expected = typeof env.CAIRNSTONE_OPERATOR_TOKEN === "string" ? env.CAIRNSTONE_OPERATOR_TOKEN.trim() : "";
+  if (!expected) {
+    return { ok: false, error: "operator_authorization_not_configured", status: 503 };
+  }
+  const header = request.headers.get("authorization") || "";
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  const provided = match ? match[1].trim() : "";
+  if (!provided || !(await secureOperatorTokenMatches(provided, expected))) {
+    return { ok: false, error: "operator_authorization_required", status: 401 };
+  }
+  return {
+    ok: true,
+    subject: typeof env.CAIRNSTONE_OPERATOR_SUBJECT === "string" && env.CAIRNSTONE_OPERATOR_SUBJECT.trim()
+      ? env.CAIRNSTONE_OPERATOR_SUBJECT.trim()
+      : "operator:cairnstone-console",
+    method: "operator_bearer"
+  };
+}
+
+function guardedAuthorizationDeps(env) {
+  const enabled = new Set(["cairnstone_commit_v2", "cairnstone_set_path_head", "cairnstone_set_head"]);
+  return {
+    createStone: body => createStoneFromBody(body, env),
+    linkStones: body => linkStonesFromBody(body, env),
+    validateRegisteredMutation: async (toolId, requiredAuthorization) => {
+      const registry = toolRegistryFromBody({ tool_id: toolId }, env);
+      const entry = registry?.ok === true && Array.isArray(registry.tools) ? registry.tools[0] : null;
+      if (!entry || entry.tool_id !== toolId) return { ok: false, error: "authorized_tool_not_registered" };
+      if (!enabled.has(toolId)) return { ok: false, error: "authorized_tool_not_enabled_v733" };
+      if (entry.risk_class !== "mutation" || entry.authorization !== "human_confirmation") {
+        return { ok: false, error: "authorized_tool_policy_changed" };
+      }
+      if (requiredAuthorization !== entry.authorization || entry.available !== true) {
+        return { ok: false, error: "authorized_tool_policy_changed" };
+      }
+      return { ok: true, entry };
+    },
+    observeGuard: async guard => {
+      requireBindings(env);
+      if (guard.type === "path_head") {
+        const row = await env.CAIRNSTONE_DB.prepare(
+          "SELECT head_hash FROM path_heads WHERE chain = ? AND path = ?"
+        ).bind(guard.chain, guard.path).first();
+        return { ok: true, value: row ? row.head_hash : null };
+      }
+      if (guard.type === "chain_head") {
+        const row = await env.CAIRNSTONE_DB.prepare(
+          "SELECT head_hash FROM chain_heads WHERE chain = ?"
+        ).bind(guard.chain).first();
+        return { ok: true, value: row ? row.head_hash : null };
+      }
+      return { ok: false, error: "authorization_guard_invalid" };
+    },
+    invokeTool: async (handlerName, handlerArgs) => {
+      if (handlerName === "cairnstone_commit_v2") return commitV2FromBody(handlerArgs, env);
+      if (handlerName === "cairnstone_set_path_head") return setPathHeadFromBody(handlerArgs, env);
+      if (handlerName === "cairnstone_set_head") return setHeadFromBody(handlerArgs, env);
+      return { ok: false, error: "authorized_tool_not_enabled_v733", tool_id: handlerName };
+    },
+    verifyMutation: async (toolId, args, result) => {
+      requireBindings(env);
+      if (toolId === "cairnstone_commit_v2") {
+        if (!result?.stone_hash) return { ok: false, error: "mutation_verification_missing_stone" };
+        const row = await env.CAIRNSTONE_DB.prepare(
+          "SELECT hash,chain_hash,path,raw_key FROM stones WHERE hash = ?"
+        ).bind(result.stone_hash).first();
+        if (!row || row.chain_hash !== args.chain || row.path !== (args.path || "content.txt")) {
+          return { ok: false, error: "mutation_verification_stone_mismatch" };
+        }
+        if (typeof args.content === "string" && args.content.length > 0) {
+          const expectedRawKey = `raw/${await sha256(args.content)}.txt`;
+          if (row.raw_key !== expectedRawKey) return { ok: false, error: "mutation_verification_content_mismatch" };
+        }
+        if (args.path && args.set_path_head !== false) {
+          const head = await env.CAIRNSTONE_DB.prepare(
+            "SELECT head_hash FROM path_heads WHERE chain = ? AND path = ?"
+          ).bind(args.chain, args.path).first();
+          if (!head || head.head_hash !== result.stone_hash) return { ok: false, error: "mutation_verification_path_head_mismatch" };
+        }
+        if (args.set_as_head === true) {
+          const head = await env.CAIRNSTONE_DB.prepare(
+            "SELECT head_hash FROM chain_heads WHERE chain = ?"
+          ).bind(args.chain).first();
+          if (!head || head.head_hash !== result.stone_hash) return { ok: false, error: "mutation_verification_chain_head_mismatch" };
+        }
+        return { ok: true, read_back: { stone_hash: row.hash, chain: row.chain_hash, path: row.path } };
+      }
+      if (toolId === "cairnstone_set_path_head") {
+        const row = await env.CAIRNSTONE_DB.prepare(
+          "SELECT head_hash FROM path_heads WHERE chain = ? AND path = ?"
+        ).bind(args.chain, args.path).first();
+        return row && row.head_hash === result?.head_hash
+          ? { ok: true, read_back: { head_hash: row.head_hash } }
+          : { ok: false, error: "mutation_verification_path_head_mismatch" };
+      }
+      if (toolId === "cairnstone_set_head") {
+        const row = await env.CAIRNSTONE_DB.prepare(
+          "SELECT head_hash FROM chain_heads WHERE chain = ?"
+        ).bind(args.chain).first();
+        return row && row.head_hash === result?.head_hash
+          ? { ok: true, read_back: { head_hash: row.head_hash } }
+          : { ok: false, error: "mutation_verification_chain_head_mismatch" };
+      }
+      return { ok: false, error: "mutation_verification_not_supported" };
+    }
+  };
+}
+
 async function callMcpTool(name, args, env) {
   if (name === "cairnstone_health") return health(env);
   if (name === "cairnstone_list_skills") return listSkillsFromBody(args, env);
