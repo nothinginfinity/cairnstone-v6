@@ -685,9 +685,14 @@ export function hashablePayload(packageBody) {
         content_identity: skill.content_identity
       }))
       .sort((a, b) => a.skill_id.localeCompare(b.skill_id)),
+    memory_retrieval_policy: packageBody.memory.retrieval_policy || null,
     memory_evidence: packageBody.memory.items
-      .map(item => ({ stone_hash: item.stone_hash, ref_id: item.ref_id, path: item.path }))
-      .sort((a, b) => (a.stone_hash + a.ref_id).localeCompare(b.stone_hash + b.ref_id)),
+      .map(item => ({
+        authority_class: item.authority_class,
+        stone_hash: item.stone_hash,
+        ref_id: item.ref_id,
+        path: item.path
+      })),
     capability_metadata: {
       available_tools: [...packageBody.capabilities.available_tools].sort(),
       missing_required_tools: [...packageBody.capabilities.missing_required_tools].sort()
