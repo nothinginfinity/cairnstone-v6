@@ -440,6 +440,79 @@ test("V7.4.0 maintainer profile fails closed outside its accepted chain scope", 
   assert.equal(bootstrapped, false);
 });
 
+test("V7.4 repo-debugger (a second registry profile) grounds a repo-drift question via cairnstone_reconcile_repo", async () => {
+  const events = [];
+  const captured = {};
+  const result = await delegateFromBody({
+    actor_id: "test:caller",
+    profile_id: "repo-debugger",
+    task: "Is cairnstone-v6-project-memory currently drifted from GitHub?",
+    chain: "cairnstone-v6-project-memory",
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" }
+  }, {}, {
+    agentBootstrapFromBody: async args => { events.push(`bootstrap:${args.capabilities?.supports_tool_calls === true ? "grounding" : "final"}`); return profileBootstrapFixture(args); },
+    executeReadToolIntent: async body => {
+      events.push("live-read");
+      assert.equal(body.tool_intent.tool_id, "cairnstone_reconcile_repo");
+      assert.deepEqual(body.tool_intent.arguments, { chain: "cairnstone-v6-project-memory" });
+      return { ok: true, executed: true, result: { ok: true, added: [], changed: [], removed: [], in_sync: [] } };
+    },
+    modelRouteFromBody: async body => { events.push("route"); return successfulProfileRoute(body.context_package, captured); }
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(events, ["bootstrap:grounding", "live-read", "bootstrap:final", "route"]);
+  assert.equal(result.profile.profile_id, "repo-debugger");
+  assert.equal(result.grounding.classification.grounding_class, "operational_current");
+  assert.equal(result.grounding.classification.domain, "repo_state");
+  assert.equal(result.grounding.classification.matched_rule, "repo_drift_live_check");
+  assert.equal(result.grounding.live_reads_executed, 1);
+  assert.equal(result.policy.execution_authority, false);
+  assert.equal(result.policy.mutation_authority, false);
+});
+
+test("V7.4 release-reviewer (a third registry profile) grounds a doc-freshness question via cairnstone_get_source_freshness", async () => {
+  const events = [];
+  const result = await delegateFromBody({
+    actor_id: "test:caller",
+    profile_id: "release-reviewer",
+    task: "Is docs/ROADMAP_V7.md still current on GitHub?",
+    chain: "cairnstone-v6-project-memory",
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" }
+  }, {}, {
+    agentBootstrapFromBody: async args => { events.push("bootstrap"); return profileBootstrapFixture(args); },
+    executeReadToolIntent: async body => {
+      events.push("live-read");
+      assert.equal(body.tool_intent.tool_id, "cairnstone_get_source_freshness");
+      assert.deepEqual(body.tool_intent.arguments, { chain: "cairnstone-v6-project-memory", path: "docs/ROADMAP_V7.md" });
+      return { ok: true, executed: true, result: { ok: true, checked: true, drifted: false } };
+    },
+    modelRouteFromBody: async body => successfulProfileRoute(body.context_package, {})
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.profile.profile_id, "release-reviewer");
+  assert.equal(result.grounding.classification.matched_rule, "release_doc_freshness_check");
+  assert.equal(result.grounding.classification.extracted_value, "docs/ROADMAP_V7.md");
+});
+
+test("V7.4 an unregistered profile_id fails closed without touching bootstrap or routing", async () => {
+  let touched = false;
+  const result = await delegateFromBody({
+    actor_id: "test:caller",
+    profile_id: "not-a-real-profile",
+    task: "anything",
+    chain: "cairnstone-v6-project-memory",
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" }
+  }, {}, {
+    agentBootstrapFromBody: async args => { touched = true; return profileBootstrapFixture(args); },
+    modelRouteFromBody: async () => { touched = true; return { ok: true }; }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "agent_profile_not_found");
+  assert.equal(touched, false);
+});
+
 test("R1: a genuinely valid V7.0 package is accepted", async () => {
   const pkg = await withValidPackageId(baseFixturePackage());
   const result = await validateContextPackage(pkg);
