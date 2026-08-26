@@ -505,6 +505,7 @@ async function callMcpTool(name, args, env) {
     // the immutable pending request plus its mutable lifecycle envelope, but
     // supply no mutation invocation or approval capability here.
     createStone: body => createStoneFromBody(body, env),
+    getExistingAuthorization: authorizationRequestId => getToolAuthorizationFromBody({ authorization_request_id: authorizationRequestId }, env),
     persistPendingAuthorization: record => persistPendingAuthorizationRecord(record, env)
   });
   if (name === "cairnstone_model_route") return modelRouteFromBody(args, env);
