@@ -94,7 +94,7 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   assert.equal(result.provider_credentials_in_registry, false);
   assert.equal(result.external_model_calls, 0);
   assert.equal(result.tools_executed, 0);
-  assert.equal(result.total, 12);
+  assert.equal(result.total, 14);
 
   const health = result.tools.find(item => item.tool_id === "cairnstone_health");
   assert.equal(health.risk_class, "read");
@@ -105,6 +105,13 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   const commit = result.tools.find(item => item.tool_id === "cairnstone_commit_v2");
   assert.equal(commit.risk_class, "mutation");
   assert.equal(commit.authorization, "human_confirmation");
+
+  const authList = result.tools.find(item => item.tool_id === "cairnstone_tool_authorization_list");
+  assert.equal(authList.risk_class, "read");
+  assert.equal(authList.authorization, "automatic");
+  const authStatus = result.tools.find(item => item.tool_id === "cairnstone_tool_authorization_status");
+  assert.equal(authStatus.risk_class, "read");
+  assert.equal(authStatus.authorization, "automatic");
 });
 
 test("V7.3.0 automatic read policy can allow an intent but remains preview-only and unexecuted", async () => {
@@ -309,6 +316,128 @@ test("V7.2 delegate stops after a bootstrap failure and never calls the router",
   assert.equal(result.error, "delegation_bootstrap_failed");
   assert.equal(result.detail, "chain_not_found");
   assert.equal(routed, false);
+});
+
+async function profileBootstrapFixture(args) {
+  const pkg = baseFixturePackage();
+  pkg.actor.actor_id = args.actor_id;
+  pkg.request.task = args.task;
+  pkg.request.chain = args.chain;
+  pkg.capabilities.available_tools = Array.isArray(args.capabilities?.tools)
+    ? args.capabilities.tools.filter(item => item?.available !== false && item?.id).map(item => item.id)
+    : [];
+  pkg.capabilities.supports_tool_calls = args.capabilities?.supports_tool_calls === true;
+  pkg.package_id = await recomputePackageId(pkg);
+  return pkg;
+}
+
+function successfulProfileRoute(pkg, captured) {
+  captured.contextPackage = pkg;
+  return {
+    ok: true,
+    package_id: pkg.package_id,
+    request_ir_id: "sha256:" + "9".repeat(64),
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1", transport: "mock", credential_mode: "none", failover_policy: "none" },
+    output: { text: "grounded current authorization answer", tool_intents: [], finish_reason: "stop" },
+    usage: { input_tokens: 1, output_tokens: 1, cost: null },
+    observability: { gateway_id: null, gateway_request_id: null, attempts: [] },
+    policy: { tool_intents_only: true, execution_authority: false, mutation_authority: false },
+    v7_1_1: { external_model_calls: 0, tools_executed: 0 }
+  };
+}
+
+test("V7.4.0 cairnstone-maintainer grounds the exact acceptance prompt from a governed live read before routing", async () => {
+  const events = [];
+  const captured = {};
+  const successfulId = "sha256:f4b341051dfa51f53c3370d3afaffaf7d53fb5ab8af53d01dae2f58c2ccd0fd3";
+  const staleId = "sha256:ea7eb9e1c1f8775d8da469c47db75d2a173faee4f72e974d9db0f014af2a32d8";
+  const result = await delegateFromBody({
+    actor_id: "test:caller",
+    profile_id: "cairnstone-maintainer",
+    task: "What are the most recent authorizations I approved",
+    chain: "cairnstone-v6-project-memory",
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" }
+  }, {}, {
+    agentBootstrapFromBody: async args => { events.push(`bootstrap:${args.capabilities?.supports_tool_calls === true ? "grounding" : "final"}`); return profileBootstrapFixture(args); },
+    executeReadToolIntent: async body => {
+      events.push("live-read");
+      assert.equal(body.tool_intent.tool_id, "cairnstone_tool_authorization_list");
+      assert.deepEqual(body.tool_intent.arguments, { decision: "approved", limit: 5 });
+      return {
+        ok: true,
+        executed: true,
+        result: {
+          ok: true,
+          schema: "cairnstone-tool-authorization-list-v1",
+          total: 2,
+          filters: { status: null, decision: "approved", limit: 5 },
+          authorizations: [
+            { authorization_request_id: successfulId, tool_id: "cairnstone_commit_v2", status: "executed", decision: "approved", consumed: true, terminal: true, execution_receipt_stone_hash: "53685e9fb761c573c7b4fbb989cc215201122f021a5f3b9555fb0ddcc11afcba", outcome: { executed: true, mutation_performed: true, error: null } },
+            { authorization_request_id: staleId, tool_id: "cairnstone_commit_v2", status: "guard_failed", decision: "approved", consumed: true, terminal: true, execution_receipt_stone_hash: "c121ea6f687fcb7ff444ed8d90e1a72bb172c24a12f8209c4a893ec0d60f8c91", outcome: { executed: false, mutation_performed: false, error: "authorization_guard_mismatch" } }
+          ]
+        },
+        receipt: { stone_hash: "read-receipt-stone", chain: "cairnstone-v7-tool-execution-receipts" }
+      };
+    },
+    modelRouteFromBody: async body => { events.push("route"); return successfulProfileRoute(body.context_package, captured); }
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(events, ["bootstrap:grounding", "live-read", "bootstrap:final", "route"]);
+  assert.equal(result.profile.profile_id, "cairnstone-maintainer");
+  assert.equal(result.profile.execution_authority, false);
+  assert.equal(result.profile.mutation_authority, false);
+  assert.equal(result.grounding.classification.grounding_class, "operational_current");
+  assert.equal(result.grounding.current_claim_source, "live_operational_read");
+  assert.equal(result.grounding.live_reads_executed, 1);
+  assert.equal(result.grounding.read_receipts[0].stone_hash, "read-receipt-stone");
+  assert.equal(result.grounding.live_reads[0].authorizations[0].authorization_request_id, successfulId);
+  assert.equal(result.grounding.live_reads[0].authorizations[1].authorization_request_id, staleId);
+  assert.equal(result.policy.tools_exposed_to_model, 0);
+  assert.equal(result.policy.tools_executed, 1);
+  assert.equal(result.policy.execution_authority, false);
+  assert.equal(result.policy.mutation_authority, false);
+  assert.match(captured.contextPackage.request.task, /LIVE_OPERATIONAL_READ/);
+  assert.match(captured.contextPackage.request.task, new RegExp(successfulId));
+  assert.match(captured.contextPackage.request.task, new RegExp(staleId));
+  assert.deepEqual(captured.contextPackage.capabilities.available_tools, []);
+  assert.equal(captured.contextPackage.capabilities.supports_tool_calls, false);
+});
+
+test("V7.4.0 operational-current profile query fails closed before routing when live read execution is unavailable", async () => {
+  let routed = false;
+  const result = await delegateFromBody({
+    actor_id: "test:caller",
+    profile_id: "cairnstone-maintainer",
+    task: "What are the most recent authorizations I approved",
+    chain: "cairnstone-v6-project-memory",
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" }
+  }, {}, {
+    agentBootstrapFromBody: profileBootstrapFixture,
+    modelRouteFromBody: async () => { routed = true; return { ok: true }; }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "profile_live_read_unavailable");
+  assert.equal(result.grounding.degraded, true);
+  assert.equal(routed, false);
+});
+
+test("V7.4.0 maintainer profile fails closed outside its accepted chain scope", async () => {
+  let bootstrapped = false;
+  const result = await delegateFromBody({
+    actor_id: "test:caller",
+    profile_id: "cairnstone-maintainer",
+    task: "What are the most recent authorizations I approved",
+    chain: "other-project-chain",
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" }
+  }, {}, {
+    agentBootstrapFromBody: async args => { bootstrapped = true; return profileBootstrapFixture(args); },
+    executeReadToolIntent: async () => ({ ok: true, executed: true }),
+    modelRouteFromBody: async () => ({ ok: true })
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "agent_profile_scope_mismatch");
+  assert.equal(bootstrapped, false);
 });
 
 test("R1: a genuinely valid V7.0 package is accepted", async () => {
