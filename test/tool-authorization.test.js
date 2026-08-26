@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   canonicalAuthorizationArgumentDigest,
+  prepareToolAuthorizationFromBody,
   recomputePackageId,
   requestToolAuthorizationFromBody
 } from "../src/model-router.js";
@@ -359,4 +360,88 @@ test("V7.3.3 identical pending request retry reuses the first immutable request 
   assert.equal(replay.authorization_request_id, first.authorization_request_id);
   assert.equal(replay.receipt.stone_hash, first.receipt.stone_hash);
   assert.equal(createCount, 1);
+});
+
+test("V7.3.3 compact prepare compiles context server-side and creates only a pending request", async () => {
+  const args = {
+    chain: "v733-prepare",
+    author: "test:v733-prepare",
+    path: "acceptance/prepare.txt",
+    content: "prepared without client context round-trip",
+    set_path_head: true
+  };
+  const guard = { type: "path_head", chain: args.chain, path: args.path, expected_value: null };
+  let bootstrapInput = null;
+  let createCount = 0;
+  let persisted = null;
+
+  const deps = {
+    agentBootstrapFromBody: async input => {
+      bootstrapInput = clone(input);
+      const pkg = {
+        schema: "cairnstone-agent-context-v1",
+        ok: true,
+        package_id: "sha256:" + "0".repeat(64),
+        actor: { actor_id: input.actor_id },
+        request: { task: input.task, chain: input.chain },
+        authority: {
+          chain_head: { stone_hash: "a".repeat(64), path: "project-memory/start.md", repo: null, commit_sha: null },
+          path_heads: []
+        },
+        instructions: {
+          path: "docs/AI_OPERATING_GUIDE.md",
+          stone_hash: "b".repeat(64),
+          commit_sha: "c".repeat(40),
+          content_identity: { sha256: "d".repeat(64), git_blob_sha: "e".repeat(40), bytes: 1 },
+          truncated: false
+        },
+        coordination: { items: [] },
+        skills: { manifest_head: "f".repeat(64), accepted_bundle: { skills: [] } },
+        memory: { retrieval_policy: { authority_first: true }, items: [] },
+        capabilities: { available_tools: ["cairnstone_commit_v2"], missing_required_tools: [] },
+        limits: { effective_max_package_bytes: 50000 },
+        policy: {
+          accepted_state_only_for_authority: true,
+          mutable_branch_is_authority: false,
+          execution_authority: false,
+          mutation_authority: false,
+          provider_credentials_in_package: false
+        }
+      };
+      pkg.package_id = await recomputePackageId(pkg);
+      return pkg;
+    },
+    getExistingAuthorization: async () => ({ ok: false, error: "authorization_not_found" }),
+    createStone: async () => ({ ok: true, stone_hash: `prepare-request-stone-${++createCount}` }),
+    persistPendingAuthorization: async record => {
+      persisted = clone(record);
+      return { ok: true };
+    }
+  };
+
+  const result = await prepareToolAuthorizationFromBody({
+    actor_id: "test:v733-prepare",
+    task: "propose one guarded commit",
+    chain: "cairnstone-v6-project-memory",
+    tool_intent: { intent_id: "intent:v733-prepare", tool_id: "cairnstone_commit_v2", arguments: args, executed: false },
+    turn_id: "turn:v733-prepare",
+    justification: "Human must approve in Console.",
+    guard
+  }, {}, deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.request_created, true);
+  assert.equal(result.required_authorization, "human_confirmation");
+  assert.equal(result.execution.executed, false);
+  assert.equal(result.execution.target_tool_invoked, false);
+  assert.equal(result.execution.target_mutation_performed, false);
+  assert.deepEqual(bootstrapInput.capabilities, {
+    tools: [{ id: "cairnstone_commit_v2", available: true, class: "mutation" }],
+    supports_tool_calls: true
+  });
+  assert.equal(bootstrapInput.include_inbox, false);
+  assert.equal(bootstrapInput.limits.max_memory_hits, 0);
+  assert.equal(createCount, 1);
+  assert.ok(persisted);
+  assert.equal(persisted.guard.expected_value, null);
 });
