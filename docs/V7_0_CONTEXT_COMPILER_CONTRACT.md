@@ -1,8 +1,8 @@
 # V7.0 — Context Compiler Contract
 
-Status: **architecture contract draft**
-Phase boundary: **first V7 slice after frozen V6.10 control-plane baseline**
-Runtime implementation: **not yet started**
+Status: **implemented and live-accepted; authority-first retrieval correctness hardening accepted on runtime 0.5.12**
+Phase boundary: **foundational V7 slice after frozen V6.10 control-plane baseline**
+Runtime implementation: **complete; V7.0 authority-first retrieval hardening live-accepted in GitHub Actions run 32915664885**
 
 ## 1. Purpose
 
@@ -404,6 +404,12 @@ Allowed authority classes:
 
 Retrieval rank never changes authority classification.
 
+Current accepted-state authority also controls presentation order: matching `CHAIN_HEAD` evidence is ordered before matching `PATH_HEAD`, which is ordered before `HISTORICAL`; lexical/BM25 relevance remains the tie-breaker within an authority class.
+
+For tasks deterministically classified as current-state/status/next/roadmap queries, if an authoritative matching item exists for a path, superseded `HISTORICAL` matches for that same path are filtered before bounded expansion. Explicit history/comparison queries disable this same-path suppression. Disabling suppression means historical candidates remain eligible; finite `max_memory_hits`, memory-byte, and package-byte budgets may still omit them after higher-authority evidence fills the budget.
+
+The output `memory.retrieval_policy` records the authority ordering, whether current-state same-path suppression applied, and how many historical candidates were suppressed.
+
 Historical evidence can be included when relevant, but must not be presented as current accepted state.
 
 V7.0 does not require live freshness checks by default because those perform external GitHub reads and may add latency/non-determinism. A future explicit option may request freshness evidence, but freshness must remain separate from acceptance authority.
@@ -460,12 +466,14 @@ The hashed payload must include at minimum:
 - AC1 inbox snapshot metadata included in the package;
 - accepted skills manifest HEAD;
 - selected skill IDs/versions/stone hashes/commit SHAs/content identities;
-- included memory evidence identities;
+- memory retrieval policy plus included memory evidence identities, authority classes, and semantic order;
 - capability metadata that affected selection;
 - effective size limits;
 - policy flags.
 
 A provider/model choice must **not** alter `package_id` when all agent context is otherwise identical.
+
+Because memory evidence ordering now carries authority semantics, `package_id` must change when the retrieval policy, evidence authority classes, or semantic evidence order changes even if the same evidence identity set is present.
 
 This is the key cross-provider invariant.
 
