@@ -665,8 +665,8 @@ export const CAIRNSTONE_MAINTAINER_PROFILE = Object.freeze({
 export const REPO_DEBUGGER_PROFILE = Object.freeze({
   schema: AGENT_PROFILE_SCHEMA_V1,
   profile_id: "repo-debugger",
-  version: "0.1.0",
-  scope: { chain: "cairnstone-v6-project-memory", allowed_chains: [] },
+  version: "0.1.1",
+  scope: { chain: "cairnstone-v6-project-memory", allowed_chains: ["praxiq-call"] },
   ac1_identity: { actor_id: "cairnstone:repo-debugger" },
   grounding_policy: {
     grounding_classes_enabled: [...GROUNDING_CLASSES],
