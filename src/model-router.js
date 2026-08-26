@@ -2638,6 +2638,44 @@ function compactProfileLiveRead(toolId, result) {
       replay: result?.replay || null
     };
   }
+  if (toolId === "cairnstone_reconcile_repo") {
+    const summary = result?.summary && typeof result.summary === "object" ? result.summary : {};
+    const tuples = Array.isArray(result?.tuples) ? result.tuples.slice(0, PROFILE_GROUNDING_MAX_READ_RESULT_ITEMS) : [];
+    return {
+      tool_id: toolId,
+      ok: result?.ok === true,
+      repo: result?.repo || null,
+      observed_commit_sha: result?.observed_commit_sha || null,
+      snapshot: result?.snapshot ? {
+        immutable: result.snapshot.immutable === true,
+        tree_truncated: result.snapshot.tree_truncated === true,
+        observed_files: Number.isFinite(Number(result.snapshot.observed_files)) ? Number(result.snapshot.observed_files) : null,
+        accepted_paths: Number.isFinite(Number(result.snapshot.accepted_paths)) ? Number(result.snapshot.accepted_paths) : null
+      } : null,
+      summary: {
+        added: Number.isFinite(Number(summary.added)) ? Number(summary.added) : null,
+        changed: Number.isFinite(Number(summary.changed)) ? Number(summary.changed) : null,
+        removed: Number.isFinite(Number(summary.removed)) ? Number(summary.removed) : null,
+        in_sync: Number.isFinite(Number(summary.in_sync)) ? Number(summary.in_sync) : null,
+        unknown: Number.isFinite(Number(summary.unknown)) ? Number(summary.unknown) : null,
+        total_paths: Number.isFinite(Number(summary.total_paths)) ? Number(summary.total_paths) : null,
+        drifted: Number.isFinite(Number(summary.drifted)) ? Number(summary.drifted) : null
+      },
+      drifted: Number.isFinite(Number(summary.drifted)) ? Number(summary.drifted) > 0 : null,
+      tuples: tuples.map(item => ({
+        path: item?.path || null,
+        drift_type: item?.drift_type || null,
+        current_stone_hash: item?.current_stone_hash || null,
+        accepted_commit_sha: item?.accepted_commit_sha || null,
+        observed_commit_sha: item?.observed_commit_sha || null
+      })),
+      read_only: result?.read_only ? {
+        chain_heads_written: result.read_only.chain_heads_written === true,
+        path_heads_written: result.read_only.path_heads_written === true,
+        stones_written: result.read_only.stones_written === true
+      } : null
+    };
+  }
   return { tool_id: toolId, ok: result?.ok === true };
 }
 
