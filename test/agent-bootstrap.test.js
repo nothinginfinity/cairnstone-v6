@@ -157,6 +157,96 @@ test("V7.0 Test G (negative control): stable authority across the whole compile 
   }
 });
 
+test("V7.4.1 internal cross-project bootstrap keeps target authority while sourcing canonical instructions from the profile owner chain", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    const targetState = {
+      ok: true,
+      canonical_head: { hash: "praxiq-head-stable", path: "content.txt", repo: null, commit_sha: null },
+      path_heads: [
+        { path: "src/index.js", stone_hash: "praxiq-index-stone", repo: "nothinginfinity/PraXiQ-call", commit_sha: "05e6f0e40c95d7f217fa1550bdb098923b300c81" }
+      ]
+    };
+    const instructionsState = resumeStateWithHead("cairnstone-instructions-head");
+    const calls = [];
+    const deps = makeDeps({
+      resumeChainFromBody: async ({ chain }) => {
+        calls.push(chain);
+        if (chain === "praxiq-call") return targetState;
+        if (chain === "cairnstone-v6-project-memory") return instructionsState;
+        return { ok: false, error: "chain_not_found" };
+      }
+    });
+
+    const result = await agentBootstrapFromBody(
+      {
+        actor_id: "cairnstone:repo-debugger",
+        task: "Is praxiq-call currently drifted from GitHub?",
+        chain: "praxiq-call",
+        instructions_chain: "cairnstone-v6-project-memory"
+      },
+      makeEnv(),
+      deps
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.request.chain, "praxiq-call");
+    assert.equal(result.authority.chain, "praxiq-call");
+    assert.equal(result.authority.chain_head.stone_hash, "praxiq-head-stable");
+    assert.equal(result.instructions.authority_chain, "cairnstone-v6-project-memory");
+    assert.equal(result.instructions.stone_hash, "instructions-stone");
+    assert.deepEqual(calls, [
+      "praxiq-call",
+      "cairnstone-v6-project-memory",
+      "praxiq-call",
+      "cairnstone-v6-project-memory"
+    ]);
+    assert.match(result.package_id, /^sha256:[0-9a-f]{64}$/);
+  } finally {
+    restore();
+  }
+});
+
+test("V7.4.1 cross-project bootstrap fails closed if the canonical-instructions chain moves during compilation", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    let instructionsReads = 0;
+    const targetState = {
+      ok: true,
+      canonical_head: { hash: "praxiq-head-stable", path: "content.txt", repo: null, commit_sha: null },
+      path_heads: []
+    };
+    const deps = makeDeps({
+      resumeChainFromBody: async ({ chain }) => {
+        if (chain === "praxiq-call") return targetState;
+        if (chain === "cairnstone-v6-project-memory") {
+          instructionsReads += 1;
+          return resumeStateWithHead(instructionsReads === 1 ? "instructions-BEFORE" : "instructions-AFTER");
+        }
+        return { ok: false, error: "chain_not_found" };
+      }
+    });
+
+    const result = await agentBootstrapFromBody(
+      {
+        actor_id: "cairnstone:repo-debugger",
+        task: "cross-project race test",
+        chain: "praxiq-call",
+        instructions_chain: "cairnstone-v6-project-memory"
+      },
+      makeEnv(),
+      deps
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "context_compile_race");
+    assert.equal(result.instructions_chain, "cairnstone-v6-project-memory");
+    assert.equal(result.detail, "canonical_instructions_chain_or_path_heads_changed_during_compile");
+  } finally {
+    restore();
+  }
+});
+
 test("V7.0 Test B (regression guard): identical input over identical state yields identical package_id", async () => {
   const restore = mockGithubFetchOnce();
   try {
