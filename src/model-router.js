@@ -991,6 +991,25 @@ function authorizationBoundaryExecution() {
   };
 }
 
+export async function canonicalAuthorizationArgumentDigest(args) {
+  return "sha256:" + await sha256Text(stableJson(args && typeof args === "object" ? args : {}));
+}
+
+function normalizeAuthorizationGuard(value) {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (!isPlainObject(value)) return { ok: false, error: "authorization_guard_invalid", detail: "guard_not_object" };
+  const type = typeof value.type === "string" ? value.type.trim() : "";
+  if (!["path_head", "chain_head"].includes(type)) return { ok: false, error: "authorization_guard_invalid", detail: "unsupported_guard_type" };
+  const chain = typeof value.chain === "string" ? value.chain.trim() : "";
+  if (!chain) return { ok: false, error: "authorization_guard_invalid", detail: "missing_chain" };
+  const path = type === "path_head" && typeof value.path === "string" ? value.path.trim() : null;
+  if (type === "path_head" && !path) return { ok: false, error: "authorization_guard_invalid", detail: "missing_path" };
+  const expectedValue = Object.prototype.hasOwnProperty.call(value, "expected_value")
+    ? (value.expected_value === null ? null : String(value.expected_value))
+    : null;
+  return { ok: true, value: { type, chain, ...(path ? { path } : {}), expected_value: expectedValue } };
+}
+
 export async function requestToolAuthorizationFromBody(body, _env, deps = {}) {
   if (!body || typeof body !== "object") return { ok: false, error: "invalid_tool_authorization_request", detail: "body_not_an_object" };
 
@@ -1064,6 +1083,7 @@ export async function requestToolAuthorizationFromBody(body, _env, deps = {}) {
 
   const argumentsJson = stableJson(args);
   const argumentBytes = new TextEncoder().encode(argumentsJson).length;
+  const argumentDigest = await canonicalAuthorizationArgumentDigest(args);
   if (argumentBytes > MAX_AUTHORIZATION_ARGUMENT_BYTES) {
     return { ok: false, error: "authorization_request_arguments_too_large", max_bytes: MAX_AUTHORIZATION_ARGUMENT_BYTES, actual_bytes: argumentBytes };
   }
@@ -1074,6 +1094,9 @@ export async function requestToolAuthorizationFromBody(body, _env, deps = {}) {
   const requestIrId = typeof body.request_ir_id === "string" ? body.request_ir_id : null;
   const model = isPlainObject(body.model) ? { provider: body.model.provider ?? null, model: body.model.model ?? null } : null;
   const turnId = typeof body.turn_id === "string" ? body.turn_id : null;
+  const guardValidation = normalizeAuthorizationGuard(body.guard);
+  if (!guardValidation.ok) return { ...guardValidation, execution };
+  const guard = guardValidation.value;
   const requestIdentityPayload = {
     schema: TOOL_AUTHORIZATION_REQUEST_SCHEMA,
     package_id: pkg.package_id,
@@ -1082,6 +1105,8 @@ export async function requestToolAuthorizationFromBody(body, _env, deps = {}) {
     decision_id: decisionId,
     tool_id: toolId,
     arguments: args,
+    argument_digest: argumentDigest,
+    guard,
     risk_class: entry.risk_class,
     required_authorization: entry.authorization,
     model,
@@ -1092,6 +1117,7 @@ export async function requestToolAuthorizationFromBody(body, _env, deps = {}) {
   const authorizationRequest = {
     ...requestIdentityPayload,
     authorization_request_id: authorizationRequestId,
+    requested_at: new Date().toISOString(),
     status: "pending",
     authorization: { required: true, mode: entry.authorization, status: "pending", consumed: false },
     target: { connector: entry.connector, handler: entry.handler, tool_id: toolId, arguments: args },
@@ -1130,6 +1156,25 @@ export async function requestToolAuthorizationFromBody(body, _env, deps = {}) {
     return { ok: false, error: "authorization_request_persist_failed", authorization_request_id: authorizationRequestId, execution };
   }
 
+  if (typeof deps.persistPendingAuthorization === "function") {
+    try {
+      const lifecycle = await deps.persistPendingAuthorization({
+        authorization_request_id: authorizationRequestId,
+        request_stone_hash: stoneHash,
+        request_json: stableJson(authorizationRequest),
+        argument_digest: argumentDigest,
+        required_authorization: entry.authorization,
+        guard,
+        created_at: authorizationRequest.requested_at
+      });
+      if (!lifecycle || lifecycle.ok !== true) {
+        return { ok: false, error: "authorization_lifecycle_persist_failed", authorization_request_id: authorizationRequestId, request_stone_hash: stoneHash, execution };
+      }
+    } catch (_error) {
+      return { ok: false, error: "authorization_lifecycle_persist_failed", authorization_request_id: authorizationRequestId, request_stone_hash: stoneHash, execution };
+    }
+  }
+
   return {
     ok: true,
     schema: TOOL_AUTHORIZATION_REQUEST_SCHEMA,
@@ -1145,6 +1190,8 @@ export async function requestToolAuthorizationFromBody(body, _env, deps = {}) {
     reason: entry.authorization,
     authorization_required: true,
     required_authorization: entry.authorization,
+    argument_digest: argumentDigest,
+    guard,
     receipt: { stone_hash: stoneHash, chain: TOOL_AUTHORIZATION_REQUEST_CHAIN },
     execution,
     policy: {
@@ -1183,7 +1230,18 @@ export const TOOL_AUTHORIZATION_REQUEST_TOOL_DEFINITION = {
         additionalProperties: false
       },
       turn_id: { type: "string" },
-      justification: { type: "string", maxLength: MAX_AUTHORIZATION_JUSTIFICATION_CHARS }
+      justification: { type: "string", maxLength: MAX_AUTHORIZATION_JUSTIFICATION_CHARS },
+      guard: {
+        type: "object",
+        required: ["type", "chain", "expected_value"],
+        properties: {
+          type: { type: "string", enum: ["path_head", "chain_head"] },
+          chain: { type: "string" },
+          path: { type: "string" },
+          expected_value: { type: ["string", "null"] }
+        },
+        additionalProperties: false
+      }
     },
     additionalProperties: false
   }
