@@ -437,6 +437,46 @@ const STOP_WORDS = new Set([
   "our", "out", "use", "using", "true", "false", "null"
 ]);
 
+const CURRENT_STATE_CUES = [
+  /\bcurrent(?:ly)?\b/i,
+  /\blatest\b/i,
+  /\bnewest\b/i,
+  /\bnow\b/i,
+  /\bnext\b/i,
+  /\bstatus\b/i,
+  /\broadmap\b/i,
+  /\bupcoming\b/i,
+  /\bremaining\b/i,
+  /\bactive\b/i
+];
+
+const HISTORICAL_STATE_CUES = [
+  /\bhistor(?:y|ical|ically)\b/i,
+  /\bprevious(?:ly)?\b/i,
+  /\bprior\b/i,
+  /\bold(?:er)?\b/i,
+  /\bearlier\b/i,
+  /\bbefore\b/i,
+  /\bformerly\b/i,
+  /\bchange(?:d|s)?\b/i,
+  /\bcompare(?:d|s)?\b/i,
+  /\bcomparison\b/i,
+  /\bevolution\b/i,
+  /\bsupersed(?:e|ed|es|ing)\b/i
+];
+
+function isCurrentStateQuery(task) {
+  const text = String(task || "");
+  if (HISTORICAL_STATE_CUES.some(pattern => pattern.test(text))) return false;
+  return CURRENT_STATE_CUES.some(pattern => pattern.test(text));
+}
+
+function authorityRank(authorityClass) {
+  if (authorityClass === "CHAIN_HEAD") return 0;
+  if (authorityClass === "PATH_HEAD") return 1;
+  return 2;
+}
+
 function tokenizeTask(text) {
   const terms = [];
   const seen = new Set();
@@ -453,6 +493,7 @@ async function compileMemory(env, chain, task, resume, limits) {
   const query = tokenizeTask(task).join(" ");
   const chainHeadHash = resume.canonical_head.hash;
   const pathHeadSet = new Set((resume.path_heads || []).map(item => `${item.path}|${item.stone_hash}`));
+  const currentStateQuery = isCurrentStateQuery(task);
 
   let rows = [];
   if (query) {
@@ -473,10 +514,40 @@ async function compileMemory(env, chain, task, resume, limits) {
     }
   }
 
+  const classifiedRows = rows.map((row, index) => ({
+    ...row,
+    authority_class: row.stone_hash === chainHeadHash
+      ? "CHAIN_HEAD"
+      : pathHeadSet.has(`${row.path}|${row.stone_hash}`)
+        ? "PATH_HEAD"
+        : "HISTORICAL",
+    retrieval_order: index
+  }));
+  classifiedRows.sort((a, b) =>
+    authorityRank(a.authority_class) - authorityRank(b.authority_class) ||
+    a.retrieval_order - b.retrieval_order
+  );
+
+  const authoritativeMatchedPaths = new Set(
+    classifiedRows
+      .filter(row => row.authority_class !== "HISTORICAL" && row.path)
+      .map(row => row.path)
+  );
+  let historicalSamePathSuppressed = 0;
+  const rankedRows = currentStateQuery
+    ? classifiedRows.filter(row => {
+        if (row.authority_class === "HISTORICAL" && authoritativeMatchedPaths.has(row.path)) {
+          historicalSamePathSuppressed += 1;
+          return false;
+        }
+        return true;
+      })
+    : classifiedRows;
+
   const items = [];
   let usedBytes = 0;
   const seen = new Set();
-  for (const row of rows) {
+  for (const row of rankedRows) {
     if (items.length >= limits.max_memory_hits) break;
     const key = `${row.stone_hash}|${row.ref_id}`;
     if (seen.has(key)) continue;
@@ -492,18 +563,12 @@ async function compileMemory(env, chain, task, resume, limits) {
     const end = Number(refRow.line_end);
     const windowText = lines.slice(start - 1, end).join("\n");
 
-    const authorityClass = row.stone_hash === chainHeadHash
-      ? "CHAIN_HEAD"
-      : pathHeadSet.has(`${row.path}|${row.stone_hash}`)
-        ? "PATH_HEAD"
-        : "HISTORICAL";
-
     const bytes = utf8Bytes(windowText);
     if (usedBytes + bytes > limits.max_memory_bytes && items.length > 0) break;
     usedBytes += bytes;
 
     items.push({
-      authority_class: authorityClass,
+      authority_class: row.authority_class,
       stone_hash: row.stone_hash,
       path: row.path,
       ref_id: row.ref_id,
@@ -518,8 +583,15 @@ async function compileMemory(env, chain, task, resume, limits) {
     ok: true,
     value: {
       query,
+      retrieval_policy: {
+        authority_first: true,
+        ordering: ["CHAIN_HEAD", "PATH_HEAD", "HISTORICAL"],
+        current_state_query: currentStateQuery,
+        same_path_historical_suppression: currentStateQuery,
+        historical_same_path_suppressed: historicalSamePathSuppressed
+      },
       items,
-      truncated: rows.length > items.length
+      truncated: rankedRows.length > items.length
     }
   };
 }
