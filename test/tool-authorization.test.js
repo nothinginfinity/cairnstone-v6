@@ -1,212 +1,252 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { canonicalAuthorizationArgumentDigest } from "../src/model-router.js";
 import {
   authorizeToolRequestFromBody,
-  canonicalArgumentsDigest,
   executeAuthorizedToolFromBody,
-  TOOL_AUTHORIZATION_GRANT_SCHEMA,
-  TOOL_AUTHORIZED_EXECUTION_SCHEMA,
-  V733_ACCEPTANCE_HANDLER,
-  V733_ACCEPTANCE_TOOL_ID
+  TOOL_AUTHORIZATION_DECISION_SCHEMA,
+  TOOL_AUTHORIZED_EXECUTION_RECEIPT_SCHEMA
 } from "../src/tool-authorization.js";
 
-function requestFixture(id, args = { resource_id: "proof", expected_version: 0, next_value: "accepted" }) {
-  return {
+const REQUEST_ID = "sha256:" + "a".repeat(64);
+const REQUEST_STONE = "b".repeat(64);
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+async function makeHarness(options = {}) {
+  const args = options.arguments || {
+    chain: "v733-acceptance",
+    author: "test:v733",
+    path: "acceptance/proof.txt",
+    content: "guarded mutation proof",
+    set_path_head: true
+  };
+  const digest = await canonicalAuthorizationArgumentDigest(args);
+  const guard = Object.prototype.hasOwnProperty.call(options, "guard")
+    ? options.guard
+    : { type: "path_head", chain: "v733-acceptance", path: "acceptance/proof.txt", expected_value: null };
+  const request = {
     schema: "cairnstone-tool-authorization-request-v1",
-    authorization_request_id: id,
-    package_id: "sha256:" + "a".repeat(64),
-    request_ir_id: "sha256:" + "b".repeat(64),
-    intent_id: "sha256:" + "c".repeat(64),
-    decision_id: "sha256:" + "d".repeat(64),
-    tool_id: V733_ACCEPTANCE_TOOL_ID,
-    arguments: args,
-    risk_class: "mutation",
+    authorization_request_id: REQUEST_ID,
+    package_id: "sha256:" + "c".repeat(64),
+    request_ir_id: "sha256:" + "d".repeat(64),
+    decision_id: "sha256:" + "e".repeat(64),
+    intent_id: "sha256:" + "f".repeat(64),
+    tool_id: "cairnstone_commit_v2",
+    argument_digest: digest,
+    guard,
     required_authorization: "human_confirmation",
     model: { provider: "workers-ai", model: "fixture" },
-    turn_id: "turn:v733",
-    justification: "isolated acceptance proof",
-    status: "pending",
-    authorization: { required: true, mode: "human_confirmation", status: "pending", consumed: false },
-    target: { connector: "cairnstone", handler: V733_ACCEPTANCE_HANDLER, tool_id: V733_ACCEPTANCE_TOOL_ID, arguments: args },
-    execution: { executed: false, target_mutation_performed: false }
-  };
-}
-
-function registry() {
-  return [{
-    tool_id: V733_ACCEPTANCE_TOOL_ID,
-    connector: "cairnstone",
-    handler: V733_ACCEPTANCE_HANDLER,
-    risk_class: "mutation",
-    authorization: "human_confirmation",
-    available: true,
-    input_schema: {
-      type: "object", required: ["resource_id", "expected_version", "next_value"],
-      properties: { resource_id: { type: "string" }, expected_version: { type: "integer" }, next_value: { type: "string" } },
-      additionalProperties: false
+    turn_id: "turn:v733-test",
+    target: {
+      connector: "cairnstone",
+      handler: "cairnstone_commit_v2",
+      tool_id: "cairnstone_commit_v2",
+      arguments: args
     }
-  }];
-}
-
-function memoryStore(row) {
-  let current = { ...row };
-  return {
-    async get() { return { ...current }; },
-    async list() { return [{ ...current }]; },
-    async recordPending() { return { inserted: false, row: { ...current } }; },
-    async beginDecision(_id, decision, subject, method, issuedAt, expiresAt) {
-      if (current.status !== "pending") return { claimed: false, row: { ...current } };
-      current = { ...current, status: "authorizing", authorization_decision: decision, authorization_subject: subject, authorization_method: method, issued_at: issuedAt, expires_at: expiresAt };
-      return { claimed: true, row: { ...current } };
-    },
-    async finishDecision(_id, decision, stoneHash) {
-      if (current.status !== "authorizing") return { changed: false, row: { ...current } };
-      current = { ...current, status: decision === "approved" ? "authorized" : "denied", authorization_stone_hash: stoneHash };
-      return { changed: true, row: { ...current } };
-    },
-    async rollbackDecision() { current = { ...current, status: "pending" }; return { ...current }; },
-    async markExpired() { current = { ...current, status: "expired" }; return { ...current }; },
-    async claim(_id, claimId, at) {
-      if (current.status !== "authorized") return { claimed: false, row: { ...current } };
-      current = { ...current, status: "consuming", claim_id: claimId, claimed_at: at };
-      return { claimed: true, row: { ...current } };
-    },
-    async finishExecution(_id, _claimId, status, fields) {
-      current = { ...current, status, execution_id: fields.execution_id, execution_receipt_stone_hash: fields.execution_receipt_stone_hash, result_json: fields.result_json, failure_code: fields.failure_code };
-      return { changed: true, row: { ...current } };
-    },
-    snapshot() { return { ...current }; }
   };
-}
-
-async function prepared(decisionStatus = "pending", args) {
-  const id = "sha256:" + "1".repeat(64);
-  const request = requestFixture(id, args);
-  const digest = await canonicalArgumentsDigest(request.target.arguments);
-  const row = {
-    authorization_request_id: id,
-    request_stone_hash: "request-stone",
+  const state = {
+    authorization_request_id: REQUEST_ID,
+    request_stone_hash: REQUEST_STONE,
+    argument_digest: digest,
+    required_authorization: "human_confirmation",
+    status: "pending",
+    decision: null,
+    authorization_subject: null,
+    authorization_method: null,
+    grant_stone_hash: null,
+    denial_stone_hash: null,
+    issued_at: null,
+    expires_at: null,
+    consumption_id: null,
+    consumed_at: null,
+    guard,
+    tool_id: "cairnstone_commit_v2",
     package_id: request.package_id,
     request_ir_id: request.request_ir_id,
     decision_id: request.decision_id,
-    tool_id: request.tool_id,
-    arguments_digest: digest,
-    required_authorization: request.required_authorization,
-    status: decisionStatus,
-    authorization_stone_hash: decisionStatus === "authorized" ? "grant-stone" : null,
-    expires_at: decisionStatus === "authorized" ? "2099-01-01T00:00:00.000Z" : null,
+    model: request.model,
+    turn_id: request.turn_id,
+    target: request.target,
+    request,
+    execution_receipt_stone_hash: null,
+    execution_result_json: null,
+    error_type: null,
     created_at: "2026-08-26T00:00:00.000Z",
     updated_at: "2026-08-26T00:00:00.000Z"
   };
-  return { id, request, row, store: memoryStore(row) };
-}
+  let stoneCounter = 0;
+  let invokeCount = 0;
+  const links = [];
 
-const trusted = { trusted: true, method: "cairnstone-console-origin", channel: "console", evidence: { origin: "https://nothinginfinity.github.io" } };
-
-function stoneDeps(store, request) {
-  let n = 0;
-  return {
-    store,
-    registry: registry(),
-    trustedCaller: trusted,
-    loadRequest: async () => ({ ok: true, request }),
-    createStone: async () => ({ ok: true, stone_hash: `stone-${++n}` }),
-    linkStones: async () => ({ ok: true }),
-    now: () => "2026-08-26T12:00:00.000Z"
-  };
-}
-
-test("V7.3.3 authorization rejects an untrusted caller even with an approval-shaped body", async () => {
-  const p = await prepared();
-  const result = await authorizeToolRequestFromBody({ authorization_request_id: p.id, decision: "approved", authorization_subject: "human:test" }, {}, { ...stoneDeps(p.store, p.request), trustedCaller: { trusted: false } });
-  assert.equal(result.ok, false);
-  assert.equal(result.error, "trusted_human_confirmation_required");
-  assert.equal(p.store.snapshot().status, "pending");
-});
-
-test("V7.3.3 trusted approval creates a separate immutable grant and no mutation", async () => {
-  const p = await prepared();
-  let mutationCalls = 0;
-  const deps = { ...stoneDeps(p.store, p.request), invokeAuthorizedMutation: async () => { mutationCalls += 1; return { ok: true }; } };
-  const result = await authorizeToolRequestFromBody({ authorization_request_id: p.id, decision: "approved", authorization_subject: "human:test" }, {}, deps);
-  assert.equal(result.ok, true);
-  assert.equal(result.schema, TOOL_AUTHORIZATION_GRANT_SCHEMA);
-  assert.equal(result.status, "authorized");
-  assert.equal(result.decision, "approved");
-  assert.equal(result.authorization_stone_hash, "stone-1");
-  assert.equal(mutationCalls, 0);
-  assert.equal(p.store.snapshot().status, "authorized");
-});
-
-test("V7.3.3 execution rejects replacement arguments after approval", async () => {
-  const p = await prepared("authorized");
-  const result = await executeAuthorizedToolFromBody({ authorization_request_id: p.id, arguments: { next_value: "substitute" } }, {}, stoneDeps(p.store, p.request));
-  assert.equal(result.ok, false);
-  assert.equal(result.error, "authorized_execution_argument_substitution_not_accepted");
-  assert.equal(p.store.snapshot().status, "authorized");
-});
-
-test("V7.3.3 approved request executes exact arguments once, verifies, then replays without a second mutation", async () => {
-  const p = await prepared("authorized");
-  let mutationCalls = 0;
   const deps = {
-    ...stoneDeps(p.store, p.request),
-    inspectGuard: async () => ({ ok: true, type: "fixture_version", expected: 0, observed: 0, matched: true }),
-    invokeAuthorizedMutation: async (_entry, args) => { mutationCalls += 1; return { ok: true, value: args.next_value, version: 1 }; },
-    verifyMutation: async () => ({ ok: true, passed: true, type: "fixture_readback" })
+    loadAuthorization: async id => id === REQUEST_ID ? clone(state) : null,
+    transitionAuthorization: async (id, from, to, fields = {}) => {
+      if (id !== REQUEST_ID || state.status !== from) return { ok: true, changed: false, changes: 0 };
+      Object.assign(state, fields, { status: to, updated_at: new Date().toISOString() });
+      return { ok: true, changed: true, changes: 1 };
+    },
+    updateAuthorization: async (id, fields = {}) => {
+      if (id !== REQUEST_ID) return { ok: true, changed: false, changes: 0 };
+      Object.assign(state, fields, { updated_at: new Date().toISOString() });
+      return { ok: true, changed: true, changes: 1 };
+    },
+    createStone: async () => ({ ok: true, stone_hash: `evidence-${++stoneCounter}` }),
+    linkStones: async body => { links.push(body); return { ok: true }; },
+    validateRegisteredMutation: async (toolId, requiredAuthorization) => (
+      toolId === "cairnstone_commit_v2" && requiredAuthorization === "human_confirmation"
+        ? { ok: true }
+        : { ok: false, error: "authorized_tool_policy_changed" }
+    ),
+    observeGuard: async requestedGuard => ({
+      ok: true,
+      value: Object.prototype.hasOwnProperty.call(options, "observedGuardValue")
+        ? options.observedGuardValue
+        : requestedGuard.expected_value
+    }),
+    invokeTool: async (_handler, storedArgs) => {
+      invokeCount += 1;
+      if (options.invokeDelayMs) await new Promise(resolve => setTimeout(resolve, options.invokeDelayMs));
+      assert.deepEqual(storedArgs, args);
+      return { ok: true, stone_hash: "result-stone", head_hash: "result-stone" };
+    },
+    verifyMutation: async (_toolId, storedArgs) => {
+      assert.deepEqual(storedArgs, args);
+      return { ok: true, read_back: { path: args.path, verified: true } };
+    }
   };
-  const first = await executeAuthorizedToolFromBody({ authorization_request_id: p.id }, {}, deps);
+
+  return {
+    state,
+    deps,
+    args,
+    get invokeCount() { return invokeCount; },
+    links
+  };
+}
+
+async function approve(harness, extra = {}) {
+  return authorizeToolRequestFromBody({
+    authorization_request_id: REQUEST_ID,
+    decision: "approve",
+    authorization_subject: "human:test-operator",
+    authorization_method: "operator_bearer",
+    ttl_seconds: 900,
+    ...extra
+  }, {}, harness.deps);
+}
+
+test("V7.3.3 trusted approval creates a distinct immutable grant bound to the exact request", async () => {
+  const h = await makeHarness();
+  const result = await approve(h);
+  assert.equal(result.ok, true);
+  assert.equal(result.schema, TOOL_AUTHORIZATION_DECISION_SCHEMA);
+  assert.equal(result.decision, "approved");
+  assert.equal(result.idempotent_replay, false);
+  assert.equal(h.state.status, "authorized");
+  assert.equal(h.state.authorization_subject, "human:test-operator");
+  assert.equal(h.state.authorization_method, "operator_bearer");
+  assert.ok(h.state.grant_stone_hash);
+  assert.equal(h.invokeCount, 0);
+  assert.equal(h.links.some(link => link.to_hash === REQUEST_STONE), true);
+});
+
+test("V7.3.3 rejects replacement arguments or tool identity at authorization/execution time", async () => {
+  const h = await makeHarness();
+  const badApproval = await approve(h, { arguments: { content: "replacement" } });
+  assert.equal(badApproval.ok, false);
+  assert.equal(badApproval.error, "authorization_argument_substitution_not_accepted");
+  assert.equal(badApproval.field, "arguments");
+  assert.equal(h.state.status, "pending");
+
+  await approve(h);
+  const badExecution = await executeAuthorizedToolFromBody({
+    authorization_request_id: REQUEST_ID,
+    tool_id: "cairnstone_set_head"
+  }, {}, h.deps);
+  assert.equal(badExecution.ok, false);
+  assert.equal(badExecution.error, "authorization_argument_substitution_not_accepted");
+  assert.equal(badExecution.field, "tool_id");
+  assert.equal(h.invokeCount, 0);
+});
+
+test("V7.3.3 unchanged guard executes stored arguments exactly once and replay never mutates twice", async () => {
+  const h = await makeHarness();
+  await approve(h);
+  const first = await executeAuthorizedToolFromBody({ authorization_request_id: REQUEST_ID }, {}, h.deps);
   assert.equal(first.ok, true);
-  assert.equal(first.schema, TOOL_AUTHORIZED_EXECUTION_SCHEMA);
+  assert.equal(first.schema, TOOL_AUTHORIZED_EXECUTION_RECEIPT_SCHEMA);
   assert.equal(first.executed, true);
   assert.equal(first.mutation_performed, true);
+  assert.equal(first.guard.matched, true);
+  assert.equal(first.verification.ok, true);
   assert.equal(first.replayed, false);
-  assert.equal(mutationCalls, 1);
-  assert.equal(p.store.snapshot().status, "executed");
+  assert.equal(h.state.status, "executed");
+  assert.equal(h.invokeCount, 1);
 
-  const replay = await executeAuthorizedToolFromBody({ authorization_request_id: p.id }, {}, deps);
+  const replay = await executeAuthorizedToolFromBody({ authorization_request_id: REQUEST_ID }, {}, h.deps);
   assert.equal(replay.ok, true);
   assert.equal(replay.replayed, true);
   assert.equal(replay.idempotent_replay, true);
-  assert.equal(replay.mutation_performed, false);
-  assert.equal(mutationCalls, 1);
+  assert.equal(h.invokeCount, 1);
 });
 
-test("V7.3.3 changed guard fails closed and performs zero mutation", async () => {
-  const p = await prepared("authorized");
-  let mutationCalls = 0;
-  const deps = {
-    ...stoneDeps(p.store, p.request),
-    inspectGuard: async () => ({ ok: true, type: "fixture_version", expected: 0, observed: 1, matched: false }),
-    invokeAuthorizedMutation: async () => { mutationCalls += 1; return { ok: true }; }
-  };
-  const result = await executeAuthorizedToolFromBody({ authorization_request_id: p.id }, {}, deps);
+test("V7.3.3 concurrent consumers cannot both claim one authorization", async () => {
+  const h = await makeHarness({ invokeDelayMs: 25 });
+  await approve(h);
+  const [a, b] = await Promise.all([
+    executeAuthorizedToolFromBody({ authorization_request_id: REQUEST_ID }, {}, h.deps),
+    executeAuthorizedToolFromBody({ authorization_request_id: REQUEST_ID }, {}, h.deps)
+  ]);
+  assert.equal(h.invokeCount, 1);
+  assert.equal([a, b].filter(result => result.executed === true).length, 1);
+  assert.equal([a, b].some(result => result.error === "authorization_already_consumed_or_claimed" || result.replayed === true), true);
+});
+
+test("V7.3.3 changed guarded state fails closed with zero target mutation and immutable failure evidence", async () => {
+  const h = await makeHarness({ observedGuardValue: "changed-head" });
+  await approve(h);
+  const result = await executeAuthorizedToolFromBody({ authorization_request_id: REQUEST_ID }, {}, h.deps);
   assert.equal(result.ok, false);
   assert.equal(result.error, "authorization_guard_mismatch");
   assert.equal(result.executed, false);
   assert.equal(result.mutation_performed, false);
-  assert.equal(mutationCalls, 0);
-  assert.equal(p.store.snapshot().status, "guard_failed");
+  assert.equal(result.guard.expected_value, null);
+  assert.equal(result.guard.observed_value, "changed-head");
+  assert.equal(result.guard.matched, false);
+  assert.equal(h.invokeCount, 0);
+  assert.equal(h.state.status, "guard_failed");
+  assert.ok(h.state.execution_receipt_stone_hash);
 });
 
-test("V7.3.3 two concurrent consumers cannot both claim the same grant", async () => {
-  const p = await prepared("authorized");
-  let mutationCalls = 0;
-  let release;
-  const gate = new Promise(resolve => { release = resolve; });
-  const deps = {
-    ...stoneDeps(p.store, p.request),
-    inspectGuard: async () => ({ ok: true, type: "fixture_version", expected: 0, observed: 0, matched: true }),
-    invokeAuthorizedMutation: async () => { mutationCalls += 1; await gate; return { ok: true }; },
-    verifyMutation: async () => ({ ok: true, passed: true })
-  };
-  const firstPromise = executeAuthorizedToolFromBody({ authorization_request_id: p.id }, {}, deps);
-  await new Promise(resolve => setImmediate(resolve));
-  const second = await executeAuthorizedToolFromBody({ authorization_request_id: p.id }, {}, deps);
-  assert.equal(second.ok, false);
-  assert.equal(second.error, "authorization_already_consuming");
-  release();
-  const first = await firstPromise;
-  assert.equal(first.ok, true);
-  assert.equal(mutationCalls, 1);
+test("V7.3.3 denial is durable and cannot be executed", async () => {
+  const h = await makeHarness();
+  const denied = await authorizeToolRequestFromBody({
+    authorization_request_id: REQUEST_ID,
+    decision: "deny",
+    authorization_subject: "human:test-operator",
+    authorization_method: "operator_bearer"
+  }, {}, h.deps);
+  assert.equal(denied.ok, true);
+  assert.equal(denied.decision, "denied");
+  assert.equal(h.state.status, "denied");
+  assert.ok(h.state.denial_stone_hash);
+
+  const execution = await executeAuthorizedToolFromBody({ authorization_request_id: REQUEST_ID }, {}, h.deps);
+  assert.equal(execution.ok, false);
+  assert.equal(execution.error, "authorization_not_executable");
+  assert.equal(execution.status, "denied");
+  assert.equal(h.invokeCount, 0);
+});
+
+test("V7.3.3 human-confirmation execution requires a concurrency guard", async () => {
+  const h = await makeHarness({ guard: null });
+  await approve(h);
+  const execution = await executeAuthorizedToolFromBody({ authorization_request_id: REQUEST_ID }, {}, h.deps);
+  assert.equal(execution.ok, false);
+  assert.equal(execution.error, "authorization_guard_required");
+  assert.equal(h.invokeCount, 0);
+  assert.equal(h.state.status, "authorized");
 });
