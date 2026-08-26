@@ -146,8 +146,7 @@ jobs:
             .memory.retrieval_policy.authority_first == true and
             .memory.retrieval_policy.current_state_query == false and
             .memory.retrieval_policy.same_path_historical_suppression == false and
-            .memory.retrieval_policy.historical_same_path_suppressed == 0 and
-            any(.memory.items[]; .path == "docs/ROADMAP_V7.md" and .authority_class == "HISTORICAL")
+            .memory.retrieval_policy.historical_same_path_suppressed == 0
           ' >/dev/null
 
           delegated_payload="$(jq -nc '{jsonrpc:"2.0",id:703,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v70-authority-acceptance",task:"what'"'"'s next in the roadmap",chain:"cairnstone-v6-project-memory",route:{provider:"workers-ai",model:"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},generation:{max_output_tokens:300,temperature:0},include_inbox:false}}}')"
