@@ -1,6 +1,6 @@
 # CairnStone V7 Roadmap
 
-Status: **V7.3 COMPLETE; V7.4 IN PROGRESS — V7.4.0 operational-state grounding + first reusable `cairnstone-maintainer` profile are live-accepted on runtime 0.5.19; broader cross-project profile generalization remains**
+Status: **V7.3 COMPLETE; V7.4 IN PROGRESS — V7.4.0 operational-state grounding + first reusable `cairnstone-maintainer` profile are live-accepted on runtime 0.5.19; broader cross-project profile generalization (registry, cross-project chain scope, declarative grounding-classification rule engine, `repo-debugger` and `release-reviewer` profiles) is now also live-accepted at commit `7672381c9ad3977f1e760bc19e574be0aad50c22` — see `project-memory/evidence/v74-profile-generalization-acceptance.md`; V7.4 remains open for further profile-catalog growth, and V7.5 stays gated until V7.4 is declared fully complete**
 Predecessor baseline: **V6.10 frozen control plane**
 
 ## V7 thesis
