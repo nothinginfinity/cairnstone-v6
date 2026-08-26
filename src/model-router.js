@@ -2880,7 +2880,7 @@ export async function delegateFromBody(body, env, deps = {}) {
         error: "delegation_bootstrap_failed",
         detail: bootstrap && bootstrap.error ? bootstrap.error : "unknown",
         bootstrap_error: compactDelegationFailure(bootstrap),
-        policy: delegationReadOnlyPolicy()
+        policy: delegationReadOnlyPolicy(readToolsExecuted)
       };
     }
 
@@ -2902,9 +2902,9 @@ export async function delegateFromBody(body, env, deps = {}) {
         request_ir_id: routed && routed.request_ir_id ? routed.request_ir_id : null,
         route: compactDelegationRoute(routed && routed.route ? routed.route : route),
         observability: compactDelegationObservability(routed),
-        policy: delegationReadOnlyPolicy(),
+        policy: delegationReadOnlyPolicy(readToolsExecuted),
         evidence: compactDelegationEvidence(bootstrap),
-        diagnostics: compactDelegationDiagnostics(bootstrap, routed)
+        diagnostics: compactDelegationDiagnostics(bootstrap, routed, readToolsExecuted)
       };
     }
 
@@ -2921,9 +2921,9 @@ export async function delegateFromBody(body, env, deps = {}) {
         request_ir_id: routed.request_ir_id || null,
         route: compactDelegationRoute(routed.route),
         observability: compactDelegationObservability(routed),
-        policy: delegationReadOnlyPolicy(),
+        policy: delegationReadOnlyPolicy(readToolsExecuted),
         evidence: compactDelegationEvidence(bootstrap),
-        diagnostics: { ...compactDelegationDiagnostics(bootstrap, routed), tool_intents_returned: toolIntents.length }
+        diagnostics: { ...compactDelegationDiagnostics(bootstrap, routed, readToolsExecuted), tool_intents_returned: toolIntents.length }
       };
     }
 
@@ -2939,8 +2939,8 @@ export async function delegateFromBody(body, env, deps = {}) {
       usage: compactDelegationUsage(routed.usage),
       observability: compactDelegationObservability(routed),
       evidence: compactDelegationEvidence(bootstrap),
-      policy: delegationReadOnlyPolicy(),
-      diagnostics: compactDelegationDiagnostics(bootstrap, routed)
+      policy: delegationReadOnlyPolicy(readToolsExecuted),
+      diagnostics: compactDelegationDiagnostics(bootstrap, routed, readToolsExecuted)
     };
   } catch (error) {
     return delegationFailure("invalid_delegation_request", String(error && error.message ? error.message : error));
@@ -3009,7 +3009,7 @@ function compactDelegationObservability(result) {
   };
 }
 
-function compactDelegationDiagnostics(pkg, result) {
+function compactDelegationDiagnostics(pkg, result, readToolsExecuted = 0) {
   return {
     context_package_returned: false,
     server_carried_context_package: true,
@@ -3018,7 +3018,8 @@ function compactDelegationDiagnostics(pkg, result) {
     memory_truncated: pkg.memory?.truncated === true,
     coordination_items: Array.isArray(pkg.coordination?.items) ? pkg.coordination.items.length : 0,
     external_model_calls: delegationModelCallCount(result),
-    tools_executed: 0
+    tools_executed: readToolsExecuted,
+    profile_live_reads_executed: readToolsExecuted
   };
 }
 
@@ -3034,9 +3035,9 @@ function delegationModelCallCount(result) {
   return attempts.filter(item => item && item.mock !== true).length;
 }
 
-function delegationReadOnlyPolicy() {
+function delegationReadOnlyPolicy(readToolsExecuted = 0) {
   return {
-    delegation_mode: "read_only", tools_exposed_to_model: 0, tools_executed: 0,
+    delegation_mode: "read_only", tools_exposed_to_model: 0, tools_executed: readToolsExecuted,
     execution_authority: false, mutation_authority: false, accepted_state_mutation: false
   };
 }
@@ -3047,7 +3048,7 @@ function compactDelegationFailure(value) {
 }
 
 function delegationFailure(error, detail) {
-  return { ok: false, error, ...(detail ? { detail } : {}), policy: delegationReadOnlyPolicy() };
+  return { ok: false, error, ...(detail ? { detail } : {}), policy: delegationReadOnlyPolicy(readToolsExecuted) };
 }
 
 function delegationRequiredText(value, name, maxLength) {
