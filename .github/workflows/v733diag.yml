@@ -1,0 +1,21 @@
+name: v733diag
+on: {workflow_dispatch: {}}
+permissions: {contents: read}
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          set -euo pipefail
+          RPC=https://cairnstone-v6.jaredtechfit.workers.dev/mcp
+          A='{"actor_id":"github-actions:v733diag","task":"V7.3.3 broker diagnostic only","chain":"cairnstone-v6-project-memory","capabilities":{"tools":[{"id":"cairnstone_commit_v2","available":true,"class":"mutation"}],"supports_tool_calls":true},"limits":{"max_skills":1,"max_memory_hits":0,"max_memory_bytes":0,"max_inbox_items":0,"max_package_bytes":50000},"include_inbox":false}'
+          P=$(jq -nc --argjson a "$A" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:$a}}')
+          O=$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data-binary "$P")
+          C=$(echo "$O"|jq -c '.result.content[0].text|fromjson')
+          I='{"tool_id":"cairnstone_commit_v2","arguments":{"chain":"cairnstone-v733-live-acceptance","author":"github-actions:v733diag","content":"diag"},"executed":false}'
+          X=$(jq -nc --argjson c "$C" --argjson i "$I" '{context_package:$c,tool_intent:$i}')
+          Q=$(jq -nc --argjson x "$X" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"cairnstone_tool_policy_preview",arguments:$x}}')
+          R=$(curl -sS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data-binary "$Q")
+          echo "$R"|jq .
+          echo "$R"|jq -e '.error == null and (.result.content[0].text|fromjson|.decision)=="require_authorization"' >/dev/null
