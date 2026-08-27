@@ -1,6 +1,6 @@
 # CairnStone V7 Roadmap
 
-Status: **V7.3 COMPLETE; V7.4 COMPLETE — V7.4.0 operational grounding, generalized provider-neutral profile registry/rules, and V7.4.1 true cross-project profile reuse are live-accepted on runtime 0.5.19. `repo-debugger` now runs against the independent `praxiq-call` chain while its canonical instructions remain sourced from the profile-owning CairnStone chain under dual-chain race protection. Final strict acceptance run `33020784647` at runtime/workflow commit `8a780939fe69eca2dd075b7a45162af78c3fbd6e` passed targeted + full regression checks, deployment, real Workers AI and DeepSeek routing under identical package/request/profile/classification identity, exact live repo-drift grounding, fail-closed unlisted-chain scope, and unchanged accepted state on both chains. V7.5 is now the next phase; its gate is lifted but V7.5 is NOT STARTED.**
+Status: **V7.3 COMPLETE; V7.4 COMPLETE — V7.4.0 operational grounding, generalized provider-neutral profile registry/rules, and V7.4.1 true cross-project profile reuse are live-accepted on runtime 0.5.19. `repo-debugger` now runs against the independent `praxiq-call` chain while its canonical instructions remain sourced from the profile-owning CairnStone chain under dual-chain race protection. Final strict acceptance run `33020784647` at runtime/workflow commit `8a780939fe69eca2dd075b7a45162af78c3fbd6e` passed targeted + full regression checks, deployment, real Workers AI and DeepSeek routing under identical package/request/profile/classification identity, exact live repo-drift grounding, fail-closed unlisted-chain scope, and unchanged accepted state on both chains. V7.5 is now IN PROGRESS: V7.5.0 has canonically started as a design-first paid-service contract + deterministic pre-execution quote/identity slice; real payment settlement remains intentionally gated.**
 Predecessor baseline: **V6.10 frozen control plane**
 
 ## V7 thesis
@@ -369,9 +369,46 @@ V7.4 acceptance should prove the same profile can run on at least two compatible
 
 ### V7.5 — x402 / paid sub-agent runtime
 
-Status: **NEXT / NOT STARTED.** The V7.4 gate is lifted by the completed V7.4.1 true cross-project acceptance. No V7.5 implementation or payment authority is implied by that closure.
+Status: **IN PROGRESS — V7.5.0 contract/quote boundary STARTED; real settlement NOT YET AUTHORIZED.** Canonical project-memory HEAD: `0d4346fa4a9e352256654c42fddc58e5b0c3883a79560026fbd6d4fa9c74142e` (`project-memory/v750-paid-subagent-contract-start.md`). The first candidate paid capability is the already live-accepted `repo-debugger` profile. V7.5.0 intentionally freezes identities, ordering, replay rules, and the x402 integration boundary before any wallet signing or settlement is enabled.
 
 Expose selected V7.4 profiles as bounded, metered agent services callable by other agents or applications.
+
+#### V7.5.0 — Paid service contract + deterministic quote boundary
+
+The bounded first slice defines four provider-neutral identities/contracts:
+
+- `cairnstone-paid-agent-service-v1` — immutable service descriptor binding service/profile identity, profile version, chain scope, compact-result contract, tool/risk policy, budgets, and x402 pricing route;
+- `cairnstone-paid-agent-request-v1` — caller + service/profile + target chain + task + generation/output bounds + exact V7 `package_id`, with deterministic `service_request_id = sha256(canonical request)`;
+- `cairnstone-paid-agent-quote-v1` — binds `service_request_id` + `package_id` to the x402 challenge/payment-requirement digest, price, asset, network, payee, and expiry; price authority comes from x402 policy evaluation, never from the model/profile;
+- `cairnstone-paid-agent-result-v1` — compact answer plus package/request/profile identity, provider/model envelope, tool receipts, x402 settlement receipt, and replay status.
+
+Mandatory execution ordering:
+
+```text
+resolve service/profile
+  → validate profile scope
+  → deterministic V7 bootstrap
+  → service_request_id
+  → x402 quote/challenge
+  → caller payment authorization
+  → REVALIDATE service_request_id + package_id/current accepted authority
+  → only then x402 verify/settle
+  → execute bounded profile delegation
+  → persist/link compact result + execution/model/payment receipts
+```
+
+Critical race rule: if accepted chain/path authority changed after quote, fail `paid_agent_context_race` **before settlement** and require a fresh quote. A caller must never pay for context A and receive work against context B.
+
+Replay/idempotency rule: exact replay of the same settled `service_request_id` returns the existing paid result/receipt with no second model call, tool call, or settlement; conflicting quote/payment reuse fails closed. Provider failover may change provider/model attempts, but it must not change `package_id`, `service_request_id`, price challenge, profile identity, or the accepted-authority boundary.
+
+Payment architecture boundary: `nothinginfinity/x402-sub-agent-mcp` remains the external x402 payment-policy plane. CairnStone consumes that service (starting from its `evaluate_request` policy primitive) rather than duplicating wallet custody/signatures, facilitator verification/settlement logic, payment rules, leases, or usage accounting. Payment never grants mutation authority, and provider/model credentials remain isolated from stable CairnStone artifacts.
+
+V7.5.0 engineering sequence:
+
+1. implement pure service-catalog/request/quote helpers and unit tests in `nothinginfinity/cairnstone-v6`, initially for `repo-debugger`, with **zero settlement**;
+2. expose deterministic quote/preview output;
+3. add the x402 adapter/service binding and prove a live `402` challenge without moving money;
+4. only after those gates pass, run one tiny real Base Sepolia paid `repo-debugger` acceptance proving package identity, model route, tool receipts, payment receipt, and no double-charge on replay.
 
 The paid unit is not raw inference. It is a narrow CairnStone-defined capability backed by:
 
@@ -406,7 +443,7 @@ V7.3 Permissioned Agent Loop + MCP Tool Broker (COMPLETE — V7.3.0 through V7.3
         ↓
 V7.4 Cross-project agent profiles (COMPLETE — V7.4.0 + generalized profile system + V7.4.1 true cross-project acceptance)
         ↓
-V7.5 x402 paid sub-agent runtime (NEXT — gate lifted, NOT STARTED)
+V7.5 x402 paid sub-agent runtime (IN PROGRESS — V7.5.0 contract/quote boundary started; settlement gated)
 ```
 
 Do not skip V7.0.
