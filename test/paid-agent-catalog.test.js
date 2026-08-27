@@ -900,6 +900,118 @@ test("V7.5.0 evaluateX402RequestFromEnv fails closed with x402_policy_plane_not_
   assert.equal(result.error, "x402_policy_plane_not_configured");
 });
 
+test("V7.5.0 evaluateX402RequestFromEnv sends a proper MCP JSON-RPC tools/call envelope and unwraps result.content[0].text", async () => {
+  const originalFetch = global.fetch;
+  let capturedUrl, capturedOptions;
+  global.fetch = async (url, options) => {
+    capturedUrl = url;
+    capturedOptions = options;
+    return {
+      ok: true,
+      json: async () => ({
+        jsonrpc: "2.0",
+        id: JSON.parse(options.body).id,
+        result: { content: [{ type: "text", text: JSON.stringify({ ok: true, accepts: [REAL_X402_CHALLENGE] }) }] }
+      })
+    };
+  };
+  try {
+    const result = await evaluateX402RequestFromEnv(
+      "/tool/cairnstone_paid_agent_quote_preview",
+      "POST",
+      { X402_POLICY_URL: "https://x402-fake.example/mcp", X402_POLICY_TOKEN: "shared-secret-token" }
+    );
+    assert.equal(capturedUrl, "https://x402-fake.example/mcp");
+    assert.equal(capturedOptions.headers.authorization, "Bearer shared-secret-token");
+    const sentBody = JSON.parse(capturedOptions.body);
+    assert.equal(sentBody.jsonrpc, "2.0");
+    assert.equal(sentBody.method, "tools/call");
+    assert.equal(sentBody.params.name, "evaluate_request");
+    assert.deepEqual(sentBody.params.arguments, { path: "/tool/cairnstone_paid_agent_quote_preview", method: "POST" });
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.requirement, REAL_X402_CHALLENGE);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("V7.5.0 evaluateX402RequestFromEnv strips only the trailing '*' from a wildcard route pattern, keeping the slash", async () => {
+  const originalFetch = global.fetch;
+  let sentPath;
+  global.fetch = async (url, options) => {
+    sentPath = JSON.parse(options.body).params.arguments.path;
+    return { ok: true, json: async () => ({ result: { content: [{ text: JSON.stringify({ accepts: [REAL_X402_CHALLENGE] }) }] } }) };
+  };
+  try {
+    await evaluateX402RequestFromEnv("/tool/*", "POST", { X402_POLICY_URL: "https://x402-fake.example/mcp", X402_POLICY_TOKEN: "t" });
+    assert.equal(sentPath, "/tool/");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("V7.5.0 evaluateX402RequestFromEnv fails closed on a JSON-RPC error envelope", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, json: async () => ({ jsonrpc: "2.0", error: { code: -32601, message: "Method not found" } }) });
+  try {
+    const result = await evaluateX402RequestFromEnv("/tool/*", "POST", { X402_POLICY_URL: "https://x402-fake.example/mcp", X402_POLICY_TOKEN: "t" });
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "x402_policy_plane_rpc_error");
+    assert.equal(result.detail.code, -32601);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("V7.5.0 evaluateX402RequestFromEnv fails closed when result.content[0].text is missing or not valid JSON", async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async () => ({ ok: true, json: async () => ({ result: { content: [] } }) });
+    const missingText = await evaluateX402RequestFromEnv("/tool/*", "POST", { X402_POLICY_URL: "u", X402_POLICY_TOKEN: "t" });
+    assert.equal(missingText.ok, false);
+    assert.equal(missingText.error, "x402_policy_plane_response_malformed");
+
+    global.fetch = async () => ({ ok: true, json: async () => ({ result: { content: [{ text: "not valid json{{{" }] } }) });
+    const badJson = await evaluateX402RequestFromEnv("/tool/*", "POST", { X402_POLICY_URL: "u", X402_POLICY_TOKEN: "t" });
+    assert.equal(badJson.ok, false);
+    assert.equal(badJson.error, "x402_policy_plane_response_malformed");
+
+    global.fetch = async () => ({ ok: true, json: async () => ({ result: { content: [{ text: JSON.stringify({ accepts: [] }) }] } }) });
+    const emptyAccepts = await evaluateX402RequestFromEnv("/tool/*", "POST", { X402_POLICY_URL: "u", X402_POLICY_TOKEN: "t" });
+    assert.equal(emptyAccepts.ok, false);
+    assert.equal(emptyAccepts.error, "x402_policy_plane_response_malformed");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("V7.5.0 evaluateX402RequestFromEnv fails closed on a non-ok HTTP status", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 500 });
+  try {
+    const result = await evaluateX402RequestFromEnv("/tool/*", "POST", { X402_POLICY_URL: "u", X402_POLICY_TOKEN: "t" });
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "x402_policy_plane_request_failed");
+    assert.equal(result.status, 500);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("V7.5.0 evaluateX402RequestFromEnv fails closed on a fetch exception", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => { throw new Error("network unreachable"); };
+  try {
+    const result = await evaluateX402RequestFromEnv("/tool/*", "POST", { X402_POLICY_URL: "u", X402_POLICY_TOKEN: "t" });
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "x402_policy_plane_request_exception");
+    assert.match(result.detail, /network unreachable/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("V7.5.0 previewPaidAgentX402QuoteFromBody produces a full x402-authoritative preview end to end using the real captured challenge", async () => {
   const deps = {
     agentBootstrapFromBody: async () => fixedBootstrapResult(),
