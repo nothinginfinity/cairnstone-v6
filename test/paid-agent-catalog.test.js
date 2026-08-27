@@ -4,6 +4,7 @@ import {
   PAID_QUOTE_SCHEMA_V1,
   PAID_REQUEST_SCHEMA_V1,
   PAID_SERVICE_SCHEMA_V1,
+  PAID_AGENT_QUOTE_PREVIEW_SCHEMA_V1,
   PRICING_ROUTE_SCHEMA_V1,
   buildQuote,
   buildServiceDescriptor,
@@ -11,7 +12,9 @@ import {
   checkPaidAgentContextRace,
   checkQuotePriceMatchesAdvertisedRoute,
   checkReplayConsistency,
+  computeAuthorityFingerprint,
   isQuoteExpired,
+  previewPaidAgentQuoteFromBody,
   recomputeQuoteId,
   recomputeServiceDescriptorId,
   recomputeServiceRequestId,
@@ -586,4 +589,178 @@ test("V7.5.0 checkQuotePriceMatchesAdvertisedRoute fails closed on an unknown/ma
   const result = checkQuotePriceMatchesAdvertisedRoute(quote, malformedRoute);
   assert.equal(result.ok, false);
   assert.equal(result.error, "invalid_pricing_route");
+});
+
+// ---------------------------------------------------------------------------
+// V7.5.0 step 2: previewPaidAgentQuoteFromBody (deterministic quote/preview
+// MCP tool wrapper). agentBootstrapFromBody is mocked here exactly the way
+// src/index.js wires the real one -- these tests exercise the wrapper's own
+// logic, not the (already separately tested) bootstrap internals.
+// ---------------------------------------------------------------------------
+
+function fixedBootstrapResult(overrides = {}) {
+  return {
+    ok: true,
+    package_id: VALID_PACKAGE_ID,
+    authority: {
+      chain_head: { stone_hash: "chain-head-fixed" },
+      path_heads: [
+        { path: "src/paid-agent-catalog.js", stone_hash: "path-a" },
+        { path: "docs/ROADMAP_V7.md", stone_hash: "path-b" }
+      ]
+    },
+    ...overrides
+  };
+}
+
+test("V7.5.0 previewPaidAgentQuoteFromBody produces a full preview using ONLY the bootstrap-sourced package_id/authority", async () => {
+  let bootstrapCalls = 0;
+  const deps = {
+    agentBootstrapFromBody: async (body, env) => {
+      bootstrapCalls += 1;
+      assert.equal(body.actor_id, "chatgpt:cairnstone-v7");
+      assert.equal(body.chain, "cairnstone-v6-project-memory");
+      assert.equal(body.include_inbox, false);
+      return fixedBootstrapResult();
+    }
+  };
+
+  const result = await previewPaidAgentQuoteFromBody({
+    actor_id: "chatgpt:cairnstone-v7",
+    profile_id: "repo-debugger",
+    chain: "cairnstone-v6-project-memory",
+    task: "Inspect this accepted repo state and return a cited diagnosis",
+    pricing_route: VALID_PRICING_ROUTE
+  }, {}, deps);
+
+  assert.equal(bootstrapCalls, 1);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.schema, PAID_AGENT_QUOTE_PREVIEW_SCHEMA_V1);
+  assert.equal(result.package_id, VALID_PACKAGE_ID);
+  assert.equal(result.service_request.package_id, VALID_PACKAGE_ID);
+  assert.equal(result.quote.package_id, VALID_PACKAGE_ID);
+  assert.equal(result.authority_fingerprint, computeAuthorityFingerprint(fixedBootstrapResult().authority));
+  assert.equal(result.pricing_metadata.advertised, true);
+  assert.equal(result.pricing_metadata.authoritative, false);
+  assert.equal(result.pricing_metadata.x402_policy_evaluated, false);
+  assert.equal(result.settlement.authorized, false);
+  assert.equal(result.settlement.verified, false);
+  assert.equal(result.settlement.settled, false);
+  assert.deepEqual(validateServiceDescriptor(result.service_descriptor), { ok: true, errors: [] });
+  assert.deepEqual(validateServiceRequest(result.service_request), { ok: true, errors: [] });
+  assert.deepEqual(validateQuote(result.quote), { ok: true, errors: [] });
+});
+
+test("V7.5.0 previewPaidAgentQuoteFromBody ignores a caller-supplied package_id and never treats it as authority", async () => {
+  const deps = { agentBootstrapFromBody: async () => fixedBootstrapResult() };
+  const result = await previewPaidAgentQuoteFromBody({
+    actor_id: "chatgpt:cairnstone-v7",
+    profile_id: "repo-debugger",
+    chain: "cairnstone-v6-project-memory",
+    task: "some task",
+    pricing_route: VALID_PRICING_ROUTE,
+    package_id: "sha256:" + "f".repeat(64) // must be ignored entirely
+  }, {}, deps);
+  assert.equal(result.ok, true);
+  assert.equal(result.package_id, VALID_PACKAGE_ID);
+  assert.notEqual(result.package_id, "sha256:" + "f".repeat(64));
+});
+
+test("V7.5.0 previewPaidAgentQuoteFromBody propagates a bootstrap failure (e.g. context_compile_race) rather than fabricating a package_id", async () => {
+  const deps = { agentBootstrapFromBody: async () => ({ ok: false, error: "context_compile_race", chain: "cairnstone-v6-project-memory" }) };
+  const result = await previewPaidAgentQuoteFromBody({
+    actor_id: "chatgpt:cairnstone-v7",
+    profile_id: "repo-debugger",
+    chain: "cairnstone-v6-project-memory",
+    task: "some task",
+    pricing_route: VALID_PRICING_ROUTE
+  }, {}, deps);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "bootstrap_failed");
+  assert.equal(result.detail.error, "context_compile_race");
+});
+
+test("V7.5.0 previewPaidAgentQuoteFromBody fails closed without calling deps.agentBootstrapFromBody when the request itself is invalid", async () => {
+  let called = false;
+  const deps = { agentBootstrapFromBody: async () => { called = true; return fixedBootstrapResult(); } };
+  const result = await previewPaidAgentQuoteFromBody({
+    actor_id: "not-namespaced",
+    profile_id: "repo-debugger",
+    chain: "cairnstone-v6-project-memory",
+    task: "some task",
+    pricing_route: VALID_PRICING_ROUTE
+  }, {}, deps);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "invalid_actor_id");
+  assert.equal(called, false);
+});
+
+test("V7.5.0 previewPaidAgentQuoteFromBody fails closed for an unknown profile_id even with a successful bootstrap", async () => {
+  const deps = { agentBootstrapFromBody: async () => fixedBootstrapResult() };
+  const result = await previewPaidAgentQuoteFromBody({
+    actor_id: "chatgpt:cairnstone-v7",
+    profile_id: "not-a-real-profile",
+    chain: "cairnstone-v6-project-memory",
+    task: "some task",
+    pricing_route: VALID_PRICING_ROUTE
+  }, {}, deps);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "agent_profile_not_found");
+});
+
+test("V7.5.0 previewPaidAgentQuoteFromBody fails closed when the requested chain is outside the profile's scope", async () => {
+  const deps = { agentBootstrapFromBody: async () => fixedBootstrapResult() };
+  const result = await previewPaidAgentQuoteFromBody({
+    actor_id: "chatgpt:cairnstone-v7",
+    profile_id: "repo-debugger",
+    chain: "some-unrelated-chain",
+    task: "some task",
+    pricing_route: VALID_PRICING_ROUTE
+  }, {}, deps);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some(e => e.startsWith("chain:")));
+});
+
+test("V7.5.0 previewPaidAgentQuoteFromBody fails closed when deps.agentBootstrapFromBody is missing", async () => {
+  const result = await previewPaidAgentQuoteFromBody({
+    actor_id: "chatgpt:cairnstone-v7",
+    profile_id: "repo-debugger",
+    chain: "cairnstone-v6-project-memory",
+    task: "some task",
+    pricing_route: VALID_PRICING_ROUTE
+  }, {}, {});
+  assert.deepEqual(result, { ok: false, error: "preview_dependencies_missing" });
+});
+
+test("V7.5.0 previewPaidAgentQuoteFromBody's authority_fingerprint changes when bootstrap-reported authority changes", async () => {
+  const depsA = { agentBootstrapFromBody: async () => fixedBootstrapResult() };
+  const depsB = {
+    agentBootstrapFromBody: async () => fixedBootstrapResult({
+      authority: { chain_head: { stone_hash: "chain-head-DIFFERENT" }, path_heads: [] }
+    })
+  };
+  const input = {
+    actor_id: "chatgpt:cairnstone-v7",
+    profile_id: "repo-debugger",
+    chain: "cairnstone-v6-project-memory",
+    task: "some task",
+    pricing_route: VALID_PRICING_ROUTE
+  };
+  const a = await previewPaidAgentQuoteFromBody(input, {}, depsA);
+  const b = await previewPaidAgentQuoteFromBody(input, {}, depsB);
+  assert.notEqual(a.authority_fingerprint, b.authority_fingerprint);
+});
+
+test("V7.5.0 computeAuthorityFingerprint is order-independent across path_heads and returns null for malformed input", () => {
+  const a = computeAuthorityFingerprint({
+    chain_head: { stone_hash: "h1" },
+    path_heads: [{ path: "b.js", stone_hash: "2" }, { path: "a.js", stone_hash: "1" }]
+  });
+  const b = computeAuthorityFingerprint({
+    chain_head: { stone_hash: "h1" },
+    path_heads: [{ path: "a.js", stone_hash: "1" }, { path: "b.js", stone_hash: "2" }]
+  });
+  assert.equal(a, b);
+  assert.equal(computeAuthorityFingerprint(null), null);
+  assert.equal(computeAuthorityFingerprint({ chain_head: {} }), null);
 });
