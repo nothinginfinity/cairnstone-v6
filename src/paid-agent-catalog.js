@@ -1,0 +1,492 @@
+// V7.5.0 (step 1 of the ROADMAP_V7.md engineering sequence) -- pure,
+// deterministic helpers for the three provider-neutral identities/contracts
+// this slice is scoped to:
+//
+//   - cairnstone-paid-agent-service-v1  (immutable service descriptor)
+//   - cairnstone-paid-agent-request-v1  (caller + service + task + package_id,
+//     service_request_id = sha256(canonical request))
+//   - cairnstone-paid-agent-quote-v1    (binds service_request_id + package_id
+//     to a price/asset/network/payee/expiry digest)
+//
+// `cairnstone-paid-agent-result-v1` (PAID_RESULT_SCHEMA_V1) is declared as a
+// schema constant only in this slice; its builder is deferred to a later
+// V7.5.0 step once execution/tool-receipt/payment-receipt composition exists.
+//
+// Hard constraints for this slice (see docs/ROADMAP_V7.md V7.5.0):
+//   - zero settlement: nothing here calls x402-sub-agent-mcp, a facilitator,
+//     or any wallet/signing primitive. `buildQuote` accepts an
+//     already-computed price (obtained elsewhere, e.g. from that service's
+//     `evaluate_request` policy primitive) and only binds it deterministically.
+//   - zero model/tool calls: every export here is a pure, synchronous-except-
+//     for-sha256 function. No network I/O, no CairnStone tool calls, no LLM
+//     calls.
+//   - price authority never comes from the model/profile -- callers must
+//     supply `price` from the x402 policy plane; nothing here invents a price.
+//   - a service descriptor, request, or quote can never grant execution or
+//     mutation authority (mirrors the same invariant in src/profiles.js).
+//   - `checkPaidAgentContextRace` and `checkReplayConsistency` are the pure
+//     building blocks for the roadmap's `paid_agent_context_race` and
+//     replay/no-double-charge rules; the stateful enforcement (persisting
+//     settled results, re-snapshotting live authority) belongs to a later
+//     engineering step once this slice's identities are accepted.
+
+import { getAgentProfile } from "./profiles.js";
+import { sha256Text, stableJson } from "./agent-bootstrap.js";
+
+export const PAID_SERVICE_SCHEMA_V1 = "cairnstone-paid-agent-service-v1";
+export const PAID_REQUEST_SCHEMA_V1 = "cairnstone-paid-agent-request-v1";
+export const PAID_QUOTE_SCHEMA_V1 = "cairnstone-paid-agent-quote-v1";
+export const PAID_RESULT_SCHEMA_V1 = "cairnstone-paid-agent-result-v1"; // reserved; no builder yet
+
+export const PRICING_ROUTE_SCHEMA_V1 = "cairnstone-paid-agent-pricing-route-v1";
+
+const ACTOR_ID_RE = /^[A-Za-z][A-Za-z0-9_-]*:[A-Za-z0-9][A-Za-z0-9._:@/-]*$/;
+const PACKAGE_ID_RE = /^sha256:[0-9a-f]{64}$/i;
+const CONTENT_ID_RE = /^sha256:[0-9a-f]{64}$/i;
+const ASSET_RE = /^[A-Za-z0-9_.:/-]{1,64}$/;
+const NETWORK_RE = /^[a-z0-9-]{1,64}$/;
+const TASK_MAX_LENGTH = 4000;
+const PRICING_MODES = Object.freeze(["exact", "upto"]);
+const DEFAULT_REQUIRED_RESULT_FIELDS = Object.freeze([
+  "answer",
+  "citations",
+  "package_id",
+  "profile_id",
+  "provider",
+  "model"
+]);
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function pushError(errors, path, message) {
+  errors.push(`${path}: ${message}`);
+}
+
+function isPositiveIntegerAtomicString(value) {
+  return typeof value === "string" && /^[0-9]+$/.test(value) && value !== "0";
+}
+
+function isValidIsoTimestamp(value) {
+  return isNonEmptyString(value) && !Number.isNaN(Date.parse(value));
+}
+
+// ---------------------------------------------------------------------------
+// Pricing route (metadata only -- no x402 call happens here)
+// ---------------------------------------------------------------------------
+
+export function validatePricingRoute(route) {
+  const errors = [];
+  if (!isObject(route)) return { ok: false, errors: ["pricing_route must be an object"] };
+  if (route.schema !== PRICING_ROUTE_SCHEMA_V1) {
+    pushError(errors, "schema", `must equal '${PRICING_ROUTE_SCHEMA_V1}'`);
+  }
+  if (!isNonEmptyString(route.pattern)) pushError(errors, "pattern", "must be a non-empty string (x402 route pattern)");
+  if (!isNonEmptyString(route.pay_to)) pushError(errors, "pay_to", "must be a non-empty string (payee address/identifier)");
+  if (!isPositiveIntegerAtomicString(route.price_atomic)) {
+    pushError(errors, "price_atomic", "must be a positive integer string in atomic units");
+  }
+  if (!isNonEmptyString(route.asset) || !ASSET_RE.test(route.asset)) {
+    pushError(errors, "asset", "must be a short asset identifier string");
+  }
+  if (!isNonEmptyString(route.network) || !NETWORK_RE.test(route.network)) {
+    pushError(errors, "network", "must be a short lowercase network identifier string");
+  }
+  if (route.mode !== undefined && !PRICING_MODES.includes(route.mode)) {
+    pushError(errors, "mode", `when present, must be one of ${PRICING_MODES.join(", ")}`);
+  }
+  return errors.length === 0 ? { ok: true, errors: [] } : { ok: false, errors };
+}
+
+// ---------------------------------------------------------------------------
+// cairnstone-paid-agent-service-v1
+// ---------------------------------------------------------------------------
+
+/**
+ * Build an immutable paid-service descriptor binding a service identity to
+ * an already-accepted V7.4 agent profile and a pricing route. Pure except
+ * for the final content-identity hash. Never calls x402 or any tool.
+ */
+export async function buildServiceDescriptor({
+  service_id,
+  profile_id,
+  pricing_route,
+  compact_result_contract
+} = {}) {
+  const errors = [];
+  if (!isNonEmptyString(service_id)) pushError(errors, "service_id", "must be a non-empty string");
+
+  const profileResolved = getAgentProfile(profile_id);
+  if (!profileResolved.ok) {
+    return { ok: false, error: "agent_profile_not_found", profile_id: profile_id || null };
+  }
+  const profile = profileResolved.profile;
+
+  const routeValidation = validatePricingRoute(pricing_route);
+  if (!routeValidation.ok) {
+    for (const e of routeValidation.errors) pushError(errors, "pricing_route", e);
+  }
+
+  const contract = isObject(compact_result_contract) ? compact_result_contract : {};
+  const maxOutputTokens = Number.isInteger(contract.max_output_tokens) && contract.max_output_tokens > 0
+    ? contract.max_output_tokens
+    : profile.budgets?.max_output_tokens;
+  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 1) {
+    pushError(errors, "compact_result_contract.max_output_tokens", "must resolve to a positive integer");
+  }
+  const requiredFields = Array.isArray(contract.required_fields) && contract.required_fields.length > 0
+    && contract.required_fields.every(isNonEmptyString)
+    ? [...contract.required_fields]
+    : [...DEFAULT_REQUIRED_RESULT_FIELDS];
+
+  if (errors.length > 0) return { ok: false, errors };
+
+  const descriptorBody = {
+    schema: PAID_SERVICE_SCHEMA_V1,
+    service_id,
+    profile_id: profile.profile_id,
+    profile_version: profile.version,
+    chain_scope: {
+      chain: profile.scope.chain,
+      allowed_chains: Array.isArray(profile.scope.allowed_chains) ? [...profile.scope.allowed_chains] : []
+    },
+    compact_result_contract: {
+      max_output_tokens: maxOutputTokens,
+      required_fields: requiredFields
+    },
+    tool_allowlist: [...(profile.tool_allowlist || [])],
+    confirmation_policy: { human_confirmation_required_for_mutation: true },
+    budgets: { ...(profile.budgets || {}) },
+    pricing_route: {
+      schema: PRICING_ROUTE_SCHEMA_V1,
+      pattern: pricing_route.pattern,
+      pay_to: pricing_route.pay_to,
+      price_atomic: pricing_route.price_atomic,
+      asset: pricing_route.asset,
+      network: pricing_route.network,
+      mode: pricing_route.mode || "exact"
+    },
+    execution_authority: false,
+    mutation_authority: false
+  };
+
+  const descriptorId = "sha256:" + await sha256Text(stableJson(descriptorBody));
+  return { ok: true, descriptor: { descriptor_id: descriptorId, ...descriptorBody } };
+}
+
+/**
+ * Deterministically validate a candidate service descriptor object. Pure,
+ * synchronous, never throws.
+ */
+export function validateServiceDescriptor(descriptor) {
+  const errors = [];
+  if (!isObject(descriptor)) return { ok: false, errors: ["descriptor must be an object"] };
+
+  if (descriptor.schema !== PAID_SERVICE_SCHEMA_V1) {
+    pushError(errors, "schema", `must equal '${PAID_SERVICE_SCHEMA_V1}'`);
+  }
+  if (!isNonEmptyString(descriptor.descriptor_id) || !CONTENT_ID_RE.test(descriptor.descriptor_id)) {
+    pushError(errors, "descriptor_id", "must be a 'sha256:<64 hex>' content identity string");
+  }
+  if (!isNonEmptyString(descriptor.service_id)) pushError(errors, "service_id", "must be a non-empty string");
+  if (!isNonEmptyString(descriptor.profile_id)) pushError(errors, "profile_id", "must be a non-empty string");
+  if (!isNonEmptyString(descriptor.profile_version)) pushError(errors, "profile_version", "must be a non-empty string");
+  if (!isObject(descriptor.chain_scope) || !isNonEmptyString(descriptor.chain_scope.chain)) {
+    pushError(errors, "chain_scope.chain", "must be a non-empty string");
+  }
+  if (
+    descriptor.chain_scope !== undefined && isObject(descriptor.chain_scope) &&
+    descriptor.chain_scope.allowed_chains !== undefined &&
+    (!Array.isArray(descriptor.chain_scope.allowed_chains) || descriptor.chain_scope.allowed_chains.some(c => !isNonEmptyString(c)))
+  ) {
+    pushError(errors, "chain_scope.allowed_chains", "when present, must be an array of non-empty strings");
+  }
+  if (!isObject(descriptor.compact_result_contract) || !Number.isInteger(descriptor.compact_result_contract.max_output_tokens) ||
+      descriptor.compact_result_contract.max_output_tokens < 1) {
+    pushError(errors, "compact_result_contract.max_output_tokens", "must be a positive integer");
+  }
+  const routeValidation = validatePricingRoute(descriptor.pricing_route);
+  if (!routeValidation.ok) for (const e of routeValidation.errors) pushError(errors, "pricing_route", e);
+
+  if (descriptor.execution_authority === true) {
+    pushError(errors, "execution_authority", "a service descriptor must never grant execution authority");
+  }
+  if (descriptor.mutation_authority === true) {
+    pushError(errors, "mutation_authority", "a service descriptor must never grant mutation authority");
+  }
+
+  return errors.length === 0 ? { ok: true, errors: [] } : { ok: false, errors };
+}
+
+/** True if `chain` is within the service descriptor's chain scope. */
+export function serviceDescriptorAllowsChain(descriptor, chain) {
+  if (!isObject(descriptor) || !isObject(descriptor.chain_scope) || !isNonEmptyString(chain)) return false;
+  if (descriptor.chain_scope.chain === chain) return true;
+  return Array.isArray(descriptor.chain_scope.allowed_chains) && descriptor.chain_scope.allowed_chains.includes(chain);
+}
+
+// ---------------------------------------------------------------------------
+// cairnstone-paid-agent-request-v1
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a caller service request bound to an already-validated service
+ * descriptor and an exact V7.0 `package_id`. `service_request_id =
+ * sha256(canonical request)` -- deterministic, so an exact retry produces
+ * the identical id (the replay/idempotency key for later steps).
+ */
+export async function buildServiceRequest({
+  caller_actor_id,
+  service_descriptor,
+  chain,
+  task,
+  generation,
+  package_id
+} = {}) {
+  const errors = [];
+
+  if (!isNonEmptyString(caller_actor_id) || !ACTOR_ID_RE.test(caller_actor_id)) {
+    pushError(errors, "caller_actor_id", "must be a non-empty 'namespace:identifier' string");
+  }
+
+  const descriptorValidation = validateServiceDescriptor(service_descriptor);
+  if (!descriptorValidation.ok) {
+    return { ok: false, error: "invalid_service_descriptor", errors: descriptorValidation.errors };
+  }
+
+  if (!isNonEmptyString(chain)) {
+    pushError(errors, "chain", "must be a non-empty string");
+  } else if (!serviceDescriptorAllowsChain(service_descriptor, chain)) {
+    pushError(errors, "chain", `service '${service_descriptor.service_id}' is not scoped to chain '${chain}'`);
+  }
+
+  if (!isNonEmptyString(task) || task.trim().length > TASK_MAX_LENGTH) {
+    pushError(errors, "task", `must be a non-empty string up to ${TASK_MAX_LENGTH} chars`);
+  }
+
+  if (!isNonEmptyString(package_id) || !PACKAGE_ID_RE.test(package_id)) {
+    pushError(errors, "package_id", "must be a 'sha256:<64 hex>' V7.0 package identity string");
+  }
+
+  const gen = isObject(generation) ? generation : {};
+  const ceiling = service_descriptor?.compact_result_contract?.max_output_tokens;
+  const maxOutputTokens = Number.isInteger(gen.max_output_tokens) ? gen.max_output_tokens : ceiling;
+  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 1 || (Number.isInteger(ceiling) && maxOutputTokens > ceiling)) {
+    pushError(
+      errors,
+      "generation.max_output_tokens",
+      `must be a positive integer not exceeding the service's compact_result_contract.max_output_tokens (${ceiling})`
+    );
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+
+  const canonicalRequest = {
+    schema: PAID_REQUEST_SCHEMA_V1,
+    caller_actor_id,
+    service_id: service_descriptor.service_id,
+    service_descriptor_id: service_descriptor.descriptor_id,
+    profile_id: service_descriptor.profile_id,
+    profile_version: service_descriptor.profile_version,
+    chain,
+    task: task.trim(),
+    generation: { max_output_tokens: maxOutputTokens },
+    package_id
+  };
+
+  const serviceRequestId = "sha256:" + await sha256Text(stableJson(canonicalRequest));
+
+  return { ok: true, request: { service_request_id: serviceRequestId, ...canonicalRequest } };
+}
+
+/** Deterministically validate a candidate service request object. */
+export function validateServiceRequest(request) {
+  const errors = [];
+  if (!isObject(request)) return { ok: false, errors: ["request must be an object"] };
+
+  if (request.schema !== PAID_REQUEST_SCHEMA_V1) pushError(errors, "schema", `must equal '${PAID_REQUEST_SCHEMA_V1}'`);
+  if (!isNonEmptyString(request.service_request_id) || !CONTENT_ID_RE.test(request.service_request_id)) {
+    pushError(errors, "service_request_id", "must be a 'sha256:<64 hex>' content identity string");
+  }
+  if (!isNonEmptyString(request.caller_actor_id) || !ACTOR_ID_RE.test(request.caller_actor_id)) {
+    pushError(errors, "caller_actor_id", "must be a namespaced actor id");
+  }
+  if (!isNonEmptyString(request.service_id)) pushError(errors, "service_id", "must be a non-empty string");
+  if (!isNonEmptyString(request.service_descriptor_id) || !CONTENT_ID_RE.test(request.service_descriptor_id)) {
+    pushError(errors, "service_descriptor_id", "must be a 'sha256:<64 hex>' content identity string");
+  }
+  if (!isNonEmptyString(request.chain)) pushError(errors, "chain", "must be a non-empty string");
+  if (!isNonEmptyString(request.task)) pushError(errors, "task", "must be a non-empty string");
+  if (!isNonEmptyString(request.package_id) || !PACKAGE_ID_RE.test(request.package_id)) {
+    pushError(errors, "package_id", "must be a 'sha256:<64 hex>' package identity string");
+  }
+  if (!isObject(request.generation) || !Number.isInteger(request.generation.max_output_tokens) || request.generation.max_output_tokens < 1) {
+    pushError(errors, "generation.max_output_tokens", "must be a positive integer");
+  }
+
+  return errors.length === 0 ? { ok: true, errors: [] } : { ok: false, errors };
+}
+
+/** Recompute the content-identity hash a request's fields imply. */
+export async function recomputeServiceRequestId(request) {
+  if (!isObject(request)) return null;
+  const { service_request_id, ...rest } = request;
+  return "sha256:" + await sha256Text(stableJson(rest));
+}
+
+/** Fail closed if a request's declared id doesn't match its own content. */
+export async function verifyServiceRequestIdentity(request) {
+  const validation = validateServiceRequest(request);
+  if (!validation.ok) return { ok: false, error: "invalid_service_request", errors: validation.errors };
+  const recomputed = await recomputeServiceRequestId(request);
+  if (recomputed !== request.service_request_id) {
+    return { ok: false, error: "service_request_id_mismatch", expected: recomputed, actual: request.service_request_id };
+  }
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// cairnstone-paid-agent-quote-v1
+// ---------------------------------------------------------------------------
+
+/**
+ * Bind a validated service request to an already-computed price into a
+ * deterministic quote. This function performs NO x402 call, NO settlement,
+ * and NO payment authorization -- `price` must be supplied by the caller
+ * from the x402 policy plane (e.g. `evaluate_request`). Price authority
+ * never originates here or from the model/profile.
+ */
+export async function buildQuote({ service_request, price, expires_at } = {}) {
+  const requestValidation = validateServiceRequest(service_request);
+  if (!requestValidation.ok) return { ok: false, error: "invalid_service_request", errors: requestValidation.errors };
+
+  const priceInfo = isObject(price) ? price : {};
+  const errors = [];
+  if (!isPositiveIntegerAtomicString(priceInfo.price_atomic)) {
+    pushError(errors, "price.price_atomic", "must be a positive integer string in atomic units");
+  }
+  if (!isNonEmptyString(priceInfo.asset) || !ASSET_RE.test(priceInfo.asset)) {
+    pushError(errors, "price.asset", "must be a short asset identifier string");
+  }
+  if (!isNonEmptyString(priceInfo.network) || !NETWORK_RE.test(priceInfo.network)) {
+    pushError(errors, "price.network", "must be a short lowercase network identifier string");
+  }
+  if (!isNonEmptyString(priceInfo.pay_to)) pushError(errors, "price.pay_to", "must be a non-empty payee identifier string");
+  if (!isValidIsoTimestamp(expires_at)) pushError(errors, "expires_at", "must be a valid ISO-8601 timestamp");
+  if (errors.length > 0) return { ok: false, errors };
+
+  const canonicalQuote = {
+    schema: PAID_QUOTE_SCHEMA_V1,
+    service_request_id: service_request.service_request_id,
+    package_id: service_request.package_id,
+    price_atomic: priceInfo.price_atomic,
+    asset: priceInfo.asset,
+    network: priceInfo.network,
+    pay_to: priceInfo.pay_to,
+    expires_at
+  };
+
+  const paymentRequirementDigest = "sha256:" + await sha256Text(stableJson(canonicalQuote));
+  const quoteId = "sha256:" + await sha256Text(
+    stableJson({ ...canonicalQuote, payment_requirement_digest: paymentRequirementDigest })
+  );
+
+  return {
+    ok: true,
+    quote: {
+      quote_id: quoteId,
+      payment_requirement_digest: paymentRequirementDigest,
+      ...canonicalQuote,
+      x402_settlement: {
+        authorized: false,
+        verified: false,
+        settled: false,
+        note: "V7.5.0 step 1: zero settlement -- x402 verify/settle is a later gated engineering step"
+      }
+    }
+  };
+}
+
+/** Deterministically validate a candidate quote object. */
+export function validateQuote(quote) {
+  const errors = [];
+  if (!isObject(quote)) return { ok: false, errors: ["quote must be an object"] };
+
+  if (quote.schema !== PAID_QUOTE_SCHEMA_V1) pushError(errors, "schema", `must equal '${PAID_QUOTE_SCHEMA_V1}'`);
+  if (!isNonEmptyString(quote.quote_id) || !CONTENT_ID_RE.test(quote.quote_id)) {
+    pushError(errors, "quote_id", "must be a 'sha256:<64 hex>' content identity string");
+  }
+  if (!isNonEmptyString(quote.payment_requirement_digest) || !CONTENT_ID_RE.test(quote.payment_requirement_digest)) {
+    pushError(errors, "payment_requirement_digest", "must be a 'sha256:<64 hex>' content identity string");
+  }
+  if (!isNonEmptyString(quote.service_request_id) || !CONTENT_ID_RE.test(quote.service_request_id)) {
+    pushError(errors, "service_request_id", "must be a 'sha256:<64 hex>' content identity string");
+  }
+  if (!isNonEmptyString(quote.package_id) || !PACKAGE_ID_RE.test(quote.package_id)) {
+    pushError(errors, "package_id", "must be a 'sha256:<64 hex>' package identity string");
+  }
+  if (!isPositiveIntegerAtomicString(quote.price_atomic)) pushError(errors, "price_atomic", "must be a positive integer string");
+  if (!isValidIsoTimestamp(quote.expires_at)) pushError(errors, "expires_at", "must be a valid ISO-8601 timestamp");
+
+  if (quote.x402_settlement && quote.x402_settlement.settled === true) {
+    pushError(errors, "x402_settlement.settled", "a V7.5.0-step-1 quote must never claim settlement -- settlement is a later gated step");
+  }
+
+  return errors.length === 0 ? { ok: true, errors: [] } : { ok: false, errors };
+}
+
+/** True if `quote` has expired as of `nowIso` (defaults to current time). */
+export function isQuoteExpired(quote, nowIso = new Date().toISOString()) {
+  if (!isObject(quote) || !isValidIsoTimestamp(quote.expires_at)) return true;
+  return Date.parse(nowIso) >= Date.parse(quote.expires_at);
+}
+
+// ---------------------------------------------------------------------------
+// paid_agent_context_race / replay-idempotency helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure building block for the roadmap's `paid_agent_context_race` rule: fails
+ * closed if the accepted-authority fingerprint captured at quote time no
+ * longer matches the fingerprint read immediately before settlement. Callers
+ * are responsible for actually capturing both fingerprints (e.g. via
+ * `cairnstone_resume_chain`'s path/chain-head fingerprint) -- this function
+ * only compares them.
+ */
+export function checkPaidAgentContextRace({ quote, authority_fingerprint_at_quote, current_authority_fingerprint } = {}) {
+  if (!isObject(quote)) return { ok: false, error: "invalid_quote" };
+  if (!isNonEmptyString(authority_fingerprint_at_quote) || !isNonEmptyString(current_authority_fingerprint)) {
+    return { ok: false, error: "authority_fingerprint_missing" };
+  }
+  if (authority_fingerprint_at_quote !== current_authority_fingerprint) {
+    return { ok: false, error: "paid_agent_context_race", quote_id: quote.quote_id || null };
+  }
+  return { ok: true };
+}
+
+/**
+ * Pure building block for the roadmap's replay/no-double-charge rule: an
+ * exact replay (same `service_request_id`, and the request's own content
+ * still hashes to that id) is a safe replay; a `service_request_id` collision
+ * where the underlying content differs is `idempotency_conflict` and must
+ * fail closed rather than silently re-executing or re-charging.
+ */
+export async function checkReplayConsistency(newRequest, priorRequest) {
+  if (!isObject(priorRequest)) return { ok: true, replay: false };
+  if (!isObject(newRequest) || newRequest.service_request_id !== priorRequest.service_request_id) {
+    return { ok: true, replay: false };
+  }
+  const [newId, priorId] = await Promise.all([
+    recomputeServiceRequestId(newRequest),
+    recomputeServiceRequestId(priorRequest)
+  ]);
+  if (newId !== priorId || newId !== newRequest.service_request_id) {
+    return { ok: false, error: "idempotency_conflict", service_request_id: newRequest.service_request_id };
+  }
+  return { ok: true, replay: true };
+}
