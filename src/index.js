@@ -27,7 +27,10 @@ import {
 } from "./agent-bootstrap.js";
 import {
   previewPaidAgentQuoteFromBody,
-  PAID_AGENT_QUOTE_PREVIEW_TOOL_DEFINITION
+  previewPaidAgentX402QuoteFromBody,
+  evaluateX402RequestFromEnv,
+  PAID_AGENT_QUOTE_PREVIEW_TOOL_DEFINITION,
+  PAID_AGENT_X402_QUOTE_PREVIEW_TOOL_DEFINITION
 } from "./paid-agent-catalog.js";
 import {
   delegateFromBody,
@@ -547,6 +550,22 @@ async function callMcpTool(name, args, env) {
       version: VERSION
     })
   });
+  if (name === "cairnstone_paid_agent_x402_quote_preview") return previewPaidAgentX402QuoteFromBody(args, env, {
+    // V7.5.0 step 3: same zero-settlement package_id/authority sourcing as
+    // cairnstone_paid_agent_quote_preview, plus a real x402 policy-plane
+    // evaluation. evaluateX402RequestFromEnv fails closed with
+    // x402_policy_plane_not_configured until env.X402_POLICY_URL and
+    // env.X402_POLICY_TOKEN are provisioned as real Worker secrets.
+    agentBootstrapFromBody: (body, e) => agentBootstrapFromBody(body, e, {
+      resumeChainFromBody,
+      getInboxFromBody: (inboxBody, inboxEnv) => getInboxFromBody(inboxBody, inboxEnv, { createStone: b => createStoneFromBody(b, inboxEnv) }),
+      resolveSkillsFromBody,
+      getSkillBundleFromBody,
+      listSkillsFromBody,
+      version: VERSION
+    }),
+    evaluateX402Request: (routePattern, method, e) => evaluateX402RequestFromEnv(routePattern, method, e)
+  });
   if (name === "cairnstone_model_route") return modelRouteFromBody(args, env);
   if (name === "cairnstone_delegate") return delegateFromBody(args, env, {
     agentBootstrapFromBody: (body, e) => agentBootstrapFromBody(body, e, {
@@ -1021,7 +1040,8 @@ function mcpTools() {
     TOOL_AUTHORIZATION_REQUEST_TOOL_DEFINITION,
     MODEL_ROUTE_TOOL_DEFINITION,
     DELEGATE_TOOL_DEFINITION,
-    PAID_AGENT_QUOTE_PREVIEW_TOOL_DEFINITION
+    PAID_AGENT_QUOTE_PREVIEW_TOOL_DEFINITION,
+    PAID_AGENT_X402_QUOTE_PREVIEW_TOOL_DEFINITION
   ];
 }
 
