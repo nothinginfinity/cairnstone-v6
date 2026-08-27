@@ -62,6 +62,15 @@
 //     fully validates the advertised `pricingRoute` itself (via
 //     `validatePricingRoute`) first, so an unknown/malformed route can never
 //     silently pass the check.
+//
+// V7.5.0 step 2 (`previewPaidAgentQuoteFromBody`, `computeAuthorityFingerprint`,
+// `PAID_AGENT_QUOTE_PREVIEW_TOOL_DEFINITION`): a deterministic quote/preview
+// MCP tool wrapper. Sources `package_id` and authority ONLY from a real
+// `cairnstone_agent_bootstrap` call injected as `deps.agentBootstrapFromBody`;
+// never accepts a caller-supplied package_id/fingerprint as authority. Still
+// zero settlement -- the shown price is the caller-supplied `pricing_route`
+// labeled advertised/non-authoritative with `x402_policy_evaluated:false`,
+// not a real x402 challenge (Step 3 adds that adapter).
 
 import { getAgentProfile } from "./profiles.js";
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
@@ -623,4 +632,183 @@ export async function checkReplayConsistency(newRequest, priorRequest) {
     return { ok: false, error: "idempotency_conflict", service_request_id: newRequest.service_request_id };
   }
   return { ok: true, replay: true };
+}
+
+// ---------------------------------------------------------------------------
+// V7.5.0 step 2 -- deterministic quote/preview MCP tool wrapper.
+//
+// Sources `package_id` and authority ONLY from a real `cairnstone_agent_bootstrap`
+// call (via injected `deps.agentBootstrapFromBody`, mirroring the exact same
+// dependency-injection pattern already used for cairnstone_delegate and
+// cairnstone_tool_authorization_prepare in src/index.js). A caller-supplied
+// package_id or authority fingerprint is never accepted as authority.
+//
+// This wrapper is a PREVIEW ONLY:
+//   - zero settlement, zero wallet signing, zero x402 verify/settle;
+//   - the price shown comes directly from the caller-supplied service
+//     pricing_route, NOT from any x402 policy evaluation (that adapter does
+//     not exist until Step 3) -- the response explicitly sets
+//     `x402_policy_evaluated:false` and labels the price
+//     advertised/non-authoritative rather than presenting it as a real
+//     payment quote/challenge;
+//   - `authority_fingerprint` is derived from the same bootstrap call's
+//     accepted chain_head/path_heads, using the identical construction the
+//     context compiler itself uses for race detection, so a later settlement
+//     step can re-bootstrap immediately before payment and compare
+//     fingerprints via `checkPaidAgentContextRace` -- this preview does not
+//     itself enforce that race check, since no settlement happens here.
+// ---------------------------------------------------------------------------
+
+export const PAID_AGENT_QUOTE_PREVIEW_SCHEMA_V1 = "cairnstone-paid-agent-quote-preview-v1";
+const DEFAULT_QUOTE_EXPIRES_IN_SECONDS = 300;
+const MIN_QUOTE_EXPIRES_IN_SECONDS = 30;
+const MAX_QUOTE_EXPIRES_IN_SECONDS = 3600;
+
+export const PAID_AGENT_QUOTE_PREVIEW_TOOL_DEFINITION = {
+  name: "cairnstone_paid_agent_quote_preview",
+  description:
+    "V7.5.0 step 2: deterministic, zero-settlement preview of a paid-agent service/request/quote for an accepted V7.4 profile (e.g. repo-debugger). Sources package_id and authority ONLY from a real cairnstone_agent_bootstrap call -- a caller-supplied package_id/fingerprint is never accepted as authority. The returned price comes directly from the caller-supplied pricing_route and is explicitly labeled advertised/non-authoritative with x402_policy_evaluated:false; this is NOT a real x402 payment quote/challenge (that requires the Step 3 x402 adapter). Performs zero wallet signing and zero x402 verify/settle.",
+  inputSchema: {
+    type: "object",
+    required: ["actor_id", "profile_id", "chain", "task", "pricing_route"],
+    properties: {
+      actor_id: { type: "string", description: "namespace:identifier caller/actor id, e.g. claude:cairnstone-v6" },
+      profile_id: { type: "string", description: "An accepted V7.4 profile id, e.g. repo-debugger" },
+      service_id: { type: "string", description: "Defaults to 'cairnstone-paid-agent-service:<profile_id>' if omitted" },
+      chain: { type: "string", description: "Must be within the profile's chain scope" },
+      task: { type: "string", maxLength: 4000 },
+      generation: {
+        type: "object",
+        properties: { max_output_tokens: { type: "number", minimum: 1 } },
+        additionalProperties: false
+      },
+      pricing_route: {
+        type: "object",
+        description: "Advertised/non-authoritative pricing metadata. NOT an x402 policy evaluation.",
+        required: ["pattern", "pay_to", "price_atomic", "asset", "network"],
+        properties: {
+          pattern: { type: "string" },
+          pay_to: { type: "string" },
+          price_atomic: { type: "string" },
+          asset: { type: "string" },
+          network: { type: "string" },
+          mode: { type: "string", enum: ["exact", "upto"] }
+        }
+      },
+      expires_in_seconds: {
+        type: "number",
+        minimum: MIN_QUOTE_EXPIRES_IN_SECONDS,
+        maximum: MAX_QUOTE_EXPIRES_IN_SECONDS,
+        description: `Quote validity window. Defaults to ${DEFAULT_QUOTE_EXPIRES_IN_SECONDS}.`
+      }
+    },
+    additionalProperties: false
+  }
+};
+
+/**
+ * Compute the same authority fingerprint the V7.0 context compiler uses
+ * internally for race detection, from a bootstrap result's `authority`
+ * section (`{ chain_head: { stone_hash }, path_heads: [{ path, stone_hash }] }`).
+ * Pure and synchronous.
+ */
+export function computeAuthorityFingerprint(authority) {
+  if (!isObject(authority) || !isObject(authority.chain_head) || !Array.isArray(authority.path_heads)) return null;
+  return stableJson({
+    chain_head: authority.chain_head.stone_hash,
+    path_heads: authority.path_heads.map(item => `${item.path}:${item.stone_hash}`).sort()
+  });
+}
+
+/**
+ * Build a zero-settlement paid-agent quote preview. `deps.agentBootstrapFromBody`
+ * must be the real V7.0 context compiler (pre-bound with its own internal
+ * dependencies exactly as wired in src/index.js) -- this is the ONLY source
+ * of `package_id` and accepted authority. No other input can substitute for it.
+ */
+export async function previewPaidAgentQuoteFromBody(body, env, deps) {
+  if (!deps || typeof deps.agentBootstrapFromBody !== "function") {
+    return { ok: false, error: "preview_dependencies_missing" };
+  }
+  if (!isObject(body)) return { ok: false, error: "invalid_request_body" };
+
+  const actorId = body.actor_id;
+  const profileId = body.profile_id;
+  const chain = body.chain;
+  const task = body.task;
+  if (!isNonEmptyString(actorId) || !ACTOR_ID_RE.test(actorId)) return { ok: false, error: "invalid_actor_id" };
+  if (!isNonEmptyString(profileId)) return { ok: false, error: "invalid_profile_id" };
+  if (!isNonEmptyString(chain)) return { ok: false, error: "invalid_chain" };
+  if (!isNonEmptyString(task)) return { ok: false, error: "invalid_task" };
+
+  // package_id and authority come ONLY from this real bootstrap call.
+  // Any package_id/fingerprint the caller might have supplied is ignored.
+  const bootstrap = await deps.agentBootstrapFromBody({ actor_id: actorId, task, chain, include_inbox: false }, env);
+  if (!bootstrap || bootstrap.ok === false) {
+    return { ok: false, error: "bootstrap_failed", detail: bootstrap };
+  }
+  const packageId = bootstrap.package_id;
+  const authorityFingerprint = computeAuthorityFingerprint(bootstrap.authority);
+  if (!isNonEmptyString(packageId) || !PACKAGE_ID_RE.test(packageId) || !authorityFingerprint) {
+    return { ok: false, error: "bootstrap_result_malformed" };
+  }
+
+  const serviceId = isNonEmptyString(body.service_id) ? body.service_id : `cairnstone-paid-agent-service:${profileId}`;
+  const descriptorResult = await buildServiceDescriptor({
+    service_id: serviceId,
+    profile_id: profileId,
+    pricing_route: body.pricing_route
+  });
+  if (!descriptorResult.ok) return descriptorResult;
+
+  const requestResult = await buildServiceRequest({
+    caller_actor_id: actorId,
+    service_descriptor: descriptorResult.descriptor,
+    chain,
+    task,
+    generation: body.generation,
+    package_id: packageId
+  });
+  if (!requestResult.ok) return requestResult;
+
+  const expiresInSeconds = Number.isFinite(Number(body.expires_in_seconds))
+    ? Math.max(MIN_QUOTE_EXPIRES_IN_SECONDS, Math.min(MAX_QUOTE_EXPIRES_IN_SECONDS, Math.floor(Number(body.expires_in_seconds))))
+    : DEFAULT_QUOTE_EXPIRES_IN_SECONDS;
+  const expiresAt = new Date(Date.now() + expiresInSeconds * 1000).toISOString();
+
+  // Advertised price comes directly from the caller-supplied pricing_route --
+  // NOT from any x402 policy evaluation. Step 3 is required before this can
+  // become a real payment requirement.
+  const route = descriptorResult.descriptor.pricing_route;
+  const quoteResult = await buildQuote({
+    service_request: requestResult.request,
+    price: { price_atomic: route.price_atomic, asset: route.asset, network: route.network, pay_to: route.pay_to },
+    expires_at: expiresAt
+  });
+  if (!quoteResult.ok) return quoteResult;
+
+  const priceMatchCheck = checkQuotePriceMatchesAdvertisedRoute(quoteResult.quote, route);
+  if (!priceMatchCheck.ok) return { ok: false, error: "quote_route_binding_failed", detail: priceMatchCheck };
+
+  return {
+    ok: true,
+    schema: PAID_AGENT_QUOTE_PREVIEW_SCHEMA_V1,
+    package_id: packageId,
+    authority_fingerprint: authorityFingerprint,
+    service_descriptor: descriptorResult.descriptor,
+    service_request: requestResult.request,
+    quote: quoteResult.quote,
+    pricing_metadata: {
+      advertised: true,
+      authoritative: false,
+      x402_policy_evaluated: false,
+      note: "Price sourced directly from the service's pricing_route, not from x402 policy evaluation. This is a preview, not a real payment quote/challenge. Step 3 adds the x402 adapter that will make pricing authoritative."
+    },
+    settlement: {
+      authorized: false,
+      verified: false,
+      settled: false,
+      note: "V7.5.0 step 2: zero settlement. Real settlement (step 4) must re-bootstrap and revalidate accepted authority immediately before payment and fail paid_agent_context_race before any settlement if authority_fingerprint has changed."
+    }
+  };
 }
