@@ -499,3 +499,91 @@ test("V7.5.0 checkQuotePriceMatchesAdvertisedRoute allows an upto-mode quote at 
   assert.equal(result.ok, false);
   assert.equal(result.field, "price_atomic");
 });
+
+// ---------------------------------------------------------------------------
+// Second hardening round per chatgpt:cairnstone-v7
+// (stone e840964f53f0b7cd66d62b96cf5763a762e367e1eb0c2ef9059a4cb98a9779dc)
+// ---------------------------------------------------------------------------
+
+test("V7.5.0 validateServiceDescriptor fails closed if execution_authority/mutation_authority is omitted, null, or non-boolean, not only true", () => {
+  const base = {
+    schema: PAID_SERVICE_SCHEMA_V1,
+    descriptor_id: VALID_PACKAGE_ID,
+    service_id: "x",
+    profile_id: "repo-debugger",
+    profile_version: "0.1.1",
+    chain_scope: { chain: "c" },
+    compact_result_contract: { max_output_tokens: 100 },
+    pricing_route: VALID_PRICING_ROUTE
+  };
+
+  const omitted = validateServiceDescriptor({ ...base, execution_authority: false });
+  assert.equal(omitted.ok, false);
+  assert.ok(omitted.errors.some(e => e.startsWith("mutation_authority:")));
+
+  const nullValue = validateServiceDescriptor({ ...base, execution_authority: null, mutation_authority: false });
+  assert.equal(nullValue.ok, false);
+  assert.ok(nullValue.errors.some(e => e.startsWith("execution_authority:")));
+
+  const stringValue = validateServiceDescriptor({ ...base, execution_authority: false, mutation_authority: "false" });
+  assert.equal(stringValue.ok, false);
+  assert.ok(stringValue.errors.some(e => e.startsWith("mutation_authority:")));
+
+  const fullyValid = validateServiceDescriptor({ ...base, execution_authority: false, mutation_authority: false });
+  assert.equal(fullyValid.ok, true);
+});
+
+test("V7.5.0 validateQuote fails closed if x402_settlement fields are omitted, null, or non-boolean, not only true", async () => {
+  const { request } = await validRequest();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const { quote } = await buildQuote({ service_request: request, price: VALID_PRICE, expires_at: expiresAt });
+
+  const omittedField = { ...quote, x402_settlement: { authorized: false, settled: false } }; // verified omitted
+  const badOmitted = validateQuote(omittedField);
+  assert.equal(badOmitted.ok, false);
+  assert.ok(badOmitted.errors.some(e => e.startsWith("x402_settlement.verified:")));
+
+  const nullField = { ...quote, x402_settlement: { ...quote.x402_settlement, verified: null } };
+  const badNull = validateQuote(nullField);
+  assert.equal(badNull.ok, false);
+  assert.ok(badNull.errors.some(e => e.startsWith("x402_settlement.verified:")));
+
+  const stringField = { ...quote, x402_settlement: { ...quote.x402_settlement, settled: "false" } };
+  const badString = validateQuote(stringField);
+  assert.equal(badString.ok, false);
+  assert.ok(badString.errors.some(e => e.startsWith("x402_settlement.settled:")));
+
+  assert.deepEqual(validateQuote(quote), { ok: true, errors: [] });
+});
+
+test("V7.5.0 checkQuotePriceMatchesAdvertisedRoute compares pay_to and fails closed on mismatch", async () => {
+  const { descriptor, request } = await validRequest();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const { quote } = await buildQuote({
+    service_request: request,
+    price: { price_atomic: descriptor.pricing_route.price_atomic, asset: descriptor.pricing_route.asset, network: descriptor.pricing_route.network, pay_to: descriptor.pricing_route.pay_to },
+    expires_at: expiresAt
+  });
+  assert.deepEqual(checkQuotePriceMatchesAdvertisedRoute(quote, descriptor.pricing_route), { ok: true });
+
+  const wrongPayTo = { ...quote, pay_to: "0xdeadbeef00000000000000000000000000000000" };
+  const result = checkQuotePriceMatchesAdvertisedRoute(wrongPayTo, descriptor.pricing_route);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "advertised_price_mismatch");
+  assert.equal(result.field, "pay_to");
+});
+
+test("V7.5.0 checkQuotePriceMatchesAdvertisedRoute fails closed on an unknown/malformed advertised route instead of letting it fall through", async () => {
+  const { descriptor, request } = await validRequest();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const { quote } = await buildQuote({
+    service_request: request,
+    price: { price_atomic: descriptor.pricing_route.price_atomic, asset: descriptor.pricing_route.asset, network: descriptor.pricing_route.network, pay_to: descriptor.pricing_route.pay_to },
+    expires_at: expiresAt
+  });
+
+  const malformedRoute = { ...descriptor.pricing_route, mode: "unknown-mode" };
+  const result = checkQuotePriceMatchesAdvertisedRoute(quote, malformedRoute);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "invalid_pricing_route");
+});
