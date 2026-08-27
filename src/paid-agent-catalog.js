@@ -29,6 +29,28 @@
 //     replay/no-double-charge rules; the stateful enforcement (persisting
 //     settled results, re-snapshotting live authority) belongs to a later
 //     engineering step once this slice's identities are accepted.
+//
+// Hardened per chatgpt:cairnstone-v7's AC1 review (stone
+// 319be5a1da8e25e953966192a93d784b1254af7be9db4011f3268fb7535b3cdc) before any
+// MCP-facing preview is exposed:
+//   - `buildServiceRequest` now verifies the descriptor's own content hash
+//     (`verifyServiceDescriptorIdentity`), not only its shape, so a
+//     shape-valid but tampered descriptor is rejected.
+//   - `buildQuote` now verifies the request's own content hash
+//     (`verifyServiceRequestIdentity`) before quoting, so a syntactically
+//     valid but stale/tampered `service_request_id` cannot be quoted.
+//   - Quotes get the same recompute/verify treatment
+//     (`recomputeQuoteId`/`verifyQuoteIdentity`), and `validateQuote` now
+//     fails closed if `authorized`, `verified`, OR `settled` is ever true in
+//     this zero-settlement slice (not just `settled`).
+//   - `isQuoteExpired` now fails closed (treats as expired) on an invalid
+//     `nowIso` instead of silently reporting "not expired".
+//   - The quote's local terms digest is named `quote_terms_digest`, not
+//     `payment_requirement_digest` -- it is a digest of locally normalized
+//     quote terms, NOT yet the actual x402 challenge/payment requirement.
+//     `checkQuotePriceMatchesAdvertisedRoute` treats a service descriptor's
+//     `pricing_route` fields as advertised/non-authoritative metadata and
+//     fails closed on a mismatch; x402 remains the only price authority.
 
 import { getAgentProfile } from "./profiles.js";
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
@@ -223,6 +245,29 @@ export function validateServiceDescriptor(descriptor) {
   return errors.length === 0 ? { ok: true, errors: [] } : { ok: false, errors };
 }
 
+/** Recompute the content-identity hash a descriptor's fields imply. */
+export async function recomputeServiceDescriptorId(descriptor) {
+  if (!isObject(descriptor)) return null;
+  const { descriptor_id, ...rest } = descriptor;
+  return "sha256:" + await sha256Text(stableJson(rest));
+}
+
+/**
+ * Fail closed if a descriptor's declared id doesn't match its own content,
+ * on top of ordinary shape validation. Callers that accept a descriptor from
+ * outside their own process (e.g. a stored/replayed descriptor) must use
+ * this instead of `validateServiceDescriptor` alone.
+ */
+export async function verifyServiceDescriptorIdentity(descriptor) {
+  const validation = validateServiceDescriptor(descriptor);
+  if (!validation.ok) return { ok: false, error: "invalid_service_descriptor", errors: validation.errors };
+  const recomputed = await recomputeServiceDescriptorId(descriptor);
+  if (recomputed !== descriptor.descriptor_id) {
+    return { ok: false, error: "descriptor_id_mismatch", expected: recomputed, actual: descriptor.descriptor_id };
+  }
+  return { ok: true };
+}
+
 /** True if `chain` is within the service descriptor's chain scope. */
 export function serviceDescriptorAllowsChain(descriptor, chain) {
   if (!isObject(descriptor) || !isObject(descriptor.chain_scope) || !isNonEmptyString(chain)) return false;
@@ -254,10 +299,8 @@ export async function buildServiceRequest({
     pushError(errors, "caller_actor_id", "must be a non-empty 'namespace:identifier' string");
   }
 
-  const descriptorValidation = validateServiceDescriptor(service_descriptor);
-  if (!descriptorValidation.ok) {
-    return { ok: false, error: "invalid_service_descriptor", errors: descriptorValidation.errors };
-  }
+  const descriptorVerification = await verifyServiceDescriptorIdentity(service_descriptor);
+  if (!descriptorVerification.ok) return descriptorVerification;
 
   if (!isNonEmptyString(chain)) {
     pushError(errors, "chain", "must be a non-empty string");
@@ -362,8 +405,8 @@ export async function verifyServiceRequestIdentity(request) {
  * never originates here or from the model/profile.
  */
 export async function buildQuote({ service_request, price, expires_at } = {}) {
-  const requestValidation = validateServiceRequest(service_request);
-  if (!requestValidation.ok) return { ok: false, error: "invalid_service_request", errors: requestValidation.errors };
+  const requestVerification = await verifyServiceRequestIdentity(service_request);
+  if (!requestVerification.ok) return requestVerification;
 
   const priceInfo = isObject(price) ? price : {};
   const errors = [];
@@ -391,25 +434,61 @@ export async function buildQuote({ service_request, price, expires_at } = {}) {
     expires_at
   };
 
-  const paymentRequirementDigest = "sha256:" + await sha256Text(stableJson(canonicalQuote));
+  // NOTE: this is a digest of LOCALLY NORMALIZED quote terms, not the actual
+  // x402 challenge/payment-requirement digest. A later step must accept an
+  // externally supplied x402 requirement digest from the policy plane before
+  // this can be treated as anything more than a local integrity check.
+  const quoteTermsDigest = "sha256:" + await sha256Text(stableJson(canonicalQuote));
   const quoteId = "sha256:" + await sha256Text(
-    stableJson({ ...canonicalQuote, payment_requirement_digest: paymentRequirementDigest })
+    stableJson({ ...canonicalQuote, quote_terms_digest: quoteTermsDigest })
   );
 
   return {
     ok: true,
     quote: {
       quote_id: quoteId,
-      payment_requirement_digest: paymentRequirementDigest,
+      quote_terms_digest: quoteTermsDigest,
       ...canonicalQuote,
       x402_settlement: {
         authorized: false,
         verified: false,
         settled: false,
-        note: "V7.5.0 step 1: zero settlement -- x402 verify/settle is a later gated engineering step"
+        note: "V7.5.0 step 1/2: zero settlement -- x402 verify/settle is a later gated engineering step"
       }
     }
   };
+}
+
+/**
+ * Recompute the terms digest and quote id a quote's own canonical terms
+ * imply (i.e. everything except `quote_id`, `x402_settlement`, and the
+ * stored `quote_terms_digest` field itself).
+ */
+export async function recomputeQuoteId(quote) {
+  if (!isObject(quote)) return null;
+  const { quote_id, x402_settlement, quote_terms_digest, ...termsOnly } = quote;
+  const expectedTermsDigest = "sha256:" + await sha256Text(stableJson(termsOnly));
+  const expectedQuoteId = "sha256:" + await sha256Text(
+    stableJson({ ...termsOnly, quote_terms_digest: expectedTermsDigest })
+  );
+  return { expectedTermsDigest, expectedQuoteId };
+}
+
+/**
+ * Fail closed if a quote's declared `quote_id` or `quote_terms_digest`
+ * doesn't match its own content, on top of ordinary shape validation.
+ */
+export async function verifyQuoteIdentity(quote) {
+  const validation = validateQuote(quote);
+  if (!validation.ok) return { ok: false, error: "invalid_quote", errors: validation.errors };
+  const { expectedTermsDigest, expectedQuoteId } = await recomputeQuoteId(quote);
+  if (quote.quote_terms_digest !== expectedTermsDigest) {
+    return { ok: false, error: "quote_terms_digest_mismatch", expected: expectedTermsDigest, actual: quote.quote_terms_digest };
+  }
+  if (quote.quote_id !== expectedQuoteId) {
+    return { ok: false, error: "quote_id_mismatch", expected: expectedQuoteId, actual: quote.quote_id };
+  }
+  return { ok: true };
 }
 
 /** Deterministically validate a candidate quote object. */
@@ -421,8 +500,8 @@ export function validateQuote(quote) {
   if (!isNonEmptyString(quote.quote_id) || !CONTENT_ID_RE.test(quote.quote_id)) {
     pushError(errors, "quote_id", "must be a 'sha256:<64 hex>' content identity string");
   }
-  if (!isNonEmptyString(quote.payment_requirement_digest) || !CONTENT_ID_RE.test(quote.payment_requirement_digest)) {
-    pushError(errors, "payment_requirement_digest", "must be a 'sha256:<64 hex>' content identity string");
+  if (!isNonEmptyString(quote.quote_terms_digest) || !CONTENT_ID_RE.test(quote.quote_terms_digest)) {
+    pushError(errors, "quote_terms_digest", "must be a 'sha256:<64 hex>' content identity string");
   }
   if (!isNonEmptyString(quote.service_request_id) || !CONTENT_ID_RE.test(quote.service_request_id)) {
     pushError(errors, "service_request_id", "must be a 'sha256:<64 hex>' content identity string");
@@ -433,17 +512,58 @@ export function validateQuote(quote) {
   if (!isPositiveIntegerAtomicString(quote.price_atomic)) pushError(errors, "price_atomic", "must be a positive integer string");
   if (!isValidIsoTimestamp(quote.expires_at)) pushError(errors, "expires_at", "must be a valid ISO-8601 timestamp");
 
-  if (quote.x402_settlement && quote.x402_settlement.settled === true) {
-    pushError(errors, "x402_settlement.settled", "a V7.5.0-step-1 quote must never claim settlement -- settlement is a later gated step");
+  if (isObject(quote.x402_settlement)) {
+    for (const field of ["authorized", "verified", "settled"]) {
+      if (quote.x402_settlement[field] === true) {
+        pushError(
+          errors,
+          `x402_settlement.${field}`,
+          "a zero-settlement-slice quote must never claim payment authorization, verification, or settlement"
+        );
+      }
+    }
+  } else {
+    pushError(errors, "x402_settlement", "must be an object with authorized/verified/settled booleans");
   }
 
   return errors.length === 0 ? { ok: true, errors: [] } : { ok: false, errors };
 }
 
-/** True if `quote` has expired as of `nowIso` (defaults to current time). */
+/**
+ * True if `quote` has expired as of `nowIso` (defaults to current time).
+ * Fails closed (treats as expired) on a missing/malformed quote or an
+ * invalid `nowIso` rather than silently reporting "not expired".
+ */
 export function isQuoteExpired(quote, nowIso = new Date().toISOString()) {
-  if (!isObject(quote) || !isValidIsoTimestamp(quote.expires_at)) return true;
+  if (!isObject(quote) || !isValidIsoTimestamp(quote.expires_at) || !isValidIsoTimestamp(nowIso)) return true;
   return Date.parse(nowIso) >= Date.parse(quote.expires_at);
+}
+
+/**
+ * Pure policy-mismatch guard: a service descriptor's `pricing_route` fields
+ * are advertised/non-authoritative metadata, never settlement authority --
+ * x402 (via the policy plane's `evaluate_request`) remains the only price
+ * authority. This fails closed if a quote's asset/network/price diverges
+ * from what the service advertised, without itself granting or asserting
+ * that the quote's price is correct.
+ */
+export function checkQuotePriceMatchesAdvertisedRoute(quote, pricingRoute) {
+  if (!isObject(quote) || !isObject(pricingRoute)) return { ok: false, error: "invalid_input" };
+  if (quote.asset !== pricingRoute.asset) return { ok: false, error: "advertised_price_mismatch", field: "asset" };
+  if (quote.network !== pricingRoute.network) return { ok: false, error: "advertised_price_mismatch", field: "network" };
+  if (!isPositiveIntegerAtomicString(quote.price_atomic) || !isPositiveIntegerAtomicString(pricingRoute.price_atomic)) {
+    return { ok: false, error: "invalid_input" };
+  }
+  const quotedAtomic = BigInt(quote.price_atomic);
+  const routeAtomic = BigInt(pricingRoute.price_atomic);
+  const mode = pricingRoute.mode || "exact";
+  if (mode === "exact" && quotedAtomic !== routeAtomic) {
+    return { ok: false, error: "advertised_price_mismatch", field: "price_atomic" };
+  }
+  if (mode === "upto" && quotedAtomic > routeAtomic) {
+    return { ok: false, error: "advertised_price_mismatch", field: "price_atomic" };
+  }
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
