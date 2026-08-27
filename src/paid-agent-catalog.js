@@ -754,10 +754,16 @@ export async function previewPaidAgentQuoteFromBody(body, env, deps) {
   }
 
   const serviceId = isNonEmptyString(body.service_id) ? body.service_id : `cairnstone-paid-agent-service:${profileId}`;
+  // Callers of the MCP tool supply raw advertised pricing fields; the internal
+  // schema tag is an implementation detail of buildServiceDescriptor's
+  // validation, not something an external caller should need to know.
+  const pricingRouteInput = isObject(body.pricing_route)
+    ? { ...body.pricing_route, schema: PRICING_ROUTE_SCHEMA_V1 }
+    : body.pricing_route;
   const descriptorResult = await buildServiceDescriptor({
     service_id: serviceId,
     profile_id: profileId,
-    pricing_route: body.pricing_route
+    pricing_route: pricingRouteInput
   });
   if (!descriptorResult.ok) return descriptorResult;
 
