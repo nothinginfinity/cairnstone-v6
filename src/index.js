@@ -26,6 +26,10 @@ import {
   AGENT_BOOTSTRAP_TOOL_DEFINITION
 } from "./agent-bootstrap.js";
 import {
+  previewPaidAgentQuoteFromBody,
+  PAID_AGENT_QUOTE_PREVIEW_TOOL_DEFINITION
+} from "./paid-agent-catalog.js";
+import {
   delegateFromBody,
   executeToolIntentFromBody,
   requestToolAuthorizationFromBody,
@@ -529,6 +533,20 @@ async function callMcpTool(name, args, env) {
     getExistingAuthorization: authorizationRequestId => getToolAuthorizationFromBody({ authorization_request_id: authorizationRequestId }, env),
     persistPendingAuthorization: record => persistPendingAuthorizationRecord(record, env)
   });
+  if (name === "cairnstone_paid_agent_quote_preview") return previewPaidAgentQuoteFromBody(args, env, {
+    // V7.5.0 step 2: zero settlement. package_id and authority come ONLY from
+    // this real bootstrap call -- never from caller-supplied arguments. Reuses
+    // the identical agentBootstrapFromBody wiring already used for
+    // cairnstone_delegate and cairnstone_tool_authorization_prepare.
+    agentBootstrapFromBody: (body, e) => agentBootstrapFromBody(body, e, {
+      resumeChainFromBody,
+      getInboxFromBody: (inboxBody, inboxEnv) => getInboxFromBody(inboxBody, inboxEnv, { createStone: b => createStoneFromBody(b, inboxEnv) }),
+      resolveSkillsFromBody,
+      getSkillBundleFromBody,
+      listSkillsFromBody,
+      version: VERSION
+    })
+  });
   if (name === "cairnstone_model_route") return modelRouteFromBody(args, env);
   if (name === "cairnstone_delegate") return delegateFromBody(args, env, {
     agentBootstrapFromBody: (body, e) => agentBootstrapFromBody(body, e, {
@@ -1002,7 +1020,8 @@ function mcpTools() {
     TOOL_AUTHORIZATION_PREPARE_TOOL_DEFINITION,
     TOOL_AUTHORIZATION_REQUEST_TOOL_DEFINITION,
     MODEL_ROUTE_TOOL_DEFINITION,
-    DELEGATE_TOOL_DEFINITION
+    DELEGATE_TOOL_DEFINITION,
+    PAID_AGENT_QUOTE_PREVIEW_TOOL_DEFINITION
   ];
 }
 
