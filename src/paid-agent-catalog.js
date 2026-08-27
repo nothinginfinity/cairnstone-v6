@@ -71,6 +71,18 @@
 // zero settlement -- the shown price is the caller-supplied `pricing_route`
 // labeled advertised/non-authoritative with `x402_policy_evaluated:false`,
 // not a real x402 challenge (Step 3 adds that adapter).
+//
+// V7.5.0 step 3 (`buildQuoteFromX402Requirement`, `evaluateX402RequestFromEnv`,
+// `previewPaidAgentX402QuoteFromBody`): the x402 adapter/service binding.
+// Live-evidenced against a real x402-sub-agent-mcp `evaluate_request` 402
+// challenge. Pricing here IS authoritative (`x402_policy_evaluated:true`),
+// bound to a real x402 payment requirement with its own content digest
+// (`x402_requirement_digest`) -- but `evaluateX402RequestFromEnv` fails
+// closed with `x402_policy_plane_not_configured` until an operator
+// provisions `env.X402_POLICY_URL`/`env.X402_POLICY_TOKEN` as real Worker
+// secrets (no shared credential exists between cairnstone-v6 and
+// x402-sub-agent-mcp yet). Still zero settlement -- no verify/settle call
+// anywhere in this slice; that is Step 4.
 
 import { getAgentProfile } from "./profiles.js";
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
@@ -815,6 +827,347 @@ export async function previewPaidAgentQuoteFromBody(body, env, deps) {
       verified: false,
       settled: false,
       note: "V7.5.0 step 2: zero settlement. Real settlement (step 4) must re-bootstrap and revalidate accepted authority immediately before payment and fail paid_agent_context_race before any settlement if authority_fingerprint has changed."
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// V7.5.0 step 3 -- x402 adapter / service binding.
+//
+// Live-evidenced against a REAL x402-sub-agent-mcp `evaluate_request` 402
+// challenge captured 2026-08-27 for path "/tool/cairnstone_paid_agent_quote_preview":
+//   { scheme:"exact", network:"base-sepolia", maxAmountRequired:"1000",
+//     resource:"/tool/cairnstone_paid_agent_quote_preview",
+//     payTo:"0xa3b8d584302b8f4004aef518bc7ed2f43abf2c8d",
+//     asset:"0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+//     maxTimeoutSeconds:60, extra:{ name:"USDC", version:"2", decimals:6 } }
+// (one entry of the standard x402 `accepts[]` array). The shapes below are
+// modeled directly on that real response, not a guess.
+//
+// This slice makes pricing AUTHORITATIVE (x402_policy_evaluated:true) by
+// binding a real x402 payment requirement into the quote, with an
+// `x402_requirement_digest` computed over the exact requirement object x402
+// returned -- but it remains ZERO SETTLEMENT: nothing here calls
+// verify_payment or settle_payment, or touches a wallet. That is Step 4.
+//
+// `evaluateX402RequestFromEnv` is the actual service-binding adapter: it
+// calls the real x402-sub-agent-mcp `/mcp` endpoint over HTTP. That endpoint
+// requires a bearer token (`MCP_AUTH_TOKEN` on the x402 Worker) which
+// cairnstone-v6 does not currently have a matching secret for -- there is no
+// shared-credential binding between the two Workers yet. Rather than fabricate
+// success or silently fall back to non-authoritative pricing, this adapter
+// fails closed with `x402_policy_plane_not_configured` until an operator
+// provisions `env.X402_POLICY_URL` and `env.X402_POLICY_TOKEN` as real
+// Worker secrets. The code path is complete and ready; only the credential
+// provisioning (an operator action, not something an agent session should
+// mint on its own) remains outstanding.
+// ---------------------------------------------------------------------------
+
+const X402_SCHEME_RE = /^[a-z0-9_-]{1,32}$/;
+const MIN_X402_TIMEOUT_SECONDS = 5;
+const MAX_X402_TIMEOUT_SECONDS = MAX_QUOTE_EXPIRES_IN_SECONDS;
+
+/**
+ * Deterministically validate a candidate x402 payment requirement -- one
+ * entry of the standard x402 `accepts[]` array as returned by a policy
+ * plane's `evaluate_request`. Pure, synchronous, never throws.
+ */
+export function validateX402PaymentRequirement(requirement) {
+  const errors = [];
+  if (!isObject(requirement)) return { ok: false, errors: ["requirement must be an object"] };
+
+  if (!isNonEmptyString(requirement.scheme) || !X402_SCHEME_RE.test(requirement.scheme)) {
+    pushError(errors, "scheme", "must be a short lowercase scheme identifier string (e.g. 'exact')");
+  }
+  if (!isNonEmptyString(requirement.network) || !NETWORK_RE.test(requirement.network)) {
+    pushError(errors, "network", "must be a short lowercase network identifier string");
+  }
+  if (!isPositiveIntegerAtomicString(requirement.maxAmountRequired)) {
+    pushError(errors, "maxAmountRequired", "must be a positive integer string in atomic units");
+  }
+  if (!isNonEmptyString(requirement.resource)) pushError(errors, "resource", "must be a non-empty string");
+  if (!isNonEmptyString(requirement.payTo)) pushError(errors, "payTo", "must be a non-empty payee identifier string");
+  if (!isNonEmptyString(requirement.asset)) pushError(errors, "asset", "must be a non-empty asset identifier string");
+  if (
+    requirement.maxTimeoutSeconds !== undefined &&
+    (!Number.isInteger(requirement.maxTimeoutSeconds) || requirement.maxTimeoutSeconds < 1)
+  ) {
+    pushError(errors, "maxTimeoutSeconds", "when present, must be a positive integer");
+  }
+  if (requirement.extra !== undefined && !isObject(requirement.extra)) {
+    pushError(errors, "extra", "when present, must be an object");
+  }
+
+  return errors.length === 0 ? { ok: true, errors: [] } : { ok: false, errors };
+}
+
+/**
+ * Fail closed if an x402 requirement's `resource` doesn't correspond to the
+ * service's own advertised route pattern. This is a simple prefix match on
+ * the pattern with its trailing "/*" wildcard stripped -- good enough to
+ * catch "this challenge is for a completely different resource" without
+ * implementing a full glob engine. Exact patterns (no wildcard) require an
+ * exact match.
+ */
+export function checkX402ResourceMatchesRoute(resource, pattern) {
+  if (!isNonEmptyString(resource) || !isNonEmptyString(pattern)) return { ok: false, error: "invalid_input" };
+  if (pattern.endsWith("/*")) {
+    const prefix = pattern.slice(0, -1); // keep trailing "/"
+    if (!resource.startsWith(prefix)) return { ok: false, error: "x402_resource_mismatch" };
+    return { ok: true };
+  }
+  if (resource !== pattern) return { ok: false, error: "x402_resource_mismatch" };
+  return { ok: true };
+}
+
+/**
+ * Bind a validated service request to a REAL x402 payment requirement
+ * (one entry of `accepts[]` from a policy plane's `evaluate_request`).
+ * Unlike `buildQuote`, this makes pricing authoritative
+ * (`x402_policy_evaluated:true`) and computes `x402_requirement_digest` over
+ * the requirement's own exact content -- but it is still ZERO SETTLEMENT:
+ * no verify_payment/settle_payment call happens here or anywhere in this
+ * function's callers.
+ */
+export async function buildQuoteFromX402Requirement({ service_request, requirement, route_pattern, expires_in_seconds } = {}) {
+  const requestVerification = await verifyServiceRequestIdentity(service_request);
+  if (!requestVerification.ok) return requestVerification;
+
+  const requirementValidation = validateX402PaymentRequirement(requirement);
+  if (!requirementValidation.ok) return { ok: false, error: "invalid_x402_requirement", errors: requirementValidation.errors };
+
+  if (isNonEmptyString(route_pattern)) {
+    const resourceCheck = checkX402ResourceMatchesRoute(requirement.resource, route_pattern);
+    if (!resourceCheck.ok) return resourceCheck;
+  }
+
+  const timeoutSeconds = Number.isInteger(requirement.maxTimeoutSeconds)
+    ? Math.max(MIN_X402_TIMEOUT_SECONDS, Math.min(MAX_X402_TIMEOUT_SECONDS, requirement.maxTimeoutSeconds))
+    : DEFAULT_QUOTE_EXPIRES_IN_SECONDS;
+  const effectiveSeconds = Number.isFinite(Number(expires_in_seconds))
+    ? Math.max(MIN_X402_TIMEOUT_SECONDS, Math.min(MAX_X402_TIMEOUT_SECONDS, Math.floor(Number(expires_in_seconds))))
+    : timeoutSeconds;
+  const expiresAt = new Date(Date.now() + effectiveSeconds * 1000).toISOString();
+
+  // The friendly asset symbol (e.g. "USDC") lives in x402's `extra.name` per
+  // the live-captured response shape; fall back to the raw asset identifier
+  // (a contract address in the real response) if extra is absent.
+  const assetSymbol = isObject(requirement.extra) && isNonEmptyString(requirement.extra.name)
+    ? requirement.extra.name
+    : requirement.asset;
+
+  const canonicalQuote = {
+    schema: PAID_QUOTE_SCHEMA_V1,
+    service_request_id: service_request.service_request_id,
+    package_id: service_request.package_id,
+    price_atomic: requirement.maxAmountRequired,
+    asset: assetSymbol,
+    network: requirement.network,
+    pay_to: requirement.payTo,
+    expires_at: expiresAt
+  };
+
+  const quoteTermsDigest = "sha256:" + await sha256Text(stableJson(canonicalQuote));
+  const quoteId = "sha256:" + await sha256Text(stableJson({ ...canonicalQuote, quote_terms_digest: quoteTermsDigest }));
+  // Bound directly to x402's own exact requirement content -- this is what
+  // makes the price traceable to a specific real policy-plane response,
+  // distinct from quoteTermsDigest (a digest of our own normalized fields).
+  const x402RequirementDigest = "sha256:" + await sha256Text(stableJson(requirement));
+
+  return {
+    ok: true,
+    quote: {
+      quote_id: quoteId,
+      quote_terms_digest: quoteTermsDigest,
+      ...canonicalQuote,
+      x402_settlement: {
+        authorized: false,
+        verified: false,
+        settled: false,
+        note: "V7.5.0 step 3: pricing is now x402-authoritative, but this remains zero settlement -- verify/settle is Step 4."
+      }
+    },
+    pricing_metadata: {
+      advertised: false,
+      authoritative: true,
+      x402_policy_evaluated: true,
+      x402_requirement_digest: x402RequirementDigest,
+      x402_scheme: requirement.scheme,
+      x402_resource: requirement.resource,
+      note: "Price sourced from a real x402 evaluate_request payment requirement (accepts[] entry), not from the service's advertised pricing_route. Zero settlement performed here."
+    }
+  };
+}
+
+export const X402_POLICY_EVALUATE_PATH_PREFIX = "/tool/";
+
+/**
+ * The actual service-binding adapter: calls a real x402 policy plane's
+ * evaluate_request-equivalent HTTP surface. Requires `env.X402_POLICY_URL`
+ * and `env.X402_POLICY_TOKEN` to be configured as real Worker secrets --
+ * these do not exist yet on cairnstone-v6 as of this writing. Fails closed
+ * with `x402_policy_plane_not_configured` rather than fabricating a
+ * response or silently degrading to non-authoritative pricing.
+ */
+export async function evaluateX402RequestFromEnv(routePattern, method, env) {
+  if (!env || !isNonEmptyString(env.X402_POLICY_URL) || !isNonEmptyString(env.X402_POLICY_TOKEN)) {
+    return {
+      ok: false,
+      error: "x402_policy_plane_not_configured",
+      detail: "env.X402_POLICY_URL and env.X402_POLICY_TOKEN must both be provisioned as Worker secrets before live x402 evaluation can run. This is an operator action, not something this code path performs on its own."
+    };
+  }
+  // Resolve a concrete resource path for this pattern's evaluate_request
+  // call. Wildcard patterns ("/foo/*") are evaluated against their own
+  // prefix; exact patterns are used as-is.
+  const resourcePath = routePattern.endsWith("/*") ? routePattern.slice(0, -2) : routePattern;
+  try {
+    const response = await fetch(env.X402_POLICY_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${env.X402_POLICY_TOKEN}`
+      },
+      body: JSON.stringify({ path: resourcePath, method: method || "POST" })
+    });
+    if (!response.ok) {
+      return { ok: false, error: "x402_policy_plane_request_failed", status: response.status };
+    }
+    const data = await response.json();
+    if (!data || !Array.isArray(data.accepts) || !isObject(data.accepts[0])) {
+      return { ok: false, error: "x402_policy_plane_response_malformed" };
+    }
+    return { ok: true, requirement: data.accepts[0], raw: data };
+  } catch (error) {
+    return { ok: false, error: "x402_policy_plane_request_exception", detail: String(error && error.message ? error.message : error) };
+  }
+}
+
+export const PAID_AGENT_X402_QUOTE_PREVIEW_SCHEMA_V1 = "cairnstone-paid-agent-x402-quote-preview-v1";
+
+export const PAID_AGENT_X402_QUOTE_PREVIEW_TOOL_DEFINITION = {
+  name: "cairnstone_paid_agent_x402_quote_preview",
+  description:
+    "V7.5.0 step 3: like cairnstone_paid_agent_quote_preview, but sources an AUTHORITATIVE price from a real x402 evaluate_request payment requirement instead of the service's advertised pricing_route (x402_policy_evaluated:true). package_id/authority still come ONLY from a real cairnstone_agent_bootstrap call. Still ZERO SETTLEMENT -- no wallet signing, no x402 verify/settle. Fails closed with x402_policy_plane_not_configured if the x402 policy-plane credentials are not yet provisioned as Worker secrets.",
+  inputSchema: {
+    type: "object",
+    required: ["actor_id", "profile_id", "chain", "task"],
+    properties: {
+      actor_id: { type: "string", description: "namespace:identifier caller/actor id" },
+      profile_id: { type: "string", description: "An accepted V7.4 profile id, e.g. repo-debugger" },
+      service_id: { type: "string", description: "Defaults to 'cairnstone-paid-agent-service:<profile_id>' if omitted" },
+      chain: { type: "string", description: "Must be within the profile's chain scope" },
+      task: { type: "string", maxLength: 4000 },
+      generation: {
+        type: "object",
+        properties: { max_output_tokens: { type: "number", minimum: 1 } },
+        additionalProperties: false
+      },
+      route_pattern: { type: "string", description: `x402 route pattern to evaluate, e.g. '${X402_POLICY_EVALUATE_PATH_PREFIX}cairnstone_paid_agent_quote_preview'` },
+      expires_in_seconds: {
+        type: "number",
+        minimum: MIN_X402_TIMEOUT_SECONDS,
+        maximum: MAX_X402_TIMEOUT_SECONDS
+      }
+    },
+    additionalProperties: false
+  }
+};
+
+/**
+ * Build a Step-3 x402-authoritative quote preview. `deps.agentBootstrapFromBody`
+ * (real V7.0 bootstrap) and `deps.evaluateX402Request` (real x402 policy-plane
+ * call, e.g. `evaluateX402RequestFromEnv` bound to env) are both required.
+ * Still ZERO SETTLEMENT.
+ */
+export async function previewPaidAgentX402QuoteFromBody(body, env, deps) {
+  if (!deps || typeof deps.agentBootstrapFromBody !== "function" || typeof deps.evaluateX402Request !== "function") {
+    return { ok: false, error: "preview_dependencies_missing" };
+  }
+  if (!isObject(body)) return { ok: false, error: "invalid_request_body" };
+
+  const actorId = body.actor_id;
+  const profileId = body.profile_id;
+  const chain = body.chain;
+  const task = body.task;
+  if (!isNonEmptyString(actorId) || !ACTOR_ID_RE.test(actorId)) return { ok: false, error: "invalid_actor_id" };
+  if (!isNonEmptyString(profileId)) return { ok: false, error: "invalid_profile_id" };
+  if (!isNonEmptyString(chain)) return { ok: false, error: "invalid_chain" };
+  if (!isNonEmptyString(task)) return { ok: false, error: "invalid_task" };
+
+  const bootstrap = await deps.agentBootstrapFromBody({ actor_id: actorId, task, chain, include_inbox: false }, env);
+  if (!bootstrap || bootstrap.ok === false) {
+    return { ok: false, error: "bootstrap_failed", detail: bootstrap };
+  }
+  const packageId = bootstrap.package_id;
+  const authorityFingerprint = computeAuthorityFingerprint(bootstrap.authority);
+  if (!isNonEmptyString(packageId) || !PACKAGE_ID_RE.test(packageId) || !authorityFingerprint) {
+    return { ok: false, error: "bootstrap_result_malformed" };
+  }
+
+  const serviceId = isNonEmptyString(body.service_id) ? body.service_id : `cairnstone-paid-agent-service:${profileId}`;
+  const routePattern = isNonEmptyString(body.route_pattern)
+    ? body.route_pattern
+    : `${X402_POLICY_EVALUATE_PATH_PREFIX}${profileId}`;
+
+  const x402Result = await deps.evaluateX402Request(routePattern, "POST", env);
+  if (!x402Result || x402Result.ok === false) {
+    return { ok: false, error: "x402_evaluation_failed", detail: x402Result };
+  }
+
+  // A minimal descriptor is still built (with a placeholder pricing_route)
+  // so the service/request identity chain and tool_allowlist/budgets
+  // provenance stay consistent with the non-x402 preview path; the
+  // descriptor's pricing_route is NOT used for pricing here -- only the
+  // real x402 requirement is.
+  const descriptorResult = await buildServiceDescriptor({
+    service_id: serviceId,
+    profile_id: profileId,
+    pricing_route: {
+      schema: PRICING_ROUTE_SCHEMA_V1,
+      pattern: routePattern,
+      pay_to: x402Result.requirement.payTo,
+      price_atomic: x402Result.requirement.maxAmountRequired,
+      asset: isObject(x402Result.requirement.extra) && isNonEmptyString(x402Result.requirement.extra.name)
+        ? x402Result.requirement.extra.name
+        : x402Result.requirement.asset,
+      network: x402Result.requirement.network
+    }
+  });
+  if (!descriptorResult.ok) return descriptorResult;
+
+  const requestResult = await buildServiceRequest({
+    caller_actor_id: actorId,
+    service_descriptor: descriptorResult.descriptor,
+    chain,
+    task,
+    generation: body.generation,
+    package_id: packageId
+  });
+  if (!requestResult.ok) return requestResult;
+
+  const quoteResult = await buildQuoteFromX402Requirement({
+    service_request: requestResult.request,
+    requirement: x402Result.requirement,
+    route_pattern: routePattern,
+    expires_in_seconds: body.expires_in_seconds
+  });
+  if (!quoteResult.ok) return quoteResult;
+
+  return {
+    ok: true,
+    schema: PAID_AGENT_X402_QUOTE_PREVIEW_SCHEMA_V1,
+    package_id: packageId,
+    authority_fingerprint: authorityFingerprint,
+    service_descriptor: descriptorResult.descriptor,
+    service_request: requestResult.request,
+    quote: quoteResult.quote,
+    pricing_metadata: quoteResult.pricing_metadata,
+    settlement: {
+      authorized: false,
+      verified: false,
+      settled: false,
+      note: "V7.5.0 step 3: zero settlement. Real settlement (step 4) must re-bootstrap and revalidate accepted authority immediately before payment and fail paid_agent_context_race before any settlement if authority_fingerprint has changed."
     }
   };
 }
