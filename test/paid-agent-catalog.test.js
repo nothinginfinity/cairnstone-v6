@@ -764,3 +764,17 @@ test("V7.5.0 computeAuthorityFingerprint is order-independent across path_heads 
   assert.equal(computeAuthorityFingerprint(null), null);
   assert.equal(computeAuthorityFingerprint({ chain_head: {} }), null);
 });
+
+test("V7.5.0 previewPaidAgentQuoteFromBody accepts a pricing_route without the internal schema tag (MCP callers shouldn't need to know it)", async () => {
+  const deps = { agentBootstrapFromBody: async () => fixedBootstrapResult() };
+  const { schema, ...routeWithoutSchema } = VALID_PRICING_ROUTE;
+  const result = await previewPaidAgentQuoteFromBody({
+    actor_id: "chatgpt:cairnstone-v7",
+    profile_id: "repo-debugger",
+    chain: "cairnstone-v6-project-memory",
+    task: "some task",
+    pricing_route: routeWithoutSchema
+  }, {}, deps);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.service_descriptor.pricing_route.schema, PRICING_ROUTE_SCHEMA_V1);
+});
