@@ -5,16 +5,21 @@ import {
   PAID_REQUEST_SCHEMA_V1,
   PAID_SERVICE_SCHEMA_V1,
   PAID_AGENT_QUOTE_PREVIEW_SCHEMA_V1,
+  PAID_AGENT_X402_QUOTE_PREVIEW_SCHEMA_V1,
   PRICING_ROUTE_SCHEMA_V1,
   buildQuote,
+  buildQuoteFromX402Requirement,
   buildServiceDescriptor,
   buildServiceRequest,
   checkPaidAgentContextRace,
   checkQuotePriceMatchesAdvertisedRoute,
   checkReplayConsistency,
+  checkX402ResourceMatchesRoute,
   computeAuthorityFingerprint,
+  evaluateX402RequestFromEnv,
   isQuoteExpired,
   previewPaidAgentQuoteFromBody,
+  previewPaidAgentX402QuoteFromBody,
   recomputeQuoteId,
   recomputeServiceDescriptorId,
   recomputeServiceRequestId,
@@ -23,6 +28,7 @@ import {
   validateQuote,
   validateServiceDescriptor,
   validateServiceRequest,
+  validateX402PaymentRequirement,
   verifyQuoteIdentity,
   verifyServiceDescriptorIdentity,
   verifyServiceRequestIdentity
@@ -777,4 +783,208 @@ test("V7.5.0 previewPaidAgentQuoteFromBody accepts a pricing_route without the i
   }, {}, deps);
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.service_descriptor.pricing_route.schema, PRICING_ROUTE_SCHEMA_V1);
+});
+
+// ---------------------------------------------------------------------------
+// V7.5.0 step 3: x402 adapter / service binding.
+//
+// REAL_X402_CHALLENGE below is the exact `accepts[0]` entry captured live
+// from x402-sub-agent-mcp's evaluate_request on 2026-08-27 for path
+// "/tool/cairnstone_paid_agent_quote_preview" -- not a fabricated fixture.
+// Zero settlement was performed to obtain it (evaluate_request only reads
+// pricing policy; it does not move money).
+// ---------------------------------------------------------------------------
+
+const REAL_X402_CHALLENGE = {
+  scheme: "exact",
+  network: "base-sepolia",
+  maxAmountRequired: "1000",
+  resource: "/tool/cairnstone_paid_agent_quote_preview",
+  description: "V1.5.5: paid CairnStone stone operations. Metered tool calls on x402-cairnstone pay Wallet B on BASE-SEPOLIA.",
+  mimeType: "application/json",
+  payTo: "0xa3b8d584302b8f4004aef518bc7ed2f43abf2c8d",
+  maxTimeoutSeconds: 60,
+  asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  extra: { name: "USDC", version: "2", decimals: 6 }
+};
+
+test("V7.5.0 validateX402PaymentRequirement accepts the real captured challenge and rejects malformed variants", () => {
+  assert.deepEqual(validateX402PaymentRequirement(REAL_X402_CHALLENGE), { ok: true, errors: [] });
+
+  const badAmount = validateX402PaymentRequirement({ ...REAL_X402_CHALLENGE, maxAmountRequired: "0" });
+  assert.equal(badAmount.ok, false);
+  assert.ok(badAmount.errors.some(e => e.startsWith("maxAmountRequired:")));
+
+  const missingPayTo = { ...REAL_X402_CHALLENGE };
+  delete missingPayTo.payTo;
+  const badPayTo = validateX402PaymentRequirement(missingPayTo);
+  assert.equal(badPayTo.ok, false);
+  assert.ok(badPayTo.errors.some(e => e.startsWith("payTo:")));
+});
+
+test("V7.5.0 checkX402ResourceMatchesRoute matches a real resource against its wildcard route and fails closed on mismatch", () => {
+  assert.deepEqual(checkX402ResourceMatchesRoute(REAL_X402_CHALLENGE.resource, "/tool/*"), { ok: true });
+  assert.deepEqual(
+    checkX402ResourceMatchesRoute(REAL_X402_CHALLENGE.resource, "/tool/cairnstone_paid_agent_quote_preview"),
+    { ok: true }
+  );
+  const mismatch = checkX402ResourceMatchesRoute(REAL_X402_CHALLENGE.resource, "/paid/repo-debugger/*");
+  assert.equal(mismatch.ok, false);
+  assert.equal(mismatch.error, "x402_resource_mismatch");
+});
+
+test("V7.5.0 buildQuoteFromX402Requirement binds the real captured challenge into an authoritative, self-consistent quote with zero settlement", async () => {
+  const { request } = await validRequest();
+  const result = await buildQuoteFromX402Requirement({
+    service_request: request,
+    requirement: REAL_X402_CHALLENGE,
+    route_pattern: "/tool/*"
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.quote.price_atomic, "1000");
+  assert.equal(result.quote.asset, "USDC"); // from extra.name, not the raw contract address
+  assert.equal(result.quote.network, "base-sepolia");
+  assert.equal(result.quote.pay_to, REAL_X402_CHALLENGE.payTo);
+  assert.equal(result.quote.x402_settlement.authorized, false);
+  assert.equal(result.quote.x402_settlement.verified, false);
+  assert.equal(result.quote.x402_settlement.settled, false);
+  assert.deepEqual(validateQuote(result.quote), { ok: true, errors: [] });
+  assert.deepEqual(await verifyQuoteIdentity(result.quote), { ok: true });
+
+  assert.equal(result.pricing_metadata.advertised, false);
+  assert.equal(result.pricing_metadata.authoritative, true);
+  assert.equal(result.pricing_metadata.x402_policy_evaluated, true);
+  assert.match(result.pricing_metadata.x402_requirement_digest, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(result.pricing_metadata.x402_scheme, "exact");
+  assert.equal(result.pricing_metadata.x402_resource, REAL_X402_CHALLENGE.resource);
+});
+
+test("V7.5.0 buildQuoteFromX402Requirement's x402_requirement_digest changes if the underlying requirement changes", async () => {
+  const { request } = await validRequest();
+  const a = await buildQuoteFromX402Requirement({ service_request: request, requirement: REAL_X402_CHALLENGE, route_pattern: "/tool/*" });
+  const tampered = { ...REAL_X402_CHALLENGE, maxAmountRequired: "9999999" };
+  const b = await buildQuoteFromX402Requirement({ service_request: request, requirement: tampered, route_pattern: "/tool/*" });
+  assert.notEqual(a.pricing_metadata.x402_requirement_digest, b.pricing_metadata.x402_requirement_digest);
+  assert.notEqual(a.quote.quote_id, b.quote.quote_id);
+});
+
+test("V7.5.0 buildQuoteFromX402Requirement fails closed on a resource that doesn't match the service's route pattern", async () => {
+  const { request } = await validRequest();
+  const result = await buildQuoteFromX402Requirement({
+    service_request: request,
+    requirement: REAL_X402_CHALLENGE,
+    route_pattern: "/paid/repo-debugger/*"
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "x402_resource_mismatch");
+});
+
+test("V7.5.0 buildQuoteFromX402Requirement fails closed on a shape-valid but tampered service_request", async () => {
+  const { request } = await validRequest();
+  const tamperedRequest = { ...request, task: "a swapped task with the old id still attached" };
+  const result = await buildQuoteFromX402Requirement({ service_request: tamperedRequest, requirement: REAL_X402_CHALLENGE });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "service_request_id_mismatch");
+});
+
+test("V7.5.0 buildQuoteFromX402Requirement fails closed on a malformed x402 requirement", async () => {
+  const { request } = await validRequest();
+  const result = await buildQuoteFromX402Requirement({ service_request: request, requirement: { scheme: "exact" } });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "invalid_x402_requirement");
+});
+
+test("V7.5.0 evaluateX402RequestFromEnv fails closed with x402_policy_plane_not_configured when secrets are absent, without attempting a network call", async () => {
+  const result = await evaluateX402RequestFromEnv("/tool/*", "POST", {});
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "x402_policy_plane_not_configured");
+});
+
+test("V7.5.0 previewPaidAgentX402QuoteFromBody produces a full x402-authoritative preview end to end using the real captured challenge", async () => {
+  const deps = {
+    agentBootstrapFromBody: async () => fixedBootstrapResult(),
+    evaluateX402Request: async (routePattern, method) => {
+      assert.equal(routePattern, "/tool/*");
+      assert.equal(method, "POST");
+      return { ok: true, requirement: REAL_X402_CHALLENGE, raw: { accepts: [REAL_X402_CHALLENGE] } };
+    }
+  };
+  const result = await previewPaidAgentX402QuoteFromBody({
+    actor_id: "chatgpt:cairnstone-v7",
+    profile_id: "repo-debugger",
+    chain: "cairnstone-v6-project-memory",
+    task: "Inspect this accepted repo state and return a cited diagnosis",
+    route_pattern: "/tool/*"
+  }, {}, deps);
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.schema, PAID_AGENT_X402_QUOTE_PREVIEW_SCHEMA_V1);
+  assert.equal(result.package_id, VALID_PACKAGE_ID);
+  assert.equal(result.pricing_metadata.x402_policy_evaluated, true);
+  assert.equal(result.pricing_metadata.authoritative, true);
+  assert.equal(result.quote.price_atomic, "1000");
+  assert.equal(result.quote.asset, "USDC");
+  assert.equal(result.settlement.settled, false);
+});
+
+test("V7.5.0 previewPaidAgentX402QuoteFromBody ignores a caller-supplied package_id and never treats it as authority", async () => {
+  const deps = {
+    agentBootstrapFromBody: async () => fixedBootstrapResult(),
+    evaluateX402Request: async () => ({ ok: true, requirement: REAL_X402_CHALLENGE })
+  };
+  const result = await previewPaidAgentX402QuoteFromBody({
+    actor_id: "chatgpt:cairnstone-v7",
+    profile_id: "repo-debugger",
+    chain: "cairnstone-v6-project-memory",
+    task: "some task",
+    route_pattern: "/tool/*",
+    package_id: "sha256:" + "f".repeat(64)
+  }, {}, deps);
+  assert.equal(result.ok, true);
+  assert.equal(result.package_id, VALID_PACKAGE_ID);
+});
+
+test("V7.5.0 previewPaidAgentX402QuoteFromBody propagates x402 evaluation failure (e.g. not configured) rather than fabricating a price", async () => {
+  const deps = {
+    agentBootstrapFromBody: async () => fixedBootstrapResult(),
+    evaluateX402Request: async () => ({ ok: false, error: "x402_policy_plane_not_configured" })
+  };
+  const result = await previewPaidAgentX402QuoteFromBody({
+    actor_id: "chatgpt:cairnstone-v7",
+    profile_id: "repo-debugger",
+    chain: "cairnstone-v6-project-memory",
+    task: "some task"
+  }, {}, deps);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "x402_evaluation_failed");
+  assert.equal(result.detail.error, "x402_policy_plane_not_configured");
+});
+
+test("V7.5.0 previewPaidAgentX402QuoteFromBody fails closed without calling x402 evaluation when the request itself is invalid", async () => {
+  let x402Called = false;
+  const deps = {
+    agentBootstrapFromBody: async () => fixedBootstrapResult(),
+    evaluateX402Request: async () => { x402Called = true; return { ok: true, requirement: REAL_X402_CHALLENGE }; }
+  };
+  const result = await previewPaidAgentX402QuoteFromBody({
+    actor_id: "not-namespaced",
+    profile_id: "repo-debugger",
+    chain: "cairnstone-v6-project-memory",
+    task: "some task"
+  }, {}, deps);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "invalid_actor_id");
+  assert.equal(x402Called, false);
+});
+
+test("V7.5.0 previewPaidAgentX402QuoteFromBody fails closed when required deps are missing", async () => {
+  const result1 = await previewPaidAgentX402QuoteFromBody({
+    actor_id: "chatgpt:cairnstone-v7", profile_id: "repo-debugger", chain: "cairnstone-v6-project-memory", task: "x"
+  }, {}, { agentBootstrapFromBody: async () => fixedBootstrapResult() });
+  assert.deepEqual(result1, { ok: false, error: "preview_dependencies_missing" });
+
+  const result2 = await previewPaidAgentX402QuoteFromBody({
+    actor_id: "chatgpt:cairnstone-v7", profile_id: "repo-debugger", chain: "cairnstone-v6-project-memory", task: "x"
+  }, {}, { evaluateX402Request: async () => ({ ok: true, requirement: REAL_X402_CHALLENGE }) });
+  assert.deepEqual(result2, { ok: false, error: "preview_dependencies_missing" });
 });
