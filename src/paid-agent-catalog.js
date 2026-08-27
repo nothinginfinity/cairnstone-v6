@@ -51,6 +51,17 @@
 //     `checkQuotePriceMatchesAdvertisedRoute` treats a service descriptor's
 //     `pricing_route` fields as advertised/non-authoritative metadata and
 //     fails closed on a mismatch; x402 remains the only price authority.
+//
+// Second hardening round per chatgpt:cairnstone-v7 (stone
+// e840964f53f0b7cd66d62b96cf5763a762e367e1eb0c2ef9059a4cb98a9779dc):
+//   - `execution_authority`/`mutation_authority` on a descriptor, and each of
+//     `authorized`/`verified`/`settled` on a quote's `x402_settlement`, must
+//     now be an explicit `false` -- omission, `null`, or a non-boolean value
+//     fails closed exactly like an explicit `true` would have.
+//   - `checkQuotePriceMatchesAdvertisedRoute` now also compares `pay_to` and
+//     fully validates the advertised `pricingRoute` itself (via
+//     `validatePricingRoute`) first, so an unknown/malformed route can never
+//     silently pass the check.
 
 import { getAgentProfile } from "./profiles.js";
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
@@ -235,11 +246,11 @@ export function validateServiceDescriptor(descriptor) {
   const routeValidation = validatePricingRoute(descriptor.pricing_route);
   if (!routeValidation.ok) for (const e of routeValidation.errors) pushError(errors, "pricing_route", e);
 
-  if (descriptor.execution_authority === true) {
-    pushError(errors, "execution_authority", "a service descriptor must never grant execution authority");
+  if (descriptor.execution_authority !== false) {
+    pushError(errors, "execution_authority", "must be explicitly false -- a service descriptor must never grant execution authority");
   }
-  if (descriptor.mutation_authority === true) {
-    pushError(errors, "mutation_authority", "a service descriptor must never grant mutation authority");
+  if (descriptor.mutation_authority !== false) {
+    pushError(errors, "mutation_authority", "must be explicitly false -- a service descriptor must never grant mutation authority");
   }
 
   return errors.length === 0 ? { ok: true, errors: [] } : { ok: false, errors };
@@ -514,11 +525,11 @@ export function validateQuote(quote) {
 
   if (isObject(quote.x402_settlement)) {
     for (const field of ["authorized", "verified", "settled"]) {
-      if (quote.x402_settlement[field] === true) {
+      if (quote.x402_settlement[field] !== false) {
         pushError(
           errors,
           `x402_settlement.${field}`,
-          "a zero-settlement-slice quote must never claim payment authorization, verification, or settlement"
+          "must be explicitly false in this zero-settlement slice -- omission, a non-boolean, or true all fail closed"
         );
       }
     }
@@ -549,8 +560,11 @@ export function isQuoteExpired(quote, nowIso = new Date().toISOString()) {
  */
 export function checkQuotePriceMatchesAdvertisedRoute(quote, pricingRoute) {
   if (!isObject(quote) || !isObject(pricingRoute)) return { ok: false, error: "invalid_input" };
+  const routeValidation = validatePricingRoute(pricingRoute);
+  if (!routeValidation.ok) return { ok: false, error: "invalid_pricing_route", errors: routeValidation.errors };
   if (quote.asset !== pricingRoute.asset) return { ok: false, error: "advertised_price_mismatch", field: "asset" };
   if (quote.network !== pricingRoute.network) return { ok: false, error: "advertised_price_mismatch", field: "network" };
+  if (quote.pay_to !== pricingRoute.pay_to) return { ok: false, error: "advertised_price_mismatch", field: "pay_to" };
   if (!isPositiveIntegerAtomicString(quote.price_atomic) || !isPositiveIntegerAtomicString(pricingRoute.price_atomic)) {
     return { ok: false, error: "invalid_input" };
   }
