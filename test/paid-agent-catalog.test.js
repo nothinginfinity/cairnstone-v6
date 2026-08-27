@@ -9,14 +9,19 @@ import {
   buildServiceDescriptor,
   buildServiceRequest,
   checkPaidAgentContextRace,
+  checkQuotePriceMatchesAdvertisedRoute,
   checkReplayConsistency,
   isQuoteExpired,
+  recomputeQuoteId,
+  recomputeServiceDescriptorId,
   recomputeServiceRequestId,
   serviceDescriptorAllowsChain,
   validatePricingRoute,
   validateQuote,
   validateServiceDescriptor,
   validateServiceRequest,
+  verifyQuoteIdentity,
+  verifyServiceDescriptorIdentity,
   verifyServiceRequestIdentity
 } from "../src/paid-agent-catalog.js";
 
@@ -255,7 +260,7 @@ test("V7.5.0 buildQuote is deterministic for identical request + price + expiry"
   const a = await buildQuote({ service_request: request, price: VALID_PRICE, expires_at: expiresAt });
   const b = await buildQuote({ service_request: request, price: VALID_PRICE, expires_at: expiresAt });
   assert.equal(a.quote.quote_id, b.quote.quote_id);
-  assert.equal(a.quote.payment_requirement_digest, b.quote.payment_requirement_digest);
+  assert.equal(a.quote.quote_terms_digest, b.quote.quote_terms_digest);
 });
 
 test("V7.5.0 buildQuote fails closed on an invalid service_request", async () => {
@@ -354,4 +359,143 @@ test("V7.5.0 checkReplayConsistency fails closed with idempotency_conflict on a 
   const result = await checkReplayConsistency(collided, request);
   assert.equal(result.ok, false);
   assert.equal(result.error, "idempotency_conflict");
+});
+
+// ---------------------------------------------------------------------------
+// Hardening per chatgpt:cairnstone-v7 AC1 review
+// (stone 319be5a1da8e25e953966192a93d784b1254af7be9db4011f3268fb7535b3cdc)
+// ---------------------------------------------------------------------------
+
+test("V7.5.0 verifyServiceDescriptorIdentity accepts an untampered descriptor and rejects a tampered one", async () => {
+  const descriptor = await validDescriptor();
+  const ok = await verifyServiceDescriptorIdentity(descriptor);
+  assert.deepEqual(ok, { ok: true });
+
+  const tampered = { ...descriptor, pricing_route: { ...descriptor.pricing_route, price_atomic: "999999" } };
+  const bad = await verifyServiceDescriptorIdentity(tampered);
+  assert.equal(bad.ok, false);
+  assert.equal(bad.error, "descriptor_id_mismatch");
+});
+
+test("V7.5.0 buildServiceRequest rejects a shape-valid but tampered descriptor (content-hash check, not just shape)", async () => {
+  const descriptor = await validDescriptor();
+  const tamperedDescriptor = { ...descriptor, profile_version: "9.9.9" };
+  const result = await buildServiceRequest({
+    caller_actor_id: "chatgpt:cairnstone-v7",
+    service_descriptor: tamperedDescriptor,
+    chain: "cairnstone-v6-project-memory",
+    task: "some task",
+    package_id: VALID_PACKAGE_ID
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "descriptor_id_mismatch");
+});
+
+test("V7.5.0 recomputeServiceDescriptorId ignores the descriptor_id field itself", async () => {
+  const descriptor = await validDescriptor();
+  const recomputed = await recomputeServiceDescriptorId(descriptor);
+  assert.equal(recomputed, descriptor.descriptor_id);
+});
+
+test("V7.5.0 buildQuote rejects a shape-valid but tampered service_request (stale-id cannot be quoted)", async () => {
+  const { request } = await validRequest();
+  const tamperedRequest = { ...request, task: "a swapped task with the old id still attached" };
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const result = await buildQuote({ service_request: tamperedRequest, price: VALID_PRICE, expires_at: expiresAt });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "service_request_id_mismatch");
+});
+
+test("V7.5.0 verifyQuoteIdentity accepts an untampered quote and rejects a tampered one", async () => {
+  const { request } = await validRequest();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const { quote } = await buildQuote({ service_request: request, price: VALID_PRICE, expires_at: expiresAt });
+
+  const ok = await verifyQuoteIdentity(quote);
+  assert.deepEqual(ok, { ok: true });
+
+  const tamperedTerms = { ...quote, price_atomic: "5" };
+  const badTerms = await verifyQuoteIdentity(tamperedTerms);
+  assert.equal(badTerms.ok, false);
+  assert.equal(badTerms.error, "quote_terms_digest_mismatch");
+
+  const recomputed = await recomputeQuoteId(quote);
+  const tamperedId = { ...quote, quote_terms_digest: recomputed.expectedTermsDigest, quote_id: "sha256:" + "b".repeat(64) };
+  const badId = await verifyQuoteIdentity(tamperedId);
+  assert.equal(badId.ok, false);
+  assert.equal(badId.error, "quote_id_mismatch");
+});
+
+test("V7.5.0 validateQuote fails closed if authorized or verified is true, not only settled", async () => {
+  const { request } = await validRequest();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const { quote } = await buildQuote({ service_request: request, price: VALID_PRICE, expires_at: expiresAt });
+
+  const authorizedClaim = { ...quote, x402_settlement: { ...quote.x402_settlement, authorized: true } };
+  const badAuth = validateQuote(authorizedClaim);
+  assert.equal(badAuth.ok, false);
+  assert.ok(badAuth.errors.some(e => e.startsWith("x402_settlement.authorized:")));
+
+  const verifiedClaim = { ...quote, x402_settlement: { ...quote.x402_settlement, verified: true } };
+  const badVerified = validateQuote(verifiedClaim);
+  assert.equal(badVerified.ok, false);
+  assert.ok(badVerified.errors.some(e => e.startsWith("x402_settlement.verified:")));
+});
+
+test("V7.5.0 isQuoteExpired fails closed (treats as expired) on an invalid nowIso instead of silently reporting fresh", async () => {
+  const { request } = await validRequest();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const stillFreshNow = new Date(Date.now() + 60 * 1000).toISOString();
+  const { quote } = await buildQuote({ service_request: request, price: VALID_PRICE, expires_at: expiresAt });
+  assert.equal(isQuoteExpired(quote, "not-a-valid-timestamp"), true);
+  assert.equal(isQuoteExpired(quote, stillFreshNow), false);
+});
+
+test("V7.5.0 checkQuotePriceMatchesAdvertisedRoute passes for a matching exact-mode quote and fails closed on divergence", async () => {
+  const { descriptor, request } = await validRequest();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const matching = await buildQuote({
+    service_request: request,
+    price: { price_atomic: descriptor.pricing_route.price_atomic, asset: descriptor.pricing_route.asset, network: descriptor.pricing_route.network, pay_to: descriptor.pricing_route.pay_to },
+    expires_at: expiresAt
+  });
+  assert.deepEqual(checkQuotePriceMatchesAdvertisedRoute(matching.quote, descriptor.pricing_route), { ok: true });
+
+  const divergent = await buildQuote({ service_request: request, price: VALID_PRICE, expires_at: expiresAt });
+  // VALID_PRICE has the same asset/network/price as the route fixture in this file,
+  // so force a real divergence to prove the check fails closed.
+  const wrongAsset = { ...divergent.quote, asset: "NOTUSDC" };
+  const result = checkQuotePriceMatchesAdvertisedRoute(wrongAsset, descriptor.pricing_route);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "advertised_price_mismatch");
+  assert.equal(result.field, "asset");
+});
+
+test("V7.5.0 checkQuotePriceMatchesAdvertisedRoute allows an upto-mode quote at or under the ceiling but not over it", async () => {
+  const upToRoute = { ...VALID_PRICING_ROUTE, mode: "upto", price_atomic: "5000" };
+  const descriptor = await validDescriptor({ pricing_route: upToRoute });
+  const request = await buildServiceRequest({
+    caller_actor_id: "chatgpt:cairnstone-v7",
+    service_descriptor: descriptor,
+    chain: "cairnstone-v6-project-memory",
+    task: "some task",
+    package_id: VALID_PACKAGE_ID
+  });
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+
+  const underCeiling = await buildQuote({
+    service_request: request.request,
+    price: { price_atomic: "1000", asset: "USDC", network: "base-sepolia", pay_to: upToRoute.pay_to },
+    expires_at: expiresAt
+  });
+  assert.deepEqual(checkQuotePriceMatchesAdvertisedRoute(underCeiling.quote, descriptor.pricing_route), { ok: true });
+
+  const overCeiling = await buildQuote({
+    service_request: request.request,
+    price: { price_atomic: "9999", asset: "USDC", network: "base-sepolia", pay_to: upToRoute.pay_to },
+    expires_at: expiresAt
+  });
+  const result = checkQuotePriceMatchesAdvertisedRoute(overCeiling.quote, descriptor.pricing_route);
+  assert.equal(result.ok, false);
+  assert.equal(result.field, "price_atomic");
 });
