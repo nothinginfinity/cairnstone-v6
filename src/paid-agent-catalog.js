@@ -80,9 +80,14 @@
 // (`x402_requirement_digest`) -- but `evaluateX402RequestFromEnv` fails
 // closed with `x402_policy_plane_not_configured` until an operator
 // provisions `env.X402_POLICY_URL`/`env.X402_POLICY_TOKEN` as real Worker
-// secrets (no shared credential exists between cairnstone-v6 and
-// x402-sub-agent-mcp yet). Still zero settlement -- no verify/settle call
-// anywhere in this slice; that is Step 4.
+// secrets (`X402_POLICY_URL` is the existing x402-sub-agent-mcp Worker's
+// `/mcp` endpoint; `X402_POLICY_TOKEN` must match that Worker's own
+// `MCP_AUTH_TOKEN` secret value -- there is no separate credential to
+// invent). `evaluateX402RequestFromEnv` speaks proper MCP JSON-RPC
+// (`tools/call` naming `evaluate_request`, unwrapping the MCP tool-result
+// convention `result.content[0].text`) since the policy plane has no plain
+// REST surface -- confirmed by probing the live Worker directly. Still zero
+// settlement -- no verify/settle call anywhere in this slice; that is Step 4.
 
 import { getAgentProfile } from "./profiles.js";
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
@@ -1002,12 +1007,21 @@ export async function buildQuoteFromX402Requirement({ service_request, requireme
 export const X402_POLICY_EVALUATE_PATH_PREFIX = "/tool/";
 
 /**
- * The actual service-binding adapter: calls a real x402 policy plane's
- * evaluate_request-equivalent HTTP surface. Requires `env.X402_POLICY_URL`
- * and `env.X402_POLICY_TOKEN` to be configured as real Worker secrets --
- * these do not exist yet on cairnstone-v6 as of this writing. Fails closed
- * with `x402_policy_plane_not_configured` rather than fabricating a
- * response or silently degrading to non-authoritative pricing.
+ * The actual service-binding adapter: calls the real x402-sub-agent-mcp
+ * `/mcp` endpoint. That endpoint speaks MCP JSON-RPC only -- there is no
+ * plain REST surface for `evaluate_request` (confirmed by probing the live
+ * Worker's root/health response and several guessed REST paths, all 404,
+ * while `/mcp` itself 401s without a bearer token). So this adapter sends a
+ * `tools/call` JSON-RPC envelope naming `evaluate_request`, and unwraps the
+ * MCP tool-result convention (`result.content[0].text`, itself a JSON string)
+ * to get at the actual `{ accepts: [...] }` payload -- it does NOT expect a
+ * bare `{ accepts: [...] }` response directly from the HTTP body.
+ *
+ * Requires `env.X402_POLICY_URL` and `env.X402_POLICY_TOKEN` to be configured
+ * as real Worker secrets -- these do not exist yet on cairnstone-v6 as of
+ * this writing. Fails closed with `x402_policy_plane_not_configured` rather
+ * than fabricating a response or silently degrading to non-authoritative
+ * pricing.
  */
 export async function evaluateX402RequestFromEnv(routePattern, method, env) {
   if (!env || !isNonEmptyString(env.X402_POLICY_URL) || !isNonEmptyString(env.X402_POLICY_TOKEN)) {
@@ -1018,22 +1032,46 @@ export async function evaluateX402RequestFromEnv(routePattern, method, env) {
     };
   }
   // Resolve a concrete resource path for this pattern's evaluate_request
-  // call. Wildcard patterns ("/foo/*") are evaluated against their own
-  // prefix; exact patterns are used as-is.
-  const resourcePath = routePattern.endsWith("/*") ? routePattern.slice(0, -2) : routePattern;
+  // call. Wildcard patterns ("/foo/*") drop only the trailing "*" (keeping
+  // the "/") since evaluate_request needs a concrete path to test against
+  // the policy plane's own pattern-matching rules, not the wildcard itself.
+  const resourcePath = routePattern.endsWith("/*") ? routePattern.slice(0, -1) : routePattern;
+  const rpcId = `x402-eval-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   try {
     const response = await fetch(env.X402_POLICY_URL, {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        accept: "application/json",
         authorization: `Bearer ${env.X402_POLICY_TOKEN}`
       },
-      body: JSON.stringify({ path: resourcePath, method: method || "POST" })
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: rpcId,
+        method: "tools/call",
+        params: {
+          name: "evaluate_request",
+          arguments: { path: resourcePath, method: method || "POST" }
+        }
+      })
     });
     if (!response.ok) {
       return { ok: false, error: "x402_policy_plane_request_failed", status: response.status };
     }
-    const data = await response.json();
+    const envelope = await response.json();
+    if (envelope && envelope.error) {
+      return { ok: false, error: "x402_policy_plane_rpc_error", detail: envelope.error };
+    }
+    const contentText = envelope?.result?.content?.[0]?.text;
+    if (!isNonEmptyString(contentText)) {
+      return { ok: false, error: "x402_policy_plane_response_malformed" };
+    }
+    let data;
+    try {
+      data = JSON.parse(contentText);
+    } catch {
+      return { ok: false, error: "x402_policy_plane_response_malformed" };
+    }
     if (!data || !Array.isArray(data.accepts) || !isObject(data.accepts[0])) {
       return { ok: false, error: "x402_policy_plane_response_malformed" };
     }
