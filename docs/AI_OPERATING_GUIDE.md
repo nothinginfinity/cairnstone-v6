@@ -141,7 +141,11 @@ count and version — this list will keep growing.
 - `cairnstone_search` — legacy single-keyword substring match. Weak on
   multi-word phrases; use `find_v2` instead.
 - `cairnstone_expand` — pull an exact raw line-window when you already know
-  what you want (by `ref_id`, or by `stone_hash + path + line_start`).
+  what you want (by `ref_id`, or by `stone_hash + path + line_start`). Full
+  hashes and unique >=8-character short hashes are valid. When chaining from
+  `cairnstone_find_v2`, prefer the returned `ref` directly, or use
+  `expand:true` when you already know you want the matching content so the
+  search+read completes in one tool call.
 
 ### Graph
 - `cairnstone_link_stones` — create a typed edge. Five types:
@@ -284,9 +288,14 @@ every path head + every edge touching HEAD in one deterministic call.
 
 ## 7. The wider AFO tool ecosystem
 
-- **GitHub**: use a generic read tool for repo state/workflow status/logs;
-  use a text-patch tool (dry-run first, then apply with an expected file
-  SHA) for writes. Confirm `workflow_dispatch` support before assuming a
+- **GitHub**: use deterministic GitHub search/call primitives for authoritative
+  repo state, workflow status, and logs; use AI-assisted repo investigators as
+  convenience layers, not as the only evidence. If an AI-assisted GitHub or
+  repo-reader tool returns an implausible endpoint, missing path parameter, or
+  `401 Bad credentials`, fall back to deterministic GitHub search/call and
+  report the connector-specific failure instead of treating the repository as
+  unavailable. Use a text-patch tool (dry-run first, then apply with an expected
+  file SHA) for writes. Confirm `workflow_dispatch` support before assuming a
   workflow can be triggered that way — many are push-only.
 - **Cloudflare**: search for the right endpoint/method rather than guessing
   paths. For D1 schema changes, `CREATE TABLE IF NOT EXISTS` via direct
@@ -333,7 +342,7 @@ every path head + every edge touching HEAD in one deterministic call.
 
 ---
 
-*Last updated: 2026-08-23. V6.10 Skills Sub-Agent is implemented, production-live-accepted on runtime 0.4.8, and canonically closed on top of the V6.9.2 QA-gated 15-skill catalog and V6.9.1 canonical distribution/first external consumer. V6.10 is the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
+*Last updated: 2026-08-29. V6.10 Skills Sub-Agent is implemented, production-live-accepted on runtime 0.4.8, and canonically closed on top of the V6.9.2 QA-gated 15-skill catalog and V6.9.1 canonical distribution/first external consumer. V6.10 is the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
 update it in place here and keep the "Last updated" line current — this
 file is meant to be the single source of truth referenced by URL from every
 provider's project instructions, not re-pasted and forked per provider.*
