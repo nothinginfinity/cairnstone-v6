@@ -1732,7 +1732,10 @@ async function expandRefFromBody(body, env) {
   if (refId) {
     row = await env.CAIRNSTONE_DB.prepare("SELECT * FROM refs WHERE ref_id = ?").bind(refId).first();
   } else {
-    const stoneHash = requiredString(body.stone_hash, "stone_hash");
+    const requestedStoneHash = requiredString(body.stone_hash, "stone_hash");
+    const resolvedStoneHash = await resolveStoneHash(env, requestedStoneHash);
+    if (!resolvedStoneHash.ok) return resolvedStoneHash;
+    const stoneHash = resolvedStoneHash.hash;
     const path = body.path || "content.txt";
     const lineStart = Number(body.line_start || 1);
     row = await env.CAIRNSTONE_DB.prepare(
