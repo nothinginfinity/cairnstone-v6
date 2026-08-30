@@ -61,6 +61,12 @@ import {
   TOOL_AUTHORIZATION_STATUS_TOOL_DEFINITION,
   TOOL_AUTHORIZATION_LIST_TOOL_DEFINITION
 } from "./tool-authorization.js";
+import {
+  toolSearchFromBody,
+  toolContractFromBody,
+  TOOL_SEARCH_TOOL_DEFINITION,
+  TOOL_CONTRACT_TOOL_DEFINITION
+} from "./tool-catalog.js";
 
 const VERSION = "0.5.20";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
@@ -68,12 +74,34 @@ const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
 const MAX_FETCH_BYTES = 900000;
 
+// V7.6.2a portable deferred-tool profile (docs/ROADMAP_V7.md, "Deferred Tool
+// Hydration / CairnStone Tool Vault"). /mcp remains the full legacy/native
+// catalog; /mcp/core exposes only this bounded boot surface -- orientation,
+// bounded evidence search, generic tool discovery/hydration/execution, and
+// the human-confirmation escalation path -- so growing the full Tool Vault
+// past 51 tools never increases the /mcp/core boot payload. Every other
+// tool remains reachable from /mcp/core generically via
+// cairnstone_tool_search -> cairnstone_get_tool_contract ->
+// cairnstone_tool_policy_preview -> cairnstone_tool_execute, or from the
+// full /mcp surface directly.
+const CORE_TOOL_NAMES = Object.freeze(new Set([
+  "cairnstone_health",
+  "cairnstone_resume_chain",
+  "cairnstone_find_v2",
+  "cairnstone_tool_search",
+  "cairnstone_get_tool_contract",
+  "cairnstone_tool_policy_preview",
+  "cairnstone_tool_execute",
+  "cairnstone_tool_authorization_prepare"
+]));
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
       if (request.method === "OPTIONS") return withCors(new Response(null, { status: 204 }));
       if (url.pathname === "/mcp") return handleMcp(request, env, url);
+      if (url.pathname === "/mcp/core") return handleMcp(request, env, url, { core: true });
       if (request.method === "GET" && url.pathname === "/") return json(landing(env, url));
       if (request.method === "GET" && url.pathname === "/health") return json(health(env));
       if (request.method === "GET" && url.pathname === "/v1/stones") return json(await listStones(env, url));
@@ -189,7 +217,8 @@ function landing(env, url) {
     version: VERSION,
     protocol: "FSL-CCR Stone v6",
     mcp: `${url.origin}/mcp`,
-    message: "CairnStone v6 is live. Isolated successor to cairnstone-v5. Claude and other MCP clients should connect to /mcp. REST clients can use /health, /v1/stones, /v1/stones/github, /v1/search, and /v1/expand.",
+    mcp_core: `${url.origin}/mcp/core`,
+    message: "CairnStone v6 is live. Isolated successor to cairnstone-v5. Claude and other MCP clients should connect to /mcp for the full legacy catalog, or /mcp/core for the V7.6.2a bounded deferred-tool boot surface (search/hydrate/execute the rest generically). REST clients can use /health, /v1/stones, /v1/stones/github, /v1/search, and /v1/expand.",
     base_url: url.origin,
     health: `${url.origin}/health`,
     d1: Boolean(env.CAIRNSTONE_DB),
@@ -211,7 +240,12 @@ function health(env) {
     r2: Boolean(env.CAIRNSTONE_RAW),
     github_token_available: Boolean(env.GITHUB_TOKEN),
     endpoints: routes(),
-    mcp_tools: mcpTools().map(tool => tool.name)
+    mcp_tools: mcpTools().map(tool => tool.name),
+    // V7.6.2a: /mcp/core exposes only this bounded boot subset; every other
+    // catalog tool remains reachable generically via
+    // cairnstone_tool_search -> cairnstone_get_tool_contract ->
+    // cairnstone_tool_execute (or the full /mcp surface directly).
+    mcp_core_tools: [...CORE_TOOL_NAMES]
   };
 }
 
@@ -221,6 +255,8 @@ function routes() {
     "GET /health",
     "POST /mcp",
     "GET /mcp",
+    "POST /mcp/core",
+    "GET /mcp/core",
     "POST /v1/stones",
     "GET /v1/stones",
     "POST /v1/stones/github",
@@ -252,16 +288,25 @@ function routes() {
   ];
 }
 
-async function handleMcp(request, env, url) {
+function mcpToolsForProfile(core) {
+  const all = mcpTools();
+  return core ? all.filter(tool => CORE_TOOL_NAMES.has(tool.name)) : all;
+}
+
+async function handleMcp(request, env, url, options = {}) {
+  const core = options.core === true;
+
   if (request.method === "GET") {
     return json({
       ok: true,
-      name: "cairnstone-v6-mcp",
+      name: core ? "cairnstone-v6-mcp-core" : "cairnstone-v6-mcp",
       version: VERSION,
       protocol: "MCP JSON-RPC over HTTP",
-      endpoint: `${url.origin}/mcp`,
+      profile: core ? "deferred_tool_vault_core" : "legacy_full",
+      endpoint: `${url.origin}${core ? "/mcp/core" : "/mcp"}`,
       methods: ["initialize", "tools/list", "tools/call"],
-      tools: mcpTools().map(tool => ({ name: tool.name, description: tool.description }))
+      tools: mcpToolsForProfile(core).map(tool => ({ name: tool.name, description: tool.description })),
+      note: core ? "Bounded V7.6.2a boot surface. Every other catalog tool is reachable generically via cairnstone_tool_search -> cairnstone_get_tool_contract -> cairnstone_tool_policy_preview -> cairnstone_tool_execute, or from the full /mcp surface." : undefined
     });
   }
 
@@ -279,19 +324,20 @@ async function handleMcp(request, env, url) {
   if (Array.isArray(rpc)) {
     const results = [];
     for (const item of rpc) {
-      const result = await handleMcpRpc(item, env);
+      const result = await handleMcpRpc(item, env, { core });
       if (result) results.push(result);
     }
     if (!results.length) return withSession(withCors(new Response(null, { status: 202 })), sessionId);
     return mcpRespond(request, results, sessionId);
   }
 
-  const result = await handleMcpRpc(rpc, env);
+  const result = await handleMcpRpc(rpc, env, { core });
   if (!result) return withSession(withCors(new Response(null, { status: 202 })), sessionId);
   return mcpRespond(request, result, sessionId);
 }
 
-async function handleMcpRpc(rpc, env) {
+async function handleMcpRpc(rpc, env, options = {}) {
+  const core = options.core === true;
   const id = rpc && Object.prototype.hasOwnProperty.call(rpc, "id") ? rpc.id : null;
   const method = rpc && rpc.method;
   const params = isObject(rpc && rpc.params) ? rpc.params : {};
@@ -301,16 +347,31 @@ async function handleMcpRpc(rpc, env) {
       return rpcResult(id, {
         protocolVersion: (typeof params.protocolVersion === "string" && params.protocolVersion) ? params.protocolVersion : MCP_PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: "cairnstone-v6", version: VERSION }
+        serverInfo: { name: core ? "cairnstone-v6-core" : "cairnstone-v6", version: VERSION }
       });
     }
 
     if (method === "notifications/initialized") return null;
     if (method === "ping") return rpcResult(id, {});
-    if (method === "tools/list") return rpcResult(id, { tools: mcpTools() });
+    if (method === "tools/list") return rpcResult(id, { tools: mcpToolsForProfile(core) });
 
     if (method === "tools/call") {
       const name = requiredString(params.name, "name");
+      if (core && !CORE_TOOL_NAMES.has(name)) {
+        // V7.6.2a bounded profile: policy-equivalent, honest denial rather
+        // than a silent/ambiguous failure. The full catalog is still
+        // reachable generically from this same core surface.
+        const output = {
+          ok: false,
+          error: "tool_not_in_core_profile",
+          name,
+          hint: "Not in the /mcp/core boot surface. Use cairnstone_tool_search + cairnstone_get_tool_contract + cairnstone_tool_policy_preview + cairnstone_tool_execute from /mcp/core to reach it generically, or call the full /mcp surface directly."
+        };
+        return rpcResult(id, {
+          content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+          isError: true
+        });
+      }
       const args = isObject(params.arguments) ? params.arguments : {};
       const output = await callMcpTool(name, args, env);
       return rpcResult(id, {
@@ -586,6 +647,8 @@ async function callMcpTool(name, args, env) {
       createStone: stoneBody => createStoneFromBody(stoneBody, e)
     })
   });
+  if (name === "cairnstone_tool_search") return toolSearchFromBody(args, env, { mcpToolDefinitions: mcpTools() });
+  if (name === "cairnstone_get_tool_contract") return toolContractFromBody(args, env, { mcpToolDefinitions: mcpTools() });
   return { ok: false, error: "unknown_tool", name };
 }
 
@@ -1045,7 +1108,9 @@ function mcpTools() {
     MODEL_ROUTE_TOOL_DEFINITION,
     DELEGATE_TOOL_DEFINITION,
     PAID_AGENT_QUOTE_PREVIEW_TOOL_DEFINITION,
-    PAID_AGENT_X402_QUOTE_PREVIEW_TOOL_DEFINITION
+    PAID_AGENT_X402_QUOTE_PREVIEW_TOOL_DEFINITION,
+    TOOL_SEARCH_TOOL_DEFINITION,
+    TOOL_CONTRACT_TOOL_DEFINITION
   ];
 }
 
