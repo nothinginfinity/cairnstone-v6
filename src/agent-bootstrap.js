@@ -11,6 +11,8 @@
 //   - fails closed with context_compile_race if any authority pointer used
 //     in the package changes between the initial snapshot and final assembly.
 
+import { computeBootstrapPackageProfile, computeMcpSchemaProfile, computeCombinedStartupProfile } from "./context-profile.js";
+
 export const AGENT_CONTEXT_SCHEMA = "cairnstone-agent-context-v1";
 export const DEFAULT_INSTRUCTIONS_PATH = "docs/AI_OPERATING_GUIDE.md";
 export const DEFAULT_SKILLS_CHAIN = "cairnstone-v6-skills";
@@ -95,7 +97,11 @@ export const AGENT_BOOTSTRAP_TOOL_DEFINITION = {
         },
         additionalProperties: false
       },
-      include_inbox: { type: "boolean", description: "Defaults to true. Non-mutating inbox listing only." }
+      include_inbox: { type: "boolean", description: "Defaults to true. Non-mutating inbox listing only." },
+      include_profile: {
+        type: "boolean",
+        description: "V7.6.0: attach a read-only context-cost diagnostics profile (byte and estimated-token accounting per package section, plus live MCP tool-schema bytes when the caller wiring supplies them) to the response. Defaults to false; adds no measurable cost to the returned package when absent. Zero additional LLM/provider calls, zero accepted-state mutation."
+      }
     },
     additionalProperties: false
   }
@@ -269,11 +275,34 @@ export async function agentBootstrapFromBody(body, env, deps) {
 
     const packageId = "sha256:" + await sha256Text(stableJson(hashablePayload(packageBody)));
 
+    // ---- V7.6.0: optional read-only context-cost profile (never affects packageId/hashablePayload above) ----
+    let diagnostics;
+    if (body && body.include_profile === true) {
+      const bootstrapProfile = computeBootstrapPackageProfile(packageBody, {
+        instructionsBytes: sized.limits.instructions_bytes,
+        packageBytes: sized.limits.package_bytes
+      });
+      const mcpSchemaProfile = (deps && Array.isArray(deps.mcpToolDefinitions))
+        ? computeMcpSchemaProfile(deps.mcpToolDefinitions)
+        : null;
+      diagnostics = {
+        schema: "cairnstone-context-profile-v1",
+        bootstrap_package: bootstrapProfile,
+        mcp_schema: mcpSchemaProfile,
+        combined: computeCombinedStartupProfile({
+          bootstrapProfile,
+          mcpSchemaProfile,
+          maxContextTokens: capabilitiesOut && Number.isFinite(capabilitiesOut.max_context_tokens) ? capabilitiesOut.max_context_tokens : null
+        })
+      };
+    }
+
     return {
       ok: true,
       schema: AGENT_CONTEXT_SCHEMA,
       package_id: packageId,
-      ...packageBody
+      ...packageBody,
+      ...(diagnostics ? { diagnostics } : {})
     };
   } catch (error) {
     return { ok: false, error: String(error && error.message ? error.message : error) };
