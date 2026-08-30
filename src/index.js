@@ -499,7 +499,11 @@ async function callMcpTool(name, args, env) {
     resolveSkillsFromBody,
     getSkillBundleFromBody,
     listSkillsFromBody,
-    version: VERSION
+    version: VERSION,
+    // V7.6.0: exact live MCP tool-schema source for the optional
+    // include_profile diagnostics -- the same mcpTools() the tools/list
+    // RPC method returns, never a hand-maintained/duplicate list.
+    mcpToolDefinitions: mcpTools()
   });
   if (name === "cairnstone_model_capabilities") return modelCapabilitiesFromBody(args, env);
   if (name === "cairnstone_tool_registry") return toolRegistryFromBody(args, env);
