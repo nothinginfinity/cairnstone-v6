@@ -435,7 +435,7 @@ Primary goals:
 - add exact context-cost telemetry for MCP schemas and V7 bootstrap packages;
 - reduce model-visible bootstrap size with a sparse, cryptographically complete authority envelope while keeping the full accepted path-head set authoritative server-side;
 - add compact orientation/manifest response modes for mature chains;
-- add an additive lightweight/core MCP exposure profile so clients need not ingest the full tool catalog when they only need boot/orientation/search/delegation capabilities;
+- make **Deferred Tool Hydration / the CairnStone Tool Vault** the first behavior-changing optimization after the V7.6.0 profiler: keep full tool contracts server-side, expose a tiny core MCP surface, search/select only relevant capabilities, hydrate exact contracts on demand, and preserve the full `/mcp` surface as compatibility/rollback;
 - consider a Git-versioned, CairnStone-accepted runtime instruction brief only after lower-risk authority/tool-surface wins are measured;
 - preserve legacy full-context behavior as a rollback path until optimized behavior is live-accepted.
 
@@ -449,9 +449,74 @@ First implementation slice; **no behavioral/default change**. Measure serialized
 
 Add opt-in `optimized_sparse` bootstrap alongside current `legacy_full`. Preserve canonical chain HEAD plus a deterministic digest/root over the complete accepted path-head set; transmit only task-relevant represented path HEADs to the reasoning model and expose deterministic expansion for omitted heads. Sparsity changes transmission, not authority.
 
-### V7.6.2 — Progressive MCP tool exposure
+### V7.6.2 — Deferred Tool Hydration / CairnStone Tool Vault
 
-Keep the existing full `/mcp` surface intact. Add an additive core/lite connection profile or endpoint with a small boot surface and deterministic registry/capability discovery. Do not depend on dynamic-schema behavior until ChatGPT, Claude, and at least one additional MCP client prove interoperability.
+Status: **NEXT BUILD AFTER V7.6.0 PROFILER.** V7.6.0 remains the required no-behavior-change measurement pass so the before/after savings are exact; V7.6.2 is the first behavior-changing context optimization to implement once that baseline is recorded. The previously planned sparse-authority and compact-read work remain in V7.6, but tool-schema deferral moves ahead of them because the current 51-tool catalog is a large avoidable startup tax and the existing V7.3 registry/policy/execute primitives already provide much of the required control plane.
+
+Keep the existing full `/mcp` surface intact as the legacy/full compatibility profile. Add a portable deferred-tool profile, working name `/mcp/core`, whose boot-visible schema set stays small even as the server-side catalog grows from 51 to hundreds or thousands of tools.
+
+#### V7.6.2a — Portable deferred-tool mode
+
+The server owns a canonical **Tool Vault** containing every full tool schema plus tool identity, availability, risk class, authorization requirement, policy metadata, and registry/version identity. Those full contracts are not model-visible at boot unless the caller chooses the legacy/full profile.
+
+The core profile should expose only the minimum boot/runtime primitives needed to discover and safely invoke everything else, targeting roughly 6-8 native schemas rather than the full catalog. The exact names may reuse or extend existing V7.3 primitives, but the capability contract should include:
+
+- health/status and bootstrap/resume;
+- bounded evidence find/search;
+- `cairnstone_tool_search(query, top_k)` — returns only a compact ranked candidate set, not the full catalog;
+- `cairnstone_get_tool_contract(tool_id)` — returns one exact on-demand contract including full input schema, `schema_hash`, risk class, authorization policy, availability, and registry identity;
+- `cairnstone_tool_policy_preview` — preserves the current deterministic policy boundary;
+- `cairnstone_tool_execute` — governed generic execution after exact contract validation;
+- the existing authorization lifecycle for human-confirmed mutations/execution where required.
+
+The normal flow becomes:
+
+```text
+user task
+  -> tiny /mcp/core boot surface
+  -> tool_search(task/top_k)
+  -> 1-3 compact candidate records
+  -> get_tool_contract(selected tool)
+  -> exact schema + schema_hash
+  -> policy preview / authorization as required
+  -> governed tool_execute(tool_id, schema_hash, arguments)
+  -> execution/read-back receipt
+```
+
+`schema_hash` is a concurrency and integrity guard, not decoration. The executor must re-resolve the canonical registered contract server-side, validate arguments against it, and fail closed if the supplied contract hash is stale or mismatched. A generic executor must never become a policy bypass: **model intent remains non-authoritative, payment remains non-authoritative, and V7.3 human-confirmation/mutation boundaries remain unchanged.**
+
+Tool discovery should be search-first rather than `list all tools` by default. Adding the 500th or 5,000th server-side capability must not linearly increase the boot-visible schema payload; only selected candidate metadata and hydrated contracts should enter model-visible context.
+
+The physical storage format is secondary. Full schemas may live in code/static memory, KV, D1, R2, or compressed artifacts. Gzip can reduce storage/transfer cost, but the context win comes from **not materializing unused schemas into the model prompt at all**.
+
+#### V7.6.2b — Optional native dynamic hydration
+
+After the portable deferred mode is live-accepted, add native MCP dynamic hydration as an optimization for clients that prove they support it reliably. A `cairnstone_load_tools(tool_ids[])`-style operation may update a session-scoped enabled-tool set and use MCP tool-list change semantics so the client re-fetches `tools/list` and exposes the selected native schemas directly.
+
+Do **not** make correctness depend on this path. ChatGPT, Claude, and at least one additional MCP client (preferably Cursor or another independent host) must prove mid-session refresh/rebinding behavior. Clients that do not support it must automatically remain fully capable through the portable `tool_search -> get_tool_contract -> governed tool_execute` path.
+
+Compatibility profiles therefore remain explicit:
+
+```text
+/mcp              -> full legacy/native catalog; maximum compatibility
+/mcp/core         -> deferred Tool Vault; tiny portable boot surface
+/mcp/core + native hydration when proven -> tiny boot + selected native schemas
+```
+
+Acceptance for V7.6.2 must prove:
+
+- V7.6.0 records exact full-vs-core serialized schema bytes/tokens before claims are made about savings;
+- the core profile has a bounded boot schema count independent of total Tool Vault size;
+- the complete catalog remains discoverable server-side without preloading every schema;
+- tool search uses bounded deterministic ranking/tie-breaking and returns compact candidates only;
+- on-demand contracts carry stable identity + `schema_hash`, and stale/mismatched hashes fail closed before execution;
+- full `/mcp` and deferred `/mcp/core` produce policy-equivalent results for the same permitted tool call;
+- read-only automatic execution, human-confirmed mutation, replay/idempotency, secret isolation, and receipt semantics remain parity-equivalent with V7.3;
+- ChatGPT, Claude, and one additional MCP client can complete orientation, evidence retrieval, and at least one governed tool workflow through the core profile;
+- native dynamic hydration, if enabled, falls back cleanly to portable deferred execution when a client cannot refresh/rebind schemas;
+- growing the Tool Vault does not materially increase core startup schema bytes except for explicitly added core primitives.
+
+Execution priority inside V7.6 is now: **V7.6.0 exact profiler -> V7.6.2a portable Deferred Tool Hydration -> V7.6.2b native hydration experiment/interop gate -> V7.6.1 sparse authority -> V7.6.3 compact reads -> V7.6.4 instruction brief only if still worthwhile -> V7.6.5 canary/default flip.**
 
 ### V7.6.3 — Compact orientation/manifest reads
 
@@ -489,6 +554,8 @@ V7.3 Permissioned Agent Loop + MCP Tool Broker (COMPLETE — V7.3.0 through V7.3
 V7.4 Cross-project agent profiles (COMPLETE — V7.4.0 + generalized profile system + V7.4.1 true cross-project acceptance)
         ↓
 V7.5 x402 paid sub-agent runtime (IN PROGRESS — V7.5.0 contract/quote boundary started; settlement gated)
+        ↓
+V7.6 Context Efficiency & MCP Surface Optimization (PLANNED — V7.6.0 exact profiler first, then V7.6.2 Deferred Tool Hydration / Tool Vault as the first behavior-changing optimization)
 ```
 
 Do not skip V7.0.
