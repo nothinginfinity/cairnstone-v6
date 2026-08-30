@@ -471,6 +471,52 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       properties: { chain: { type: "string" }, hash: { type: "string" } },
       additionalProperties: false
     }
+  }),
+  // V7.6.2a Tool Vault discovery/hydration primitives (decision stone
+  // 3383c36b93aeb8b5f2a6fb03261d7290bc39bcb84b8950da3de276bf32fa1e5f).
+  // Pure discovery/hydration operations over the live mcpTools() catalog;
+  // they never mutate accepted state and never grant execution authority,
+  // so they are classified read + automatic immediately. input_schema here
+  // must byte-for-byte match TOOL_SEARCH_TOOL_DEFINITION.inputSchema /
+  // TOOL_CONTRACT_TOOL_DEFINITION.inputSchema in tool-catalog.js -- the two
+  // are cross-checked live via schema_hash on every cairnstone_get_tool_contract
+  // call, and any drift fails closed to classification_status:"schema_disagreement"
+  // rather than silently trusting a stale copy.
+  Object.freeze({
+    tool_id: "cairnstone_tool_search",
+    connector: "cairnstone",
+    handler: "cairnstone_tool_search",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Search the complete canonical mcpTools() catalog, including unclassified tools. Discovery grants no authority.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keyword(s) matched against tool name and description, case-insensitive, any-term match. Omit to list the full catalog subject to other filters." },
+        risk_class: { type: "string", enum: ["read", "mutation", "execution", "prohibited"], description: "Only meaningful for classified tools; unclassified/disagreeing tools have risk_class:null and are excluded by this filter." },
+        classification_status: { type: "string", enum: ["classified", "unclassified", "schema_disagreement"] },
+        limit: { type: "number", minimum: 1, maximum: 200 }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_get_tool_contract",
+    connector: "cairnstone",
+    handler: "cairnstone_get_tool_contract",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Hydrate the exact canonical mcpTools() schema for one catalog tool, joined with its broker classification overlay. Read-only.",
+    input_schema: {
+      type: "object",
+      required: ["name"],
+      properties: {
+        name: { type: "string", description: "Exact tool name from the canonical mcpTools() catalog, e.g. 'cairnstone_resume_chain'." }
+      },
+      additionalProperties: false
+    }
   })
 ]);
 
