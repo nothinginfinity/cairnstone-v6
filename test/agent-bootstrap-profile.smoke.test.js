@@ -138,6 +138,61 @@ test("V7.6.0 smoke: diagnostics never affects package_id (hashablePayload exclud
   }
 });
 
+test("V7.6.0 smoke: STRONG identity regression -- include_profile:true/false yield identical package_id, limits, memory items, and every canonical field (per chatgpt:cairnstone-v6's V7.6.0 review)", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    const withoutProfile = await agentBootstrapFromBody(
+      { actor_id: "test:strong-identity", task: "strong identity check", chain: "cairnstone-v6-project-memory" },
+      makeEnv(),
+      makeDeps()
+    );
+    const withProfile = await agentBootstrapFromBody(
+      {
+        actor_id: "test:strong-identity",
+        task: "strong identity check",
+        chain: "cairnstone-v6-project-memory",
+        include_profile: true
+      },
+      makeEnv(),
+      makeDeps({ mcpToolDefinitions: [{ name: "x", description: "d", inputSchema: {} }] })
+    );
+
+    assert.equal(withoutProfile.ok, true);
+    assert.equal(withProfile.ok, true);
+
+    // 1. package_id must be byte-identical.
+    assert.equal(withoutProfile.package_id, withProfile.package_id);
+
+    // 2. limits (produced by enforceSizeDiscipline, which must run
+    // identically regardless of include_profile) must be deep-equal.
+    assert.deepEqual(withoutProfile.limits, withProfile.limits);
+
+    // 3. memory item set/order must be identical -- proves include_profile
+    // cannot influence trimming decisions made before profiling runs.
+    assert.deepEqual(withoutProfile.memory, withProfile.memory);
+
+    // 4. Every canonical package field must be identical after stripping
+    // only the fields that legitimately differ (diagnostics itself, and
+    // runtime.compiled_at, which is a real wall-clock timestamp generated
+    // independently per call and is correctly excluded from
+    // hashablePayload/package_id -- not a profiler side effect). This is
+    // the strongest available proof the profiler is purely observational.
+    const normalize = obj => {
+      const { diagnostics, ...rest } = obj;
+      return { ...rest, runtime: { ...rest.runtime, compiled_at: null } };
+    };
+    assert.deepEqual(normalize(withoutProfile), normalize(withProfile));
+
+    // 5. And the only difference between the two full responses is the
+    // presence of `diagnostics` -- confirms no other field was added,
+    // removed, or reordered as a side effect of profiling.
+    assert.equal("diagnostics" in withoutProfile, false);
+    assert.equal("diagnostics" in withProfile, true);
+  } finally {
+    restore();
+  }
+});
+
 test("V7.6.0 smoke: include_profile:false behaves identically to absent", async () => {
   const restore = mockGithubFetchOnce();
   try {
