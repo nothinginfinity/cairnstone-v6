@@ -108,15 +108,33 @@ test("computeMcpSchemaProfile: measures exact provided tool definitions, not a h
   assert.equal(profile.tool_count, 2);
   assert.equal(profile.per_tool.length, 2);
   assert.equal(profile.per_tool[0].name, "cairnstone_health");
-  const expectedTotal = tools.reduce((sum, t) => sum + new TextEncoder().encode(JSON.stringify(t)).length, 0);
-  assert.equal(profile.total_schema_bytes, expectedTotal);
+  const expectedPerToolSum = tools.reduce((sum, t) => sum + new TextEncoder().encode(JSON.stringify(t)).length, 0);
+  const expectedArrayBytes = new TextEncoder().encode(JSON.stringify(tools)).length;
+  assert.equal(profile.per_tool_schema_sum_bytes, expectedPerToolSum);
+  assert.equal(profile.definitions_array_bytes, expectedArrayBytes);
+  // total_schema_bytes must be the exact array baseline (per chatgpt's
+  // V7.6.0 review), not the sum-of-parts, since the array framing
+  // ([ ] and inter-element commas) is real payload cost that a per-tool
+  // sum silently omits.
+  assert.equal(profile.total_schema_bytes, expectedArrayBytes);
+  // Array framing overhead should be positive for 2+ tools (comma between
+  // elements plus brackets) and exactly account for the gap.
+  assert.equal(profile.serialization_overhead_bytes, expectedArrayBytes - expectedPerToolSum);
+  assert.ok(profile.serialization_overhead_bytes > 0);
+  // Wire-envelope evidence must be reported separately and must not be
+  // conflated with the model-visible schema baseline.
+  const expectedResultBytes = new TextEncoder().encode(JSON.stringify({ tools })).length;
+  assert.equal(profile.tools_list_result_bytes, expectedResultBytes);
+  assert.notEqual(profile.tools_list_result_bytes, profile.definitions_array_bytes);
 });
 
 test("computeMcpSchemaProfile: empty registry yields zero cost, not an error", () => {
   const profile = computeMcpSchemaProfile([]);
   assert.equal(profile.ok, true);
   assert.equal(profile.tool_count, 0);
-  assert.equal(profile.total_schema_bytes, 0);
+  assert.equal(profile.total_schema_bytes, 2); // "[]"
+  assert.equal(profile.per_tool_schema_sum_bytes, 0);
+  assert.equal(profile.serialization_overhead_bytes, 2);
 });
 
 test("computeMcpSchemaProfile: rejects non-array input", () => {
