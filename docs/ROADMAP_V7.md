@@ -426,6 +426,51 @@ Acceptance should prove at least one real paid subagent call end-to-end: x402 pa
 
 ---
 
+## V7.6 — Context Efficiency & MCP Surface Optimization
+
+Status: **PLANNED / BASELINE-FIRST.** Optimize the existing canonical CairnStone V7 codebase in-place behind additive compatibility boundaries; do not fork a competing optimized repo. Production defaults remain unchanged until parity, rollback, and live-canary gates close.
+
+Primary goals:
+
+- add exact context-cost telemetry for MCP schemas and V7 bootstrap packages;
+- reduce model-visible bootstrap size with a sparse, cryptographically complete authority envelope while keeping the full accepted path-head set authoritative server-side;
+- add compact orientation/manifest response modes for mature chains;
+- add an additive lightweight/core MCP exposure profile so clients need not ingest the full tool catalog when they only need boot/orientation/search/delegation capabilities;
+- consider a Git-versioned, CairnStone-accepted runtime instruction brief only after lower-risk authority/tool-surface wins are measured;
+- preserve legacy full-context behavior as a rollback path until optimized behavior is live-accepted.
+
+Initial measured baseline (2026-08-30): connected production MCP `0.5.19` advertises 51 tools; minimal V7 bootstrap measured 44,133 bytes with zero memory hits/inbox items; a normal bounded bootstrap measured 57,563 bytes. GitHub `main` is already ahead at commit `ecf7442da977c0b7790b3e0f39f4e564cb9eb9fc` / package version `0.5.20`, so repo SHA and live deployed runtime must be recorded separately in every acceptance result.
+
+### V7.6.0 — Exact context-cost profiler
+
+First implementation slice; **no behavioral/default change**. Measure serialized tool-schema bytes, estimated schema tokens, bootstrap section bytes/tokens, provider actual input/output tokens when available, total estimated CairnStone startup footprint, and context-window percentage. Measurements must derive from exact server-exposed definitions and serialized packages, not hand-maintained estimates.
+
+### V7.6.1 — Sparse authority envelope
+
+Add opt-in `optimized_sparse` bootstrap alongside current `legacy_full`. Preserve canonical chain HEAD plus a deterministic digest/root over the complete accepted path-head set; transmit only task-relevant represented path HEADs to the reasoning model and expose deterministic expansion for omitted heads. Sparsity changes transmission, not authority.
+
+### V7.6.2 — Progressive MCP tool exposure
+
+Keep the existing full `/mcp` surface intact. Add an additive core/lite connection profile or endpoint with a small boot surface and deterministic registry/capability discovery. Do not depend on dynamic-schema behavior until ChatGPT, Claude, and at least one additional MCP client prove interoperability.
+
+### V7.6.3 — Compact orientation/manifest reads
+
+Add bounded/detail-aware resume and manifest responses for mature chains: chain HEAD + provenance, authority digest/counts, relevant/recent path heads as requested, HEAD edges, and delta support, with explicit full expansion still available. Replace fixed-size documentation claims with measured size telemetry.
+
+### V7.6.4 — Canonical instruction runtime brief
+
+Higher-risk and deferred until earlier wins are measured. The full `docs/AI_OPERATING_GUIDE.md` remains canonical authority. Any runtime brief must be Git-versioned, CairnStone-accepted, identity-bound to the full guide, coverage-tested for safety/authority rules, and fail closed to the full guide when stale or mismatched. Never optimize by arbitrary truncation.
+
+### V7.6.5 — Canary/default flip
+
+Only after V7.6.0-.4 parity gates: run the full V7.0-V7.5 regression matrix, cross-provider identity checks, deliberate authority-race tests, tool-policy/human-confirmed mutation tests, secret-isolation tests, and live canary. Keep one-step rollback to legacy behavior before making optimized mode recommended/default.
+
+Initial quantitative targets: >=50% reduction in mature-chain bootstrap bytes; >=50% reduction in tool-schema bytes for the recommended core profile; approximately 8k-15k combined startup tokens where task complexity permits; zero authority/policy regression and no extra model calls merely to reconstruct deterministic CairnStone state.
+
+Canonical detailed plan: `project-memory/v76-context-efficiency-optimization-plan.md`.
+
+---
+
 ## Phase ordering
 
 ```text
