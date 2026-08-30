@@ -18,18 +18,20 @@
 //   from src/index.js) -- this module never hand-maintains or guesses at
 //   schemas itself.
 // - token counts are always clearly labeled ESTIMATES derived from a
-//   documented, conservative heuristic, never presented as provider-exact
-//   unless they came from real provider usage telemetry the caller
-//   supplies separately (e.g. cairnstone_model_route's actual
+//   documented heuristic, never presented as provider-exact unless they
+//   came from real provider usage telemetry the caller supplies
+//   separately (e.g. cairnstone_model_route's actual
 //   input_tokens/output_tokens).
 
 export const CONTEXT_PROFILE_SCHEMA = "cairnstone-context-profile-v1";
 
-// Conservative, documented token estimator: ~4 UTF-8 bytes per token for
-// mixed English-prose + JSON payloads. This is a heuristic, not a real
-// tokenizer -- callers must not treat it as authoritative. It exists so
-// context-cost figures are directionally comparable across sections and
-// across time without requiring a live provider round-trip to measure.
+// Documented token estimator: ~4 UTF-8 bytes per token for mixed
+// English-prose + JSON payloads. This is an unvalidated heuristic, not a
+// real tokenizer -- it has not been compared against actual
+// tokenizer/provider telemetry, and JSON-heavy schemas in particular may
+// tokenize quite differently from prose. Callers must not treat it as
+// authoritative or assume it is conservative (i.e. an upper bound) without
+// that comparison.
 const DEFAULT_BYTES_PER_TOKEN_ESTIMATE = 4;
 
 const PACKAGE_SECTION_KEYS = [
@@ -143,7 +145,7 @@ export function computeBootstrapPackageProfile(packageBody, options = {}) {
         ? bytesPerToken
         : DEFAULT_BYTES_PER_TOKEN_ESTIMATE,
       authoritative: false,
-      note: "Conservative heuristic (UTF-8 bytes / bytes_per_token, rounded up). Not a real tokenizer; use actual provider input_tokens/output_tokens when available for authoritative counts."
+      note: "Unvalidated heuristic (UTF-8 bytes / bytes_per_token, rounded up), not compared against real tokenizer/provider telemetry. Not a real tokenizer; use actual provider input_tokens/output_tokens when available for authoritative counts."
     }
   };
 }
@@ -168,14 +170,42 @@ export function computeMcpSchemaProfile(mcpToolDefinitions, options = {}) {
     };
   });
 
-  const totalSchemaBytes = perTool.reduce((sum, item) => sum + item.schema_bytes, 0);
+  // Per chatgpt:cairnstone-v6's V7.6.0 review: summing each tool's
+  // independently-serialized bytes omits the enclosing array's own framing
+  // (the `[`/`]` and inter-element commas), so that sum alone is NOT the
+  // exact byte count of the real serialized definitions array a client
+  // would receive. Report both explicitly rather than picking one and
+  // calling it exact:
+  //  - perToolSchemaSumBytes: sum of each tool's bare-value bytes (useful
+  //    for a per-tool breakdown, but not literally what's transmitted)
+  //  - definitionsArrayBytes: the exact serialized array as a whole -- THIS
+  //    is the correct baseline for "how many bytes is the tool-schema
+  //    payload" and what combined-startup accounting should use
+  //  - serializationOverheadBytes: the framing cost between the two, for
+  //    transparency (should be small and roughly constant, similar to the
+  //    packageBody metadata_bytes finding)
+  const perToolSchemaSumBytes = perTool.reduce((sum, item) => sum + item.schema_bytes, 0);
+  const definitionsArrayBytes = jsonBytes(mcpToolDefinitions);
+  const serializationOverheadBytes = definitionsArrayBytes - perToolSchemaSumBytes;
+
+  // Optional wire/result-envelope evidence -- how many bytes the actual
+  // tools/list JSON-RPC result payload's `{tools: [...]}` body would be.
+  // Kept separate and clearly labeled per the review: this is transport
+  // envelope shape, not the model-visible schema baseline, and must never
+  // be conflated with definitionsArrayBytes above.
+  const toolsListResultBytes = jsonBytes({ tools: mcpToolDefinitions });
 
   return {
     ok: true,
     schema: CONTEXT_PROFILE_SCHEMA,
     tool_count: mcpToolDefinitions.length,
-    total_schema_bytes: totalSchemaBytes,
-    estimated_total_schema_tokens: estimateTokens(totalSchemaBytes, bytesPerToken),
+    // Exact baseline for schema-byte accounting and combined-startup use.
+    total_schema_bytes: definitionsArrayBytes,
+    per_tool_schema_sum_bytes: perToolSchemaSumBytes,
+    definitions_array_bytes: definitionsArrayBytes,
+    serialization_overhead_bytes: serializationOverheadBytes,
+    tools_list_result_bytes: toolsListResultBytes,
+    estimated_total_schema_tokens: estimateTokens(definitionsArrayBytes, bytesPerToken),
     per_tool: perTool,
     estimator: {
       name: "bytes_per_token_heuristic",
@@ -184,6 +214,7 @@ export function computeMcpSchemaProfile(mcpToolDefinitions, options = {}) {
         : DEFAULT_BYTES_PER_TOKEN_ESTIMATE,
       authoritative: false
     }
+
   };
 }
 
