@@ -613,7 +613,9 @@ V7.4 Cross-project agent profiles (COMPLETE — V7.4.0 + generalized profile sys
         ↓
 V7.5 x402 paid sub-agent runtime (IN PROGRESS — V7.5.0 contract/quote boundary started; settlement gated)
         ↓
-V7.6 Context Efficiency & MCP Surface Optimization (PLANNED — V7.6.0 exact profiler first, then V7.6.2 Deferred Tool Hydration / Tool Vault as the first behavior-changing optimization)
+V7.6 Context Efficiency & MCP Surface Optimization (PLANNED — active optimization/interop track; complete its acceptance gate first)
+        ↓
+V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (PLANNED / READ-FIRST — catalog + scope contract → multi-chain search → grounded Q&A → Console Scope → saved workspaces → live scale/citation gate)
 ```
 
 Do not skip V7.0.
