@@ -562,11 +562,11 @@ Add scope-grounded Q&A, working name `cairnstone_ask_scope`. Resolve the scope d
 
 If a participating authority pointer changes during scope compilation or citation grounding, fail closed or deterministically re-resolve; never silently combine evidence from two authority snapshots. Persisted cross-scope answers, if later enabled, belong only in a derived workspace/ask chain and never move any source chain or path HEAD.
 
-### V7.7.3 — Console global Scope navigation
+### V7.7.3 — Console global Scope navigation + Bird's Eye / Universe view
 
-Replace the current single Chain field with a mobile-first **Scope** control. The selector should expose `All CairnStone`, repositories with their child chains, explicit multi-select, and the raw chain IDs needed for advanced operation. A compact summary such as `2 repos · 4 chains` should remain visible after selection.
+Replace the current single Chain field with a mobile-first **Scope** control with two complementary projections: a fast searchable list/recents selector for known targets and an optional full-screen **Bird's Eye / Universe** spatial navigator for large stoned accounts. The spatial view should expose `All CairnStone`, repository nodes, bounded child-chain unfold, explicit multi-select, and search-to-focus while resolving to the exact same `cairnstone-scope-v1` selectors as the list UI. A compact summary such as `2 repos · 4 chains` remains visible after selection.
 
-The resolved Scope becomes shared Console state for Chat, Evidence, Activity, and Stones, with Handoff/Inbox filtering only where real message metadata supports the association. Do not fabricate repository ownership for correspondence that has no such provenance. The Console remains a client of CairnStone authority, never a competing source of truth.
+The resolved Scope becomes shared Console state for Chat, Evidence, Activity, and Stones, with Handoff/Inbox filtering only where real message metadata supports the association. The Universe is a **projection, not authority**: coordinates, clustering, animation, and semantic proximity never create accepted-state or CairnStone graph relationships. Permanent visual edges require grounded stored relationships; temporary search/retrieval/reasoning paths must remain visibly non-persistent. Use semantic LOD so repo overview does not render every chain or stone. The initial renderer may reuse/adapt interaction patterns from `nothinginfinity/prax-your-universe` (Three.js orbit/zoom, sphere/grid projections, raycast selection) without adopting its persistence/domain model. Do not fabricate repository ownership for correspondence that has no such provenance. The Console remains a client of CairnStone authority, never a competing source of truth.
 
 ### V7.7.4 — Saved workspaces + cross-repo operating views
 
@@ -587,6 +587,8 @@ Acceptance must prove at minimum:
 - scope reads and saved workspaces cause zero source chain/path-HEAD mutation and grant zero execution authority;
 - server-side ranking has deterministic limits and protects smaller chains from corpus-size starvation;
 - the Console applies one global Scope consistently across supported panels on mobile with no horizontal overflow;
+- fast list/search and Bird's Eye / Universe selection resolve to the same canonical Scope, with semantic LOD, bounded unfold, multi-select, search-to-focus, and a usable list fallback when WebGL/spatial rendering is unavailable;
+- visual layout/proximity never creates accepted authority or stored graph edges, and temporary retrieval/reasoning paths are visibly non-persistent;
 - live tests cover at least three genuinely stoned repositories and exercise single-chain, repo, multi-repo, and vault modes;
 - the milestone works through full `/mcp` and portable `/mcp/core` Tool Vault paths without relying on native dynamic hydration.
 
