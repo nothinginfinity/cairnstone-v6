@@ -172,9 +172,9 @@ Evidence policy:
 
 Initial `cairnstone_ask_scope` is non-persistent by default. If persisted cross-scope answers are added later, write them only into a derived workspace/ask chain with explicit source citations. Never move a source project's chain HEAD or path HEAD.
 
-## V7.7.3 — Console global Scope navigation
+## V7.7.3 — Console global Scope navigation + Bird's Eye / Universe projection
 
-Replace the current `Chain` field with a mobile-first **Scope** control.
+Replace the current `Chain` field with a mobile-first **Scope** control that supports two complementary navigation modes: a fast searchable selector for known targets and an optional full-screen **Bird's Eye / Universe** spatial navigator for exploring a large stoned account. The spatial view is a projection of the same server-resolved `cairnstone-scope-v1` catalog and must never become a second source of project truth.
 
 Opening Scope presents:
 
@@ -195,6 +195,25 @@ Infinite Radio + CairnStone
 
 For a single chain, preserve the current fast workflow and expose the exact chain ID.
 
+### Bird's Eye / Universe projection
+
+The Scope surface should expose an `Open Universe` / `Bird's Eye` action for cases where a list or dropdown stops scaling. The initial implementation may adapt the proven interaction/rendering patterns from `nothinginfinity/prax-your-universe` — Three.js scene, orbit/zoom controls, sphere and grid projections, raycast selection, typed node visuals, and detail-panel selection — but CairnStone owns a different data model. Prax is an implementation reference, not a persistence or authority dependency.
+
+The visual hierarchy uses semantic zoom / level-of-detail rather than rendering the entire vault at once:
+
+1. **Vault view** — one account/universe root plus repository constellations;
+2. **Repository view** — repository nodes are the primary visible objects at normal Bird's Eye distance;
+3. **Chain unfold** — selecting or zooming into a repository unfolds only that repository's relevant CairnStone chains;
+4. **Intelligence unfold** — only on explicit drill-down, reveal bounded milestones, accepted HEADs/path HEADs, handoffs, evidence, or other high-value objects. Individual stones are not rendered as a default galaxy of thousands of dots.
+
+Selecting one or more visible repo/chain nodes produces the same canonical selectors as the list/search UI and resolves through the same server-side Scope contract. Switching between list, grid, and sphere/Universe views must preserve the pending selection rather than create parallel selection state.
+
+Spatial coordinates, clustering, animation, and visual proximity are **projection metadata only**. They may be recomputed freely and never imply accepted-state authority or a factual CairnStone graph relationship. Permanent rendered relationship lines are allowed only for real stored CairnStone edges or other explicitly grounded relationships. Search/retrieval/reasoning paths may be visualized temporarily, but must use a distinct style/state and disappear without writing graph edges.
+
+At large scale, the browser receives/render only the current LOD plus bounded nearby/selected metadata. Opening `All CairnStone` is not permission to materialize every stone or send the entire vault to the model. Catalog → filtered candidates → selected repo/chains → bounded intelligence unfold is the required progression.
+
+The Universe view should remain optional. Search, recents, keyboard-friendly list/grid navigation, and raw chain entry remain first-class fallbacks for accessibility, low-power devices, and users who already know the target.
+
 ### Shared Console state
 
 The Console should have one resolved Scope state, not independent chain fields per panel. At minimum it drives:
@@ -208,7 +227,7 @@ Handoff/Inbox must be handled honestly. AC1 records that explicitly identify cha
 
 Changing Scope should resolve a fresh server snapshot, update the compact header, invalidate result caches tied to the old `scope_id`/`authority_digest`, preserve the current tab where sensible, and never alter accepted CairnStone state.
 
-On mobile, use a sheet/dialog with 44px+ targets, search, clear selection, and an explicit Apply action for multi-select. Preserve the existing no-horizontal-overflow acceptance behavior.
+On mobile, the fast selector uses a sheet/dialog with 44px+ targets, search, clear selection, and an explicit Apply action for multi-select. The Bird's Eye view may occupy a full-screen modal/surface with touch orbit/pan/zoom, a persistent search escape hatch, a clear `Back to list` action, and an explicit Apply action. Preserve the existing no-horizontal-overflow acceptance behavior and provide a non-WebGL/list fallback if spatial rendering is unavailable.
 
 ## V7.7.4 — Saved workspaces and cross-repo operating views
 
@@ -261,7 +280,12 @@ The milestone is not complete until live acceptance proves the following.
 ### Console
 
 - Scope selector lists repository groups and raw chains correctly;
+- fast list/search selection and Bird's Eye / Universe selection resolve to the same canonical Scope selectors and `scope_id`;
 - single-chain, repo, multi-repo, and All CairnStone modes work on mobile;
+- Bird's Eye supports repository-level overview, bounded chain unfold, multi-select, search-to-focus, sphere/grid or equivalent spatial projections, and a deterministic return to the normal Console;
+- visual coordinates/proximity never create authority or graph edges; permanent relationship lines correspond only to grounded stored relationships, while temporary retrieval/reasoning paths are visibly non-persistent;
+- large fixtures prove semantic LOD: repository overview does not materialize every chain/stone, and chain/intelligence children load only for focused/selected regions under explicit bounds;
+- WebGL/spatial failure falls back to usable list/search Scope navigation;
 - Chat, Evidence, Activity, and Stones use the same resolved Scope where supported;
 - correspondence is filtered only where provenance supports it;
 - stale scoped results are invalidated after Scope changes;
@@ -314,7 +338,7 @@ Recommended implementation order:
 V7.7.0 catalog + scope snapshot contract
   -> V7.7.1 scope-aware deterministic search
   -> V7.7.2 cross-chain grounded Q&A
-  -> V7.7.3 Console Scope selector/shared state
+  -> V7.7.3 Console Scope selector/shared state + Bird's Eye / Universe projection
   -> V7.7.4 saved workspaces/cross-repo operating views
   -> V7.7.5 live scale + race + citation acceptance
 ```
