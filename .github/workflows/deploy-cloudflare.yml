@@ -1006,6 +1006,96 @@ jobs:
 
           echo "V7.4.1 live acceptance passed: repo-debugger reused one durable profile on the independent praxiq-call chain, its governed reconcile read preserved the actual drift summary into model grounding, Workers AI and DeepSeek preserved identical package/request/profile/classification identity with zero model tool surface and zero mutation authority, an unlisted chain failed closed before work, and both canonical chains remained unchanged."
 
+
+      - name: V7.6.2b native tool hydration live acceptance
+        if: github.event.inputs.run_v762b_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+          CORE="$BASE/mcp/core"
+          FULL="$BASE/mcp"
+
+          health="$(curl -fsS "$BASE/health")"
+          echo "$health" | jq -e '
+            .ok == true and
+            ((.mcp_tools | index("cairnstone_load_tools")) != null) and
+            ((.mcp_core_tools | index("cairnstone_load_tools")) != null)
+          ' >/dev/null
+
+          # Full /mcp legacy profile must not advertise experimental listChanged.
+          full_init="$(curl -fsS -X POST "$FULL" -H 'content-type: application/json' -H 'accept: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}')"
+          echo "$full_init" | jq -e '.result.capabilities.tools == {}' >/dev/null
+
+          # Establish a core session and confirm listChanged is advertised.
+          init_headers="$(mktemp)"
+          init_body="$(curl -fsS -D "$init_headers" -X POST "$CORE" -H 'content-type: application/json' -H 'accept: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}')"
+          echo "$init_body" | jq -e '.result.capabilities.tools.listChanged == true' >/dev/null
+          SESSION_ID="$(grep -i '^mcp-session-id:' "$init_headers" | tr -d '\r' | cut -d' ' -f2)"
+          test -n "$SESSION_ID"
+
+          # Unhydrated tools/list on this session: exactly the 9-tool core set, no more.
+          list1="$(curl -fsS -X POST "$CORE" -H 'content-type: application/json' -H 'accept: application/json' -H "Mcp-Session-Id: $SESSION_ID" --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')"
+          echo "$list1" | jq -e '
+            (.result.tools | length) == 9 and
+            (.result.tools | map(.name) | index("cairnstone_load_tools")) != null and
+            (.result.tools | map(.name) | index("cairnstone_get_source_freshness")) == null
+          ' >/dev/null
+
+          # Ineligible (mutation-class) hydration request is rejected and persists nothing.
+          bad_hydrate="$(curl -fsS -X POST "$CORE" -H 'content-type: application/json' -H 'accept: application/json' -H "Mcp-Session-Id: $SESSION_ID" --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cairnstone_load_tools","arguments":{"tool_ids":["cairnstone_commit_v2"]}}}')"
+          bad_payload="$(echo "$bad_hydrate" | jq -c '.result.content[0].text | fromjson')"
+          echo "$bad_payload" | jq -e '.ok == false and .error == "native_hydration_selection_rejected" and (.policy_ineligible[0].risk_class == "mutation")' >/dev/null
+
+          # JSON-only (non-SSE) eligible hydration: succeeds but honestly reports no notification delivery.
+          hydrate="$(curl -fsS -X POST "$CORE" -H 'content-type: application/json' -H 'accept: application/json' -H "Mcp-Session-Id: $SESSION_ID" --data '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"cairnstone_load_tools","arguments":{"tool_ids":["cairnstone_get_source_freshness"]}}}')"
+          hydrate_payload="$(echo "$hydrate" | jq -c '.result.content[0].text | fromjson')"
+          echo "$hydrate_payload" | jq -e '
+            .ok == true and
+            .schema == "cairnstone-native-tool-hydration-v1" and
+            (.hydrated_tool_ids | index("cairnstone_get_source_freshness")) != null and
+            .notification_delivered == false and
+            .portable_fallback_required == true and
+            .accepted_state_authority == false
+          ' >/dev/null
+
+          # tools/list on the SAME session now includes the hydrated tool.
+          list2="$(curl -fsS -X POST "$CORE" -H 'content-type: application/json' -H 'accept: application/json' -H "Mcp-Session-Id: $SESSION_ID" --data '{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}')"
+          echo "$list2" | jq -e '(.result.tools | map(.name) | index("cairnstone_get_source_freshness")) != null' >/dev/null
+
+          # The hydrated tool is now directly callable on this session (not "tool_not_in_core_profile").
+          hydrated_call="$(curl -fsS -X POST "$CORE" -H 'content-type: application/json' -H 'accept: application/json' -H "Mcp-Session-Id: $SESSION_ID" --data '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"cairnstone_get_source_freshness","arguments":{"chain":"cairnstone-v6","path":"wrangler.toml"}}}')"
+          echo "$hydrated_call" | jq -e '(.result.content[0].text | fromjson | .error // "") != "tool_not_in_core_profile"' >/dev/null
+
+          # A second, independent session never sees the first session's hydration (isolation).
+          init2_headers="$(mktemp)"
+          curl -fsS -D "$init2_headers" -X POST "$CORE" -H 'content-type: application/json' -H 'accept: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' >/dev/null
+          SESSION_ID2="$(grep -i '^mcp-session-id:' "$init2_headers" | tr -d '\r' | cut -d' ' -f2)"
+          list_other="$(curl -fsS -X POST "$CORE" -H 'content-type: application/json' -H 'accept: application/json' -H "Mcp-Session-Id: $SESSION_ID2" --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')"
+          echo "$list_other" | jq -e '(.result.tools | length) == 9 and (.result.tools | map(.name) | index("cairnstone_get_source_freshness")) == null' >/dev/null
+
+          # SSE-capable hydration on session 2: notification event precedes the result event, and delivery is honestly reported true.
+          sse_hydrate="$(curl -fsS -X POST "$CORE" -H 'content-type: application/json' -H 'accept: text/event-stream' -H "Mcp-Session-Id: $SESSION_ID2" --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cairnstone_load_tools","arguments":{"tool_ids":["cairnstone_get_source_freshness"]}}}')"
+          echo "$sse_hydrate" | grep -c '^event: message$' | grep -qx 2
+          sse_notification_line="$(echo "$sse_hydrate" | grep '^data:' | head -1 | sed 's/^data: //')"
+          echo "$sse_notification_line" | jq -e '.method == "notifications/tools/list_changed"' >/dev/null
+          sse_result_line="$(echo "$sse_hydrate" | grep '^data:' | tail -1 | sed 's/^data: //')"
+          echo "$sse_result_line" | jq -e '(.result.content[0].text | fromjson) as $p | $p.ok == true and $p.notification_delivered == true and $p.portable_fallback_required == false' >/dev/null
+
+          # DELETE terminates session 1's hydration; tools/list on that same Mcp-Session-Id afterward falls back to the bare core set.
+          delete_status="$(curl -fsS -X DELETE "$CORE" -H "Mcp-Session-Id: $SESSION_ID" -w '%{http_code}' -o /tmp/v762b_delete.json)"
+          test "$delete_status" = "200"
+          jq -e '.ok == true and .deleted == true and .accepted_state_authority == false' /tmp/v762b_delete.json >/dev/null
+          list_after_delete="$(curl -fsS -X POST "$CORE" -H 'content-type: application/json' -H 'accept: application/json' -H "Mcp-Session-Id: $SESSION_ID" --data '{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}')"
+          echo "$list_after_delete" | jq -e '(.result.tools | length) == 9 and (.result.tools | map(.name) | index("cairnstone_get_source_freshness")) == null' >/dev/null
+
+          # A load_tools call against the deleted/unknown session fails closed with an honest portable-fallback signal, never a false success.
+          post_delete_hydrate="$(curl -fsS -X POST "$CORE" -H 'content-type: application/json' -H 'accept: application/json' -H "Mcp-Session-Id: $SESSION_ID" --data '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"cairnstone_load_tools","arguments":{"tool_ids":["cairnstone_get_source_freshness"]}}}')"
+          post_delete_payload="$(echo "$post_delete_hydrate" | jq -c '.result.content[0].text | fromjson')"
+          echo "$post_delete_payload" | jq -e '.ok == false and .portable_fallback_required == true' >/dev/null
+
+          echo "V7.6.2b live acceptance passed: full /mcp stayed on legacy capabilities, /mcp/core sessions established real D1-backed state, ineligible mutation-class hydration was rejected, eligible hydration was session-isolated and directly callable only after hydration, SSE-capable callers received a genuine notifications/tools/list_changed event before the result while JSON-only callers got an honest portable_fallback_required signal, DELETE terminated hydration state, and a deleted/unknown session failed closed."
+
   v741_diagnostic:
     needs: deploy
     if: false
