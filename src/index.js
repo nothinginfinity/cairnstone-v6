@@ -48,7 +48,8 @@ import {
   TOOL_AUTHORIZATION_PREPARE_TOOL_DEFINITION,
   TOOL_EXECUTE_TOOL_DEFINITION,
   TOOL_POLICY_PREVIEW_TOOL_DEFINITION,
-  TOOL_REGISTRY_TOOL_DEFINITION
+  TOOL_REGISTRY_TOOL_DEFINITION,
+  DEFAULT_TOOL_BROKER_REGISTRY
 } from "./model-router.js";
 import {
   authorizeToolRequestFromBody,
@@ -67,6 +68,14 @@ import {
   TOOL_SEARCH_TOOL_DEFINITION,
   TOOL_CONTRACT_TOOL_DEFINITION
 } from "./tool-catalog.js";
+import {
+  createMcpCoreSession,
+  getMcpCoreSession,
+  setMcpCoreSessionTools,
+  deleteMcpCoreSession,
+  validateNativeHydrationSelection,
+  LOAD_TOOLS_TOOL_DEFINITION
+} from "./mcp-session.js";
 
 const VERSION = "0.5.20";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
@@ -92,7 +101,11 @@ const CORE_TOOL_NAMES = Object.freeze(new Set([
   "cairnstone_get_tool_contract",
   "cairnstone_tool_policy_preview",
   "cairnstone_tool_execute",
-  "cairnstone_tool_authorization_prepare"
+  "cairnstone_tool_authorization_prepare",
+  // V7.6.2b: experimental native-hydration control tool. Always present in
+  // the /mcp/core boot surface (portable regardless of client support); see
+  // src/mcp-session.js for the session-state and eligibility rules.
+  "cairnstone_load_tools"
 ]));
 
 export default {
@@ -288,9 +301,44 @@ function routes() {
   ];
 }
 
-function mcpToolsForProfile(core) {
+function mcpToolsForProfile(core, hydratedToolIds) {
   const all = mcpTools();
-  return core ? all.filter(tool => CORE_TOOL_NAMES.has(tool.name)) : all;
+  if (!core) return all;
+  const hydrated = hydratedToolIds instanceof Set
+    ? hydratedToolIds
+    : new Set(Array.isArray(hydratedToolIds) ? hydratedToolIds : []);
+  // V7.6.2b: the boot-visible core set is CORE_TOOL_NAMES plus whatever this
+  // session has explicitly and eligibly hydrated via cairnstone_load_tools.
+  // Session overlays are transport state only -- they never change which
+  // tools exist, only which are natively listed for this one session.
+  return all.filter(tool => CORE_TOOL_NAMES.has(tool.name) || hydrated.has(tool.name));
+}
+
+async function getSessionHydratedToolIds(env, core, sessionId) {
+  if (!core || !sessionId || !env.CAIRNSTONE_DB) return new Set();
+  const session = await getMcpCoreSession(env.CAIRNSTONE_DB, sessionId);
+  return session.ok ? new Set(session.hydrated_tool_ids) : new Set();
+}
+
+// V7.6.2b: annotate the cairnstone_load_tools tool result with whether the
+// notifications/tools/list_changed message could actually be delivered on
+// this transport. Only ever downgrades an optimistic default to false --
+// never upgrades a value the transport layer didn't actually confirm, so a
+// JSON-only caller is never told a refresh happened when it did not.
+function annotateNotificationDelivery(rpcResultEnvelope, delivered) {
+  try {
+    const block = rpcResultEnvelope && rpcResultEnvelope.result && Array.isArray(rpcResultEnvelope.result.content)
+      ? rpcResultEnvelope.result.content[0]
+      : null;
+    if (!block || typeof block.text !== "string") return rpcResultEnvelope;
+    const payload = JSON.parse(block.text);
+    payload.notification_delivered = Boolean(delivered);
+    payload.portable_fallback_required = !delivered;
+    block.text = JSON.stringify(payload, null, 2);
+  } catch {
+    // Leave the original result untouched if it wasn't the shape we expect.
+  }
+  return rpcResultEnvelope;
 }
 
 async function handleMcp(request, env, url, options = {}) {
@@ -306,13 +354,23 @@ async function handleMcp(request, env, url, options = {}) {
       endpoint: `${url.origin}${core ? "/mcp/core" : "/mcp"}`,
       methods: ["initialize", "tools/list", "tools/call"],
       tools: mcpToolsForProfile(core).map(tool => ({ name: tool.name, description: tool.description })),
-      note: core ? "Bounded V7.6.2a boot surface. Every other catalog tool is reachable generically via cairnstone_tool_search -> cairnstone_get_tool_contract -> cairnstone_tool_policy_preview -> cairnstone_tool_execute, or from the full /mcp surface." : undefined
+      note: core ? "Bounded V7.6.2a boot surface plus V7.6.2b experimental native tool hydration via cairnstone_load_tools. Every other catalog tool remains reachable generically via cairnstone_tool_search -> cairnstone_get_tool_contract -> cairnstone_tool_policy_preview -> cairnstone_tool_execute, or from the full /mcp surface." : undefined
     });
   }
 
-  if (request.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
-
   const sessionId = request.headers.get("mcp-session-id") || crypto.randomUUID();
+
+  // V7.6.2b: DELETE terminates this session's experimental native-hydration
+  // overlay. This is transport/runtime cleanup only -- it never touches
+  // chain_heads/path_heads and grants no execution/mutation authority.
+  if (request.method === "DELETE") {
+    if (!core) return withSession(json({ ok: true, note: "No session state on the full /mcp profile." }), sessionId);
+    if (!env.CAIRNSTONE_DB) return withSession(json({ ok: false, error: "mcp_session_store_unavailable" }, 503), sessionId);
+    const deleted = await deleteMcpCoreSession(env.CAIRNSTONE_DB, sessionId);
+    return withSession(json(deleted, deleted.ok ? 200 : 400), sessionId);
+  }
+
+  if (request.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
 
   let rpc;
   try {
@@ -321,58 +379,158 @@ async function handleMcp(request, env, url, options = {}) {
     return mcpRespond(request, rpcError(null, -32700, "Parse error"), sessionId, 400);
   }
 
+  const accept = request.headers.get("accept") || "";
+  const sseCapable = accept.includes("text/event-stream");
+
   if (Array.isArray(rpc)) {
+    // Batch requests keep V7.6.2a behavior exactly: notifications are only
+    // ever emitted for the single-request path below, so any
+    // cairnstone_load_tools call inside a batch conservatively reports
+    // portable_fallback_required:true rather than guessing at delivery.
     const results = [];
     for (const item of rpc) {
-      const result = await handleMcpRpc(item, env, { core });
-      if (result) results.push(result);
+      const dispatched = await handleMcpRpc(item, env, { core, sessionId });
+      if (!dispatched) continue;
+      const result = dispatched.rpcResult ? annotateNotificationDelivery(dispatched.rpcResult, false) : dispatched;
+      results.push(result);
     }
     if (!results.length) return withSession(withCors(new Response(null, { status: 202 })), sessionId);
     return mcpRespond(request, results, sessionId);
   }
 
-  const result = await handleMcpRpc(rpc, env, { core });
-  if (!result) return withSession(withCors(new Response(null, { status: 202 })), sessionId);
-  return mcpRespond(request, result, sessionId);
+  const dispatched = await handleMcpRpc(rpc, env, { core, sessionId });
+  if (!dispatched) return withSession(withCors(new Response(null, { status: 202 })), sessionId);
+  const notifications = Array.isArray(dispatched.notifications) ? dispatched.notifications : [];
+  let result = dispatched.rpcResult ? dispatched.rpcResult : dispatched;
+  if (notifications.length) result = annotateNotificationDelivery(result, sseCapable);
+  return mcpRespond(request, result, sessionId, 200, sseCapable ? notifications : []);
+}
+
+// V7.6.2b: handles cairnstone_load_tools. Returns { rpcResult, notifications }
+// (rather than a plain rpcResult) so the caller in handleMcp can decide, based
+// on actual transport capability, whether notifications/tools/list_changed
+// was really delivered before annotating the result honestly.
+async function loadToolsRpcResult(id, args, env, sessionId) {
+  const toolIds = args && Array.isArray(args.tool_ids) ? args.tool_ids : null;
+  if (!toolIds) {
+    return { rpcResult: wrapToolResult(id, { ok: false, error: "missing_tool_ids", hint: "Provide tool_ids: string[]." }) };
+  }
+  if (!env.CAIRNSTONE_DB) {
+    return { rpcResult: wrapToolResult(id, { ok: false, error: "mcp_session_store_unavailable", notification_delivered: false, portable_fallback_required: true }) };
+  }
+  if (!sessionId) {
+    return { rpcResult: wrapToolResult(id, { ok: false, error: "mcp_session_id_missing", notification_delivered: false, portable_fallback_required: true }) };
+  }
+
+  const existing = await getMcpCoreSession(env.CAIRNSTONE_DB, sessionId);
+  if (!existing.ok) {
+    return {
+      rpcResult: wrapToolResult(id, {
+        ok: false,
+        error: existing.error,
+        notification_delivered: false,
+        portable_fallback_required: true,
+        hint: "No active native-hydration session for this Mcp-Session-Id. Re-send initialize on /mcp/core, or continue using cairnstone_tool_search -> cairnstone_get_tool_contract -> cairnstone_tool_execute, which always work regardless of session state."
+      })
+    };
+  }
+
+  const validation = validateNativeHydrationSelection(toolIds, mcpTools(), CORE_TOOL_NAMES, DEFAULT_TOOL_BROKER_REGISTRY);
+  if (!validation.ok) {
+    return { rpcResult: wrapToolResult(id, { ...validation, notification_delivered: false, portable_fallback_required: true }) };
+  }
+
+  const merged = [...new Set([...(existing.hydrated_tool_ids || []), ...validation.hydrated_tool_ids])];
+  const stored = await setMcpCoreSessionTools(env.CAIRNSTONE_DB, sessionId, merged);
+  if (!stored.ok) {
+    return { rpcResult: wrapToolResult(id, { ...stored, notification_delivered: false, portable_fallback_required: true }) };
+  }
+
+  const payload = {
+    ok: true,
+    schema: "cairnstone-native-tool-hydration-v1",
+    session_id: sessionId,
+    hydrated_tool_ids: stored.hydrated_tool_ids,
+    already_core_tool_ids: validation.already_core_tool_ids,
+    core_tool_names: [...CORE_TOOL_NAMES],
+    tools_now_listed: [...new Set([...CORE_TOOL_NAMES, ...stored.hydrated_tool_ids])],
+    policy: validation.policy,
+    accepted_state_authority: false,
+    // Defaults; handleMcp overwrites these with the real transport outcome.
+    notification_delivered: false,
+    portable_fallback_required: true
+  };
+
+  return {
+    rpcResult: wrapToolResult(id, payload),
+    notifications: [{ jsonrpc: "2.0", method: "notifications/tools/list_changed", params: {} }]
+  };
+}
+
+function wrapToolResult(id, output) {
+  return rpcResult(id, {
+    content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+    isError: output && output.ok === false
+  });
 }
 
 async function handleMcpRpc(rpc, env, options = {}) {
   const core = options.core === true;
+  const sessionId = options.sessionId || null;
   const id = rpc && Object.prototype.hasOwnProperty.call(rpc, "id") ? rpc.id : null;
   const method = rpc && rpc.method;
   const params = isObject(rpc && rpc.params) ? rpc.params : {};
 
   try {
     if (method === "initialize") {
+      // V7.6.2b: establish session state (and therefore advertise
+      // listChanged) only on the experimental /mcp/core profile, and only
+      // when it actually persisted. Clients that never call
+      // cairnstone_load_tools see identical behavior to V7.6.2a.
+      let sessionEstablished = false;
+      if (core && env.CAIRNSTONE_DB && sessionId) {
+        const created = await createMcpCoreSession(env.CAIRNSTONE_DB, sessionId);
+        sessionEstablished = created.ok === true;
+      }
       return rpcResult(id, {
         protocolVersion: (typeof params.protocolVersion === "string" && params.protocolVersion) ? params.protocolVersion : MCP_PROTOCOL_VERSION,
-        capabilities: { tools: {} },
+        capabilities: { tools: sessionEstablished ? { listChanged: true } : {} },
         serverInfo: { name: core ? "cairnstone-v6-core" : "cairnstone-v6", version: VERSION }
       });
     }
 
     if (method === "notifications/initialized") return null;
     if (method === "ping") return rpcResult(id, {});
-    if (method === "tools/list") return rpcResult(id, { tools: mcpToolsForProfile(core) });
+
+    if (method === "tools/list") {
+      const hydrated = await getSessionHydratedToolIds(env, core, sessionId);
+      return rpcResult(id, { tools: mcpToolsForProfile(core, hydrated) });
+    }
 
     if (method === "tools/call") {
       const name = requiredString(params.name, "name");
-      if (core && !CORE_TOOL_NAMES.has(name)) {
-        // V7.6.2a bounded profile: policy-equivalent, honest denial rather
+      const args = isObject(params.arguments) ? params.arguments : {};
+
+      if (core && name === "cairnstone_load_tools") {
+        return loadToolsRpcResult(id, args, env, sessionId);
+      }
+
+      const hydrated = await getSessionHydratedToolIds(env, core, sessionId);
+      if (core && !CORE_TOOL_NAMES.has(name) && !hydrated.has(name)) {
+        // V7.6.2a/b bounded profile: policy-equivalent, honest denial rather
         // than a silent/ambiguous failure. The full catalog is still
         // reachable generically from this same core surface.
         const output = {
           ok: false,
           error: "tool_not_in_core_profile",
           name,
-          hint: "Not in the /mcp/core boot surface. Use cairnstone_tool_search + cairnstone_get_tool_contract + cairnstone_tool_policy_preview + cairnstone_tool_execute from /mcp/core to reach it generically, or call the full /mcp surface directly."
+          hint: "Not in the /mcp/core boot surface or this session's hydrated set. Use cairnstone_tool_search + cairnstone_get_tool_contract + cairnstone_tool_policy_preview + cairnstone_tool_execute from /mcp/core to reach it generically, call cairnstone_load_tools to natively hydrate an eligible read+automatic tool for this session, or call the full /mcp surface directly."
         };
         return rpcResult(id, {
           content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
           isError: true
         });
       }
-      const args = isObject(params.arguments) ? params.arguments : {};
       const output = await callMcpTool(name, args, env);
       return rpcResult(id, {
         content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
@@ -385,7 +543,6 @@ async function handleMcpRpc(rpc, env, options = {}) {
     return rpcError(id, -32000, String(error && error.message ? error.message : error));
   }
 }
-
 async function secureOperatorTokenMatches(provided, expected) {
   if (typeof provided !== "string" || typeof expected !== "string" || !provided || !expected) return false;
   const encoder = new TextEncoder();
@@ -1110,7 +1267,8 @@ function mcpTools() {
     PAID_AGENT_QUOTE_PREVIEW_TOOL_DEFINITION,
     PAID_AGENT_X402_QUOTE_PREVIEW_TOOL_DEFINITION,
     TOOL_SEARCH_TOOL_DEFINITION,
-    TOOL_CONTRACT_TOOL_DEFINITION
+    TOOL_CONTRACT_TOOL_DEFINITION,
+    LOAD_TOOLS_TOOL_DEFINITION
   ];
 }
 
@@ -1993,7 +2151,7 @@ function json(data, status = 200) {
 function withCors(response) {
   const headers = new Headers(response.headers);
   headers.set("Access-Control-Allow-Origin", "*");
-  headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  headers.set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
   headers.set("Access-Control-Allow-Headers", "Content-Type,Authorization,Mcp-Session-Id");
   headers.set("Access-Control-Expose-Headers", "Mcp-Session-Id");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
@@ -2006,18 +2164,26 @@ function withSession(response, sessionId) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
-function mcpRespond(request, payload, sessionId, status = 200) {
+function mcpRespond(request, payload, sessionId, status = 200, notifications = []) {
   const accept = request.headers.get("accept") || "";
   const headers = new Headers();
   headers.set("Access-Control-Allow-Origin", "*");
-  headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  headers.set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
   headers.set("Access-Control-Allow-Headers", "Content-Type,Authorization,Mcp-Session-Id");
   headers.set("Access-Control-Expose-Headers", "Mcp-Session-Id");
   headers.set("cache-control", "no-store");
   if (sessionId) headers.set("Mcp-Session-Id", sessionId);
   if (accept.includes("text/event-stream")) {
     headers.set("content-type", "text/event-stream");
-    return new Response("event: message\ndata: " + JSON.stringify(payload) + "\n\n", { status, headers });
+    // V7.6.2b: server-initiated notifications (e.g. tools/list_changed)
+    // are emitted as prior SSE events in the same POST response stream,
+    // strictly before the JSON-RPC result event for the originating call.
+    let body = "";
+    for (const note of Array.isArray(notifications) ? notifications : []) {
+      body += "event: message\ndata: " + JSON.stringify(note) + "\n\n";
+    }
+    body += "event: message\ndata: " + JSON.stringify(payload) + "\n\n";
+    return new Response(body, { status, headers });
   }
   headers.set("content-type", "application/json");
   return new Response(JSON.stringify(payload), { status, headers });
