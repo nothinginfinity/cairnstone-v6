@@ -83,6 +83,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v762b_acceptance:
+        description: "Run V7.6.2b native tool hydration (Mcp-Session-Id, cairnstone_load_tools, listChanged) live acceptance after deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   deploy:
