@@ -202,6 +202,28 @@ export async function setMcpCoreSessionTools(db, sessionId, toolIds, nowMs = Dat
   };
 }
 
+// V7.6.2b: MCP tool definition for the experimental native-hydration
+// control primitive. Always present in the /mcp/core boot surface. Native
+// direct exposure is intentionally narrower than Tool Vault discovery --
+// only tools whose broker classification is read+automatic are eligible --
+// so this can never become a second, looser authority/execution path.
+export const LOAD_TOOLS_TOOL_DEFINITION = {
+  name: "cairnstone_load_tools",
+  description: "V7.6.2b experimental: request that this MCP session natively hydrate a bounded set of additional read+automatic CairnStone tools directly into tools/list, instead of reaching them generically via cairnstone_tool_search -> cairnstone_get_tool_contract -> cairnstone_tool_execute. Only tools whose existing broker classification is risk_class:'read' and authorization:'automatic', and whose exact definition exists in the live tool catalog, are eligible; unknown or ineligible tool_ids reject the entire request without persisting anything. On success, session-scoped hydration state is stored (never CairnStone accepted-state authority, never moves chain/path heads) and, when the client accepts text/event-stream, a notifications/tools/list_changed message is emitted in the same response stream before this tool's result so the client can re-fetch tools/list. Clients that cannot receive that notification get portable_fallback_required:true in the result and remain fully capable through the portable tool_search -> get_tool_contract -> tool_execute path; the full /mcp surface and unhydrated /mcp/core behavior are both unaffected by this call.",
+  inputSchema: {
+    type: "object",
+    required: ["tool_ids"],
+    properties: {
+      tool_ids: {
+        type: "array",
+        items: { type: "string" },
+        description: "Exact tool names from the live catalog to natively hydrate for this session (bounded, deduped, sorted). Tools already in the core boot set are accepted as no-ops; mutation/execution/prohibited or unclassified tools are rejected."
+      }
+    },
+    additionalProperties: false
+  }
+};
+
 export async function deleteMcpCoreSession(db, sessionId) {
   if (!db || typeof db.prepare !== "function") return sessionStoreUnavailable();
   if (!validSessionId(sessionId)) return { ok: false, error: "mcp_session_id_invalid" };
