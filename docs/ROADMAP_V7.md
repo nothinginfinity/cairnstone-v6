@@ -536,6 +536,64 @@ Canonical detailed plan: `project-memory/v76-context-efficiency-optimization-pla
 
 ---
 
+## V7.7 — Vault / Workspace Navigation + Multi-Chain Intelligence
+
+Status: **PLANNED / READ-FIRST.** Begin after the active V7.6 optimization/interop work reaches its own acceptance gate. V7.7 must work through the portable CairnStone runtime and cannot make correctness depend on experimental V7.6.2b native tool hydration.
+
+### Goal
+
+Turn CairnStone from a Console centered on one manually entered chain into a navigable semantic workspace over every stoned project, while preserving the existing chain and path-HEAD authority model. A user should be able to select one chain, one repository, several repositories/chains, or the bounded vault and then use the same scope across Chat, Evidence, Activity, Stones, and relevant handoff/correspondence views.
+
+The core rule is: **scope is navigation and retrieval context, never a new source of canonical authority.** V7.7 must not create a synthetic global HEAD. Every participating chain keeps its own canonical chain HEAD and accepted path HEADs, and every cross-chain answer must preserve the chain/repo/stone/path/commit provenance and authority class of its evidence.
+
+### V7.7.0 — Vault catalog + scope contract
+
+Add a read-only vault/chain discovery primitive and a versioned `cairnstone-scope-v1` contract. The catalog should expose normalized chain descriptors, repository provenance when present, canonical HEAD identity, path-head/stone counts, and bounded activity metadata. Chains with no GitHub repository provenance must remain visible. Repository membership is derived from CairnStone accepted provenance, not from mutable Git branches.
+
+Scopes must support single-chain, repository, explicit multi-chain/multi-repository, and vault-wide modes. Server resolution produces an exact bounded set of chains plus the chain HEAD identities used for that request, with a stable scope/snapshot identity and fail-closed race semantics when authority pointers change during compilation.
+
+### V7.7.1 — Server-side multi-chain search
+
+Extend the current vault search plane with explicit multi-chain scope rather than requiring the browser to fan out N independent searches and merge them. Preserve per-hit `chain`, `repo`, `stone_hash`, `path`, immutable commit provenance when available, and authority classification (`CHAIN_HEAD`, `PATH_HEAD`, historical/derived). Apply deterministic ranking, bounded expansion, and fairness so a large chain cannot dominate solely because it contains more refs.
+
+### V7.7.2 — Cross-chain grounded Q&A
+
+Add scope-grounded Q&A, working name `cairnstone_ask_scope`. Resolve the scope deterministically, inject the canonical orientation for each participating chain within explicit budgets, prefer accepted path HEADs, label historical evidence, synthesize only after retrieval, and validate every citation against evidence actually supplied to the model. Answers must make repo/chain provenance visible enough to distinguish conclusions across projects.
+
+If a participating authority pointer changes during scope compilation or citation grounding, fail closed or deterministically re-resolve; never silently combine evidence from two authority snapshots. Persisted cross-scope answers, if later enabled, belong only in a derived workspace/ask chain and never move any source chain or path HEAD.
+
+### V7.7.3 — Console global Scope navigation
+
+Replace the current single Chain field with a mobile-first **Scope** control. The selector should expose `All CairnStone`, repositories with their child chains, explicit multi-select, and the raw chain IDs needed for advanced operation. A compact summary such as `2 repos · 4 chains` should remain visible after selection.
+
+The resolved Scope becomes shared Console state for Chat, Evidence, Activity, and Stones, with Handoff/Inbox filtering only where real message metadata supports the association. Do not fabricate repository ownership for correspondence that has no such provenance. The Console remains a client of CairnStone authority, never a competing source of truth.
+
+### V7.7.4 — Saved workspaces + cross-repo operating views
+
+After core scope semantics are accepted, add named convenience scopes such as `CairnStone Platform`, `Music Projects`, or `Everything`, plus cross-repo views for recent accepted work, handoffs, evidence, and activity. Saved workspace definitions are operational/user convenience state only; local persistence may ship first and cross-device persistence may remain deferred. Workspace state must never grant execution/mutation authority or alter accepted-state pointers.
+
+### V7.7.5 — Live acceptance + scale gate
+
+Acceptance must prove at minimum:
+
+- every known chain is discoverable, including chains without repo provenance;
+- single-chain scope remains parity-compatible with current single-chain search/Q&A;
+- one-repo scope resolves all relevant chains without leaking unrelated chains;
+- explicit multi-repo scope returns evidence only from selected scope and can ground one answer in multiple repositories;
+- vault-wide scope remains bounded and deterministic;
+- per-chain canonical HEAD/path-HEAD authority classification survives retrieval and citation;
+- authority changes during a compiled scope are detected rather than silently mixed;
+- every cross-chain citation resolves to supplied evidence with chain/repo/stone/path/commit provenance where available;
+- scope reads and saved workspaces cause zero source chain/path-HEAD mutation and grant zero execution authority;
+- server-side ranking has deterministic limits and protects smaller chains from corpus-size starvation;
+- the Console applies one global Scope consistently across supported panels on mobile with no horizontal overflow;
+- live tests cover at least three genuinely stoned repositories and exercise single-chain, repo, multi-repo, and vault modes;
+- the milestone works through full `/mcp` and portable `/mcp/core` Tool Vault paths without relying on native dynamic hydration.
+
+Canonical detailed plan: `project-memory/v77-vault-workspace-multi-chain-intelligence-plan.md`.
+
+---
+
 ## Phase ordering
 
 ```text
