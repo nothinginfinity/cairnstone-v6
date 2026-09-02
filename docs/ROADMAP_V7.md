@@ -428,7 +428,7 @@ Acceptance should prove at least one real paid subagent call end-to-end: x402 pa
 
 ## V7.6 — Context Efficiency & MCP Surface Optimization
 
-Status: **PLANNED / BASELINE-FIRST.** Optimize the existing canonical CairnStone V7 codebase in-place behind additive compatibility boundaries; do not fork a competing optimized repo. Production defaults remain unchanged until parity, rollback, and live-canary gates close.
+Status: **IN PROGRESS — V7.6.0 profiler, V7.6.2a portable Tool Vault, and V7.6.2b native-hydration implementation are COMPLETE/live-verified. V7.6.1 sparse authority is NEXT.** Optimize the existing canonical CairnStone V7 codebase in-place behind additive compatibility boundaries; do not fork a competing optimized repo. Production defaults remain unchanged until parity, rollback, and live-canary gates close. Native hydration remains optional/experimental until the separate cross-client interop recommendation gate is proven.
 
 Primary goals:
 
@@ -491,7 +491,11 @@ The physical storage format is secondary. Full schemas may live in code/static m
 
 #### V7.6.2b — Optional native dynamic hydration
 
-After the portable deferred mode is live-accepted, add native MCP dynamic hydration as an optimization for clients that prove they support it reliably. A `cairnstone_load_tools(tool_ids[])`-style operation may update a session-scoped enabled-tool set and use MCP tool-list change semantics so the client re-fetches `tools/list` and exposes the selected native schemas directly.
+Status: **IMPLEMENTATION COMPLETE + LIVE-VERIFIED** at immutable repo commit `3ae8bd8f490d1aff1d60c16c3a7bc8d919ecc529`, GitHub Actions run `33633072811`. Production `/mcp/core` now supports D1-backed bounded session state, `cairnstone_load_tools(tool_ids[])`, session-scoped `tools/list` / `tools/call`, `capabilities.tools.listChanged` only when a real session is established, genuine `notifications/tools/list_changed` delivery before the tool result for SSE-capable callers, honest `portable_fallback_required:true` for JSON-only callers, isolated sessions, mutation-class hydration rejection, expiry/delete lifecycle, and fail-closed deleted/unknown-session behavior. Migration `0011_v7_6_2b_mcp_core_sessions.sql` is applied live. Full `/mcp` remains unchanged. Runtime remains `0.5.20`; the live catalog now advertises 54 full tools and 9 core tools including `cairnstone_load_tools`. The 296-test suite and targeted live acceptance passed, and accepted `src/index.js` / `src/mcp-session.js` stones are AST-lint clean.
+
+The **separate recommendation/default interop gate remains open**: ChatGPT, Claude, and at least one independent MCP host still need to prove that their clients actually refresh/rebind native schemas mid-session. This does not reopen V7.6.2b implementation correctness and does not block portable Tool Vault correctness; clients that do not support refresh remain fully capable through `tool_search -> get_tool_contract -> governed tool_execute`.
+
+After the portable deferred mode is live-accepted, native MCP dynamic hydration is available as an optimization for clients that prove they support it reliably. `cairnstone_load_tools(tool_ids[])` updates a session-scoped enabled-tool set and uses MCP tool-list change semantics so capable clients can re-fetch `tools/list` and expose the selected native schemas directly.
 
 Do **not** make correctness depend on this path. ChatGPT, Claude, and at least one additional MCP client (preferably Cursor or another independent host) must prove mid-session refresh/rebinding behavior. Clients that do not support it must automatically remain fully capable through the portable `tool_search -> get_tool_contract -> governed tool_execute` path.
 
@@ -516,7 +520,7 @@ Acceptance for V7.6.2 must prove:
 - native dynamic hydration, if enabled, falls back cleanly to portable deferred execution when a client cannot refresh/rebind schemas;
 - growing the Tool Vault does not materially increase core startup schema bytes except for explicitly added core primitives.
 
-Execution priority inside V7.6 is now: **V7.6.0 exact profiler -> V7.6.2a portable Deferred Tool Hydration -> V7.6.2b native hydration experiment/interop gate -> V7.6.1 sparse authority -> V7.6.3 compact reads -> V7.6.4 instruction brief only if still worthwhile -> V7.6.5 canary/default flip.**
+Execution priority inside V7.6 is now: **V7.6.0 exact profiler COMPLETE -> V7.6.2a portable Deferred Tool Hydration COMPLETE -> V7.6.2b native hydration implementation COMPLETE (cross-client recommendation gate still open) -> V7.6.1 sparse authority NEXT -> V7.6.3 compact reads -> V7.6.4 instruction brief only if still worthwhile -> V7.6.5 canary/default flip.**
 
 ### V7.6.3 — Compact orientation/manifest reads
 
