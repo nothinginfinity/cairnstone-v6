@@ -49,7 +49,8 @@ cairnstone_agent_bootstrap(
   capabilities?,
   loaded_skills?,
   limits?,
-  include_inbox?
+  include_inbox?,
+  mode? // legacy_full | optimized_sparse
 )
 ```
 
@@ -261,6 +262,12 @@ No provider identity belongs in the authority portion of the package. A later ro
 
 The package must preserve full hashes. No "latest by created_at" inference is allowed.
 
+#### V7.6.1 sparse-authority compatibility extension
+
+`legacy_full` remains the default and preserves the authority shape above. An explicit `optimized_sparse` mode may transmit only a deterministic task-relevant subset in `authority.path_heads`, but it MUST also carry a `cairnstone-sparse-authority-v1` envelope containing: the full accepted path-head count, a deterministic SHA-256 digest over the complete sorted accepted `(path, stone_hash)` pointer set, an authority-manifest identity binding that digest to the canonical chain HEAD, represented/omitted counts, and a deterministic expansion mechanism. The complete accepted pointer set remains server-side authority.
+
+Sparse mode changes transmission, not authority. The initial and final race snapshots MUST still cover every accepted path HEAD, including omitted heads. `package_id` MUST commit to the full sparse authority manifest/root so changing an omitted accepted path HEAD changes package identity. Represented task-relevant path heads remain normal full-hash records and may be expanded to the complete set through `cairnstone_resume_chain`, with the returned full set checked against the expected sparse digest/root. Spatial, lexical, or retrieval relevance never promotes historical evidence into accepted authority.
+
 ### 5.4 Canonical instructions
 
 The compiler identifies the accepted operating guide from the chain/path HEAD, not mutable Git `main`.
@@ -368,7 +375,7 @@ Memory retrieval is bounded and deterministic.
 The package always contains:
 
 1. canonical chain HEAD orientation;
-2. accepted path-HEAD metadata;
+2. accepted path-HEAD authority identity — all accepted path-HEAD metadata in `legacy_full`, or the cryptographically complete full-set root/count plus represented task-relevant path-HEAD metadata in `optimized_sparse`;
 3. task-relevant memory/evidence selected through deterministic search;
 4. authority classification for every included evidence item.
 
@@ -461,7 +468,7 @@ The hashed payload must include at minimum:
 - task;
 - chain;
 - chain HEAD;
-- accepted path HEADs represented in the package;
+- accepted path HEADs represented in the package; in `optimized_sparse`, also the deterministic full accepted path-head digest/root and full/represented/omitted counts so omitted authority remains identity-bearing;
 - canonical instruction identity/content identity;
 - AC1 inbox snapshot metadata included in the package;
 - accepted skills manifest HEAD;
@@ -484,7 +491,7 @@ For identical normalized input and identical authoritative/read-model state, V7.
 Permitted reasons for a new package identity include:
 
 - chain HEAD changed;
-- a represented path HEAD changed;
+- a represented path HEAD changed; in `optimized_sparse`, any omitted accepted path HEAD changing must also change the full authority digest/root and therefore `package_id`;
 - operating guide accepted version changed;
 - AC1 inbox snapshot included in the package changed;
 - skills manifest/path HEAD changed;
@@ -517,7 +524,7 @@ V7.0 must protect against one request mixing state generations.
 
 At minimum:
 
-1. snapshot chain HEAD + relevant path HEADs + skills manifest HEAD before expansion;
+1. snapshot chain HEAD + the complete accepted path-HEAD vector + skills manifest HEAD before expansion (sparse transmission never narrows the race-protected authority vector);
 2. compile instructions/skills/memory;
 3. re-read the minimal authority vector before hashing;
 4. if any authority pointer used in the package changed, return `context_compile_race`.
@@ -531,7 +538,7 @@ The compiler is an **information compiler**, not a dump endpoint.
 Rules:
 
 - include full canonical instructions when within the effective budget;
-- include compact metadata for all accepted path HEADs, not all bodies;
+- in `legacy_full`, include compact metadata for all accepted path HEADs; in `optimized_sparse`, include the cryptographically complete full-set authority root/count plus only deterministic task-relevant represented head metadata; never include all bodies;
 - include only selected skill bodies;
 - include bounded task-relevant memory windows;
 - include compact inbox metadata by default;
