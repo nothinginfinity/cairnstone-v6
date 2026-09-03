@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentBootstrapFromBody } from "../src/agent-bootstrap.js";
+import { agentBootstrapFromBody, computeAcceptedAuthorityManifest } from "../src/agent-bootstrap.js";
+import { latestAcceptedStateCursor, selectOrientationPathHeads } from "../src/index.js";
 
 const INSTRUCTIONS_PATH = "docs/AI_OPERATING_GUIDE.md";
 const VALID_COMMIT_A = "55ec7b749fc8c21431d67c268646b43f60337612";
@@ -546,4 +547,48 @@ test("V7.6.1 invalid bootstrap mode fails closed", async () => {
   }, makeEnv(), makeDeps());
   assert.equal(result.ok, false);
   assert.equal(result.error, "invalid_bootstrap_mode");
+});
+
+test("V7.6.3 shared accepted-authority manifest is order-independent and changes when an omitted head changes", async () => {
+  const base = {
+    chain: "cairnstone-v6-project-memory",
+    chain_head: "chain-head-stable",
+    path_heads: [
+      { path: "z-last.md", stone_hash: "stone-z" },
+      { path: "a-first.md", stone_hash: "stone-a" }
+    ]
+  };
+  const first = await computeAcceptedAuthorityManifest(base);
+  const reordered = await computeAcceptedAuthorityManifest({ ...base, path_heads: [...base.path_heads].reverse() });
+  const changed = await computeAcceptedAuthorityManifest({
+    ...base,
+    path_heads: [base.path_heads[0], { path: "a-first.md", stone_hash: "stone-a-CHANGED" }]
+  });
+
+  assert.equal(first.schema, "cairnstone-sparse-authority-v1");
+  assert.equal(first.full_path_head_count, 2);
+  assert.match(first.path_heads_digest, /^sha256:[0-9a-f]{64}$/);
+  assert.match(first.authority_manifest_id, /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(first, reordered);
+  assert.notEqual(first.path_heads_digest, changed.path_heads_digest);
+  assert.notEqual(first.authority_manifest_id, changed.authority_manifest_id);
+});
+
+test("V7.6.3 compact orientation selects only requested/recent accepted heads and advances an accepted-state cursor", () => {
+  const pathHeads = [
+    { path: "a-old.md", stone_hash: "a", updated_at: "2026-09-01T00:00:00.000Z" },
+    { path: "b-recent.md", stone_hash: "b", updated_at: "2026-09-02T13:00:00.000Z" },
+    { path: "c-requested.md", stone_hash: "c", updated_at: "2026-08-31T00:00:00.000Z" }
+  ];
+  const selected = selectOrientationPathHeads(pathHeads, {
+    paths: ["c-requested.md"],
+    since: "2026-09-02T12:00:00.000Z"
+  });
+
+  assert.deepEqual(selected.map(item => item.path), ["b-recent.md", "c-requested.md"]);
+  assert.deepEqual(selectOrientationPathHeads(pathHeads), []);
+  assert.equal(
+    latestAcceptedStateCursor("2026-09-02T12:30:00.000Z", pathHeads),
+    "2026-09-02T13:00:00.000Z"
+  );
 });
