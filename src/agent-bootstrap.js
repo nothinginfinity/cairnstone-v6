@@ -350,10 +350,31 @@ function compactAcceptedPathHead(item) {
   };
 }
 
-function canonicalPathHeadPointers(resume) {
-  return (resume.path_heads || [])
+export function canonicalPathHeadPointers(pathHeadsOrResume) {
+  const pathHeads = Array.isArray(pathHeadsOrResume)
+    ? pathHeadsOrResume
+    : (pathHeadsOrResume && Array.isArray(pathHeadsOrResume.path_heads) ? pathHeadsOrResume.path_heads : []);
+  return pathHeads
     .map(item => ({ path: item.path, stone_hash: item.stone_hash }))
     .sort((a, b) => a.path.localeCompare(b.path) || a.stone_hash.localeCompare(b.stone_hash));
+}
+
+export async function computeAcceptedAuthorityManifest({ chain, chain_head, path_heads }) {
+  const pointers = canonicalPathHeadPointers(path_heads || []);
+  const pathHeadsDigest = "sha256:" + await sha256Text(stableJson(pointers));
+  const manifestIdentityPayload = {
+    schema: SPARSE_AUTHORITY_SCHEMA,
+    chain,
+    chain_head,
+    path_head_count: pointers.length,
+    path_heads_digest: pathHeadsDigest
+  };
+  return {
+    schema: SPARSE_AUTHORITY_SCHEMA,
+    authority_manifest_id: "sha256:" + await sha256Text(stableJson(manifestIdentityPayload)),
+    path_heads_digest: pathHeadsDigest,
+    full_path_head_count: pointers.length
+  };
 }
 
 function selectSparsePathHeads(resume, task, memory, includeCanonicalInstructionsPath) {
@@ -416,16 +437,13 @@ async function compileAuthorityEnvelope({ resume, chain, task, memory, mode, inc
     };
   }
 
-  const pointers = canonicalPathHeadPointers(resume);
-  const pathHeadsDigest = "sha256:" + await sha256Text(stableJson(pointers));
-  const manifestIdentityPayload = {
-    schema: SPARSE_AUTHORITY_SCHEMA,
+  const authorityManifest = await computeAcceptedAuthorityManifest({
     chain,
     chain_head: resume.canonical_head.hash,
-    path_head_count: pointers.length,
-    path_heads_digest: pathHeadsDigest
-  };
-  const authorityManifestId = "sha256:" + await sha256Text(stableJson(manifestIdentityPayload));
+    path_heads: resume.path_heads || []
+  });
+  const pathHeadsDigest = authorityManifest.path_heads_digest;
+  const authorityManifestId = authorityManifest.authority_manifest_id;
   const represented = selectSparsePathHeads(resume, task, memory, includeCanonicalInstructionsPath);
 
   return {
