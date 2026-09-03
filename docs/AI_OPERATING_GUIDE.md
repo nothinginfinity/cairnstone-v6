@@ -350,7 +350,7 @@ every path head + every edge touching HEAD in one deterministic call.
 
 ---
 
-*Last updated: 2026-08-29. V6.10 Skills Sub-Agent is implemented, production-live-accepted on runtime 0.4.8, and canonically closed on top of the V6.9.2 QA-gated 15-skill catalog and V6.9.1 canonical distribution/first external consumer. V6.10 is the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
+*Last updated: 2026-09-02. V7.6.3 compact orientation/manifest reads are production-live-accepted on runtime 0.5.21, with full resume preserved as the backward-compatible default and compact/orientation remaining explicit opt-in read modes. V6.10 remains the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
 update it in place here and keep the "Last updated" line current — this
 file is meant to be the single source of truth referenced by URL from every
 provider's project instructions, not re-pasted and forked per provider.*
