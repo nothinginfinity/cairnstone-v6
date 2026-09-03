@@ -1165,6 +1165,9 @@ jobs:
           legacy_authority_bytes="$(echo "$legacy" | jq -r '.diagnostics.bootstrap_package.sections.authority_bytes')"
           sparse_authority_bytes="$(echo "$sparse" | jq -r '.diagnostics.bootstrap_package.sections.authority_bytes')"
           CHECKPOINT="complete"
+          represented_heads="$(echo "$sparse" | jq -r '.authority.sparse.represented_path_head_count')"
+          full_heads="$(echo "$sparse" | jq -r '.authority.sparse.full_path_head_count')"
+          echo "::notice title=V7.6.1 sparse authority metrics::legacy=${legacy_bytes}B sparse=${sparse_bytes}B authority_legacy=${legacy_authority_bytes}B authority_sparse=${sparse_authority_bytes}B represented_heads=${represented_heads}/${full_heads}"
           echo "V7.6.1 live acceptance passed: legacy=${legacy_bytes}B sparse=${sparse_bytes}B; authority legacy=${legacy_authority_bytes}B sparse=${sparse_authority_bytes}B; full path-head authority remained cryptographically committed, task-relevant heads stayed represented, Workers AI + DeepSeek preserved package/request identity, sparse-root tampering failed closed, and accepted state remained unchanged."
 
       - name: V7.6.2b native tool hydration live acceptance
