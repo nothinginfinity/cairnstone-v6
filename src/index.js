@@ -78,7 +78,7 @@ import {
   LOAD_TOOLS_TOOL_DEFINITION
 } from "./mcp-session.js";
 
-const VERSION = "0.5.22";
+const VERSION = "0.5.23";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -333,11 +333,22 @@ async function getSessionHydratedToolIds(env, core, sessionId) {
   return session.ok ? new Set(session.hydrated_tool_ids) : new Set();
 }
 
-// V7.6.2b: annotate the cairnstone_load_tools tool result with whether the
-// notifications/tools/list_changed message could actually be delivered on
-// this transport. Only ever downgrades an optimistic default to false --
-// never upgrades a value the transport layer didn't actually confirm, so a
-// JSON-only caller is never told a refresh happened when it did not.
+// V7.6.2b -> V7.6.2c fix: annotate the cairnstone_load_tools tool result
+// with whether the notifications/tools/list_changed message was actually
+// acted on by the client. Prior to this fix, `delivered` was derived from
+// whether the *same* tools/call request's Accept header merely listed
+// text/event-stream -- a transport-framing detail that says nothing about
+// whether the client maintains a live notification channel or ever
+// re-fetches tools/list in response to an inline notification frame.
+// Live retest evidence (2026-09, mobile Claude client, /mcp/core, AC1
+// thread cairnstone-v7-context-efficiency) showed Accept:text/event-stream
+// present, notification_delivered:true asserted, yet the newly hydrated
+// tool never became callable -- a confirmed false positive on the primary
+// target client (mobile). There is currently no real client-side ack
+// mechanism in this server, so `delivered` is now always passed as false
+// from the call site below: honest "unknown/unconfirmed" rather than an
+// optimistic guess. Revisit only if/when a verified ack path is added
+// (e.g. requiring the client to re-call tools/list and confirm receipt).
 function annotateNotificationDelivery(rpcResultEnvelope, delivered) {
   try {
     const block = rpcResultEnvelope && rpcResultEnvelope.result && Array.isArray(rpcResultEnvelope.result.content)
@@ -415,7 +426,12 @@ async function handleMcp(request, env, url, options = {}) {
   if (!dispatched) return withSession(withCors(new Response(null, { status: 202 })), sessionId);
   const notifications = Array.isArray(dispatched.notifications) ? dispatched.notifications : [];
   let result = dispatched.rpcResult ? dispatched.rpcResult : dispatched;
-  if (notifications.length) result = annotateNotificationDelivery(result, sseCapable);
+  // sseCapable still gates whether we attempt to *frame* the notification on
+  // the wire at all (no point emitting an SSE event to a client that didn't
+  // ask for that content-type). It no longer implies the client acted on it
+  // -- see annotateNotificationDelivery above. Confirmed false positive on
+  // mobile Claude client, 2026-09 retest.
+  if (notifications.length) result = annotateNotificationDelivery(result, false);
   return mcpRespond(request, result, sessionId, 200, sseCapable ? notifications : []);
 }
 
