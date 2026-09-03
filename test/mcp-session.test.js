@@ -154,3 +154,27 @@ test("session deletion terminates native hydration state", async () => {
   assert.equal(result.ok, false);
   assert.equal(result.error, "mcp_session_not_found");
 });
+
+test("load_tools is advertised only on core and full-profile calls fail with an explicit core-profile hint", async () => {
+  const fullNames = mcpToolsForProfile(false).map(tool => tool.name);
+  const coreNames = mcpToolsForProfile(true).map(tool => tool.name);
+  assert.equal(fullNames.includes("cairnstone_load_tools"), false);
+  assert.equal(coreNames.includes("cairnstone_load_tools"), true);
+
+  const routed = await handleMcpRpc({
+    jsonrpc: "2.0",
+    id: 76221,
+    method: "tools/call",
+    params: {
+      name: "cairnstone_load_tools",
+      arguments: { tool_ids: ["cairnstone_get_source_freshness"] }
+    }
+  }, {}, { core: false, sessionId: "full-profile-session" });
+
+  const payload = JSON.parse(routed.result.content[0].text);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error, "native_hydration_requires_core_profile");
+  assert.equal(payload.endpoint, "/mcp/core");
+  assert.equal(payload.notification_delivered, false);
+  assert.equal(payload.portable_fallback_required, true);
+});
