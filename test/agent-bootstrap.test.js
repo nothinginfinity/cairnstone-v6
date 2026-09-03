@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentBootstrapFromBody, computeAcceptedAuthorityManifest } from "../src/agent-bootstrap.js";
+import {
+  agentBootstrapFromBody,
+  computeAcceptedAuthorityManifest,
+  REQUIRED_RUNTIME_RULE_IDS,
+  sha256Text,
+  validateRuntimeBriefDocument
+} from "../src/agent-bootstrap.js";
 import { latestAcceptedStateCursor, selectOrientationPathHeads } from "../src/index.js";
 
 const INSTRUCTIONS_PATH = "docs/AI_OPERATING_GUIDE.md";
+const RUNTIME_BRIEF_PATH = "docs/AI_RUNTIME_BRIEF.json";
 const VALID_COMMIT_A = "55ec7b749fc8c21431d67c268646b43f60337612";
+const VALID_COMMIT_B = "66ec7b749fc8c21431d67c268646b43f60337613";
+const MOCK_GUIDE_BLOB_SHA = "4448e428eba37d0e687e7ca402b6c473757ad1da";
+const MOCK_BRIEF_BLOB_SHA = "5558e428eba37d0e687e7ca402b6c473757ad1db";
 
 function makeEnv() {
   return {
@@ -591,4 +601,249 @@ test("V7.6.3 compact orientation selects only requested/recent accepted heads an
     latestAcceptedStateCursor("2026-09-02T12:30:00.000Z", pathHeads),
     "2026-09-02T13:00:00.000Z"
   );
+});
+
+async function makeRuntimeBriefDocument({
+  guideContent,
+  guideStone = "instructions-stone",
+  guideCommit = VALID_COMMIT_A,
+  guideSha256 = null,
+  requiredRuleIds = REQUIRED_RUNTIME_RULE_IDS,
+  rules = null
+}) {
+  return {
+    schema: "cairnstone-canonical-instruction-runtime-brief-v1",
+    authority: {
+      guide: {
+        path: INSTRUCTIONS_PATH,
+        stone_hash: guideStone,
+        repo: "nothinginfinity/cairnstone-v6",
+        commit_sha: guideCommit,
+        content_identity: {
+          sha256: guideSha256 || await sha256Text(guideContent),
+          git_blob_sha: MOCK_GUIDE_BLOB_SHA,
+          bytes: Buffer.byteLength(guideContent)
+        }
+      },
+      full_guide_remains_canonical: true,
+      provider_neutral: true,
+      authority_expansion: false
+    },
+    required_rule_ids: [...requiredRuleIds],
+    rules: rules || requiredRuleIds.map(id => ({ id, text: `Preserve canonical runtime rule ${id}.` }))
+  };
+}
+
+function resumeStateWithRuntimeBrief(hash, { briefStone = "runtime-brief-stone", briefCommit = VALID_COMMIT_B } = {}) {
+  return resumeStateWithHead(hash, [
+    {
+      path: RUNTIME_BRIEF_PATH,
+      stone_hash: briefStone,
+      repo: "nothinginfinity/cairnstone-v6",
+      commit_sha: briefCommit
+    }
+  ]);
+}
+
+function mockGithubFetchForRuntimeBrief(guideContent, briefDocument) {
+  const original = globalThis.fetch;
+  globalThis.fetch = async url => {
+    const brief = String(url).includes("AI_RUNTIME_BRIEF.json");
+    const content = brief ? JSON.stringify(briefDocument) : guideContent;
+    return {
+      ok: true,
+      json: async () => ({
+        encoding: "base64",
+        content: Buffer.from(content).toString("base64"),
+        sha: brief ? MOCK_BRIEF_BLOB_SHA : MOCK_GUIDE_BLOB_SHA
+      })
+    };
+  };
+  return () => { globalThis.fetch = original; };
+}
+
+test("V7.6.4 runtime brief validator requires exact guide identity, rule vector, rule order, and closed shape", async () => {
+  const guideContent = "# Canonical guide\nfull authority\n";
+  const valid = await makeRuntimeBriefDocument({ guideContent });
+  const expectedGuide = {
+    path: INSTRUCTIONS_PATH,
+    stone_hash: "instructions-stone",
+    repo: "nothinginfinity/cairnstone-v6",
+    commit_sha: VALID_COMMIT_A,
+    content_identity: valid.authority.guide.content_identity
+  };
+
+  const accepted = validateRuntimeBriefDocument(valid, expectedGuide);
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.rendered_content.split("\n").length, REQUIRED_RUNTIME_RULE_IDS.length);
+  assert.match(accepted.rendered_content, /^AUTH-CHAIN-001:/);
+
+  const wrongGuide = structuredClone(valid);
+  wrongGuide.authority.guide.content_identity.sha256 = "0".repeat(64);
+  assert.equal(validateRuntimeBriefDocument(wrongGuide, expectedGuide).error, "runtime_brief_guide_identity_mismatch");
+
+  const missingRule = structuredClone(valid);
+  missingRule.required_rule_ids.pop();
+  assert.equal(validateRuntimeBriefDocument(missingRule, expectedGuide).error, "runtime_brief_required_rule_coverage_invalid");
+
+  const authorityExpansion = structuredClone(valid);
+  authorityExpansion.authority.untrusted_new_field = true;
+  assert.equal(validateRuntimeBriefDocument(authorityExpansion, expectedGuide).error, "runtime_brief_shape_invalid");
+});
+
+test("V7.6.4 legacy_full transmits the complete accepted guide with no legacy truncation", async () => {
+  const guideContent = "# Operating Guide\n" + "full-guide-line\n".repeat(2200);
+  const restore = mockGithubFetchForRuntimeBrief(guideContent, {});
+  try {
+    const result = await agentBootstrapFromBody({
+      actor_id: "test:v764-full-guide",
+      task: "full guide compatibility",
+      chain: "cairnstone-v6-project-memory",
+      mode: "legacy_full",
+      include_inbox: false,
+      limits: { max_memory_hits: 0, max_memory_bytes: 0, max_inbox_items: 0, max_package_bytes: 180000 }
+    }, makeEnv(), makeDeps());
+
+    assert.equal(result.ok, true);
+    assert.equal(result.instructions.content, guideContent);
+    assert.equal(result.instructions.truncated, false);
+    assert.equal(result.instructions.selection.representation, "full_guide");
+    assert.equal(result.instructions.transmitted_content_identity.bytes, Buffer.byteLength(guideContent));
+    assert.equal(result.limits.instructions_bytes, Buffer.byteLength(guideContent));
+  } finally {
+    restore();
+  }
+});
+
+test("V7.6.4 optimized_sparse with no accepted brief uses typed full-guide fallback and binds fallback state into package identity", async () => {
+  const guideContent = "# Operating Guide\n" + "authority\n".repeat(200);
+  const restore = mockGithubFetchForRuntimeBrief(guideContent, {});
+  try {
+    const base = {
+      actor_id: "test:v764-fallback",
+      task: "runtime brief fallback",
+      chain: "cairnstone-v6-project-memory",
+      include_inbox: false,
+      limits: { max_memory_hits: 0, max_memory_bytes: 0, max_inbox_items: 0 }
+    };
+    const legacy = await agentBootstrapFromBody({ ...base, mode: "legacy_full" }, makeEnv(), makeDeps());
+    const optimized = await agentBootstrapFromBody({ ...base, mode: "optimized_sparse" }, makeEnv(), makeDeps());
+
+    assert.equal(legacy.ok, true);
+    assert.equal(optimized.ok, true);
+    assert.equal(optimized.instructions.content, guideContent);
+    assert.equal(optimized.instructions.selection.representation, "full_guide_fallback");
+    assert.equal(optimized.instructions.selection.fallback.code, "runtime_brief_unaccepted");
+    assert.notEqual(optimized.package_id, legacy.package_id, "typed selection/fallback metadata must be cryptographically bound");
+  } finally {
+    restore();
+  }
+});
+
+test("V7.6.4 accepted identity-bound runtime brief is deterministic and materially smaller than the full guide", async () => {
+  const guideContent = "# Operating Guide\n" + "canonical authority detail and maintainer explanation\n".repeat(900);
+  const briefDocument = await makeRuntimeBriefDocument({ guideContent });
+  const restore = mockGithubFetchForRuntimeBrief(guideContent, briefDocument);
+  try {
+    const deps = makeDeps({ resumeChainFromBody: async () => resumeStateWithRuntimeBrief("chain-head-v764") });
+    const body = {
+      actor_id: "test:v764-brief",
+      task: "use the accepted canonical runtime brief",
+      chain: "cairnstone-v6-project-memory",
+      mode: "optimized_sparse",
+      include_inbox: false,
+      limits: { max_memory_hits: 0, max_memory_bytes: 0, max_inbox_items: 0, max_package_bytes: 180000 }
+    };
+    const first = await agentBootstrapFromBody(body, makeEnv(), deps);
+    const second = await agentBootstrapFromBody(body, makeEnv(), deps);
+
+    assert.equal(first.ok, true);
+    assert.equal(second.ok, true);
+    assert.equal(first.package_id, second.package_id);
+    assert.equal(first.instructions.path, INSTRUCTIONS_PATH);
+    assert.equal(first.instructions.stone_hash, "instructions-stone");
+    assert.equal(first.instructions.content_identity.bytes, Buffer.byteLength(guideContent));
+    assert.equal(first.instructions.selection.representation, "runtime_brief");
+    assert.equal(first.instructions.selection.runtime_brief.path, RUNTIME_BRIEF_PATH);
+    assert.equal(first.instructions.selection.runtime_brief.stone_hash, "runtime-brief-stone");
+    assert.equal(first.instructions.selection.fallback, null);
+    assert.ok(first.instructions.transmitted_content_identity.bytes < first.instructions.content_identity.bytes);
+    assert.equal(first.limits.instructions_bytes, first.instructions.transmitted_content_identity.bytes);
+    assert.equal(first.instructions.content.split("\n").length, REQUIRED_RUNTIME_RULE_IDS.length);
+    assert.ok(first.authority.path_heads.some(item => item.path === RUNTIME_BRIEF_PATH));
+  } finally {
+    restore();
+  }
+});
+
+test("V7.6.4 stale or coverage-invalid accepted brief fails safely to the complete accepted guide", async () => {
+  const guideContent = "# Operating Guide\n" + "authority\n".repeat(120);
+  const stale = await makeRuntimeBriefDocument({ guideContent, guideSha256: "f".repeat(64) });
+  let restore = mockGithubFetchForRuntimeBrief(guideContent, stale);
+  try {
+    const deps = makeDeps({ resumeChainFromBody: async () => resumeStateWithRuntimeBrief("chain-head-v764-stale") });
+    const result = await agentBootstrapFromBody({
+      actor_id: "test:v764-stale",
+      task: "stale brief",
+      chain: "cairnstone-v6-project-memory",
+      mode: "optimized_sparse",
+      include_inbox: false
+    }, makeEnv(), deps);
+    assert.equal(result.ok, true);
+    assert.equal(result.instructions.selection.representation, "full_guide_fallback");
+    assert.equal(result.instructions.selection.fallback.code, "runtime_brief_guide_identity_mismatch");
+    assert.equal(result.instructions.content, guideContent);
+  } finally {
+    restore();
+  }
+
+  const invalidCoverage = await makeRuntimeBriefDocument({
+    guideContent,
+    requiredRuleIds: REQUIRED_RUNTIME_RULE_IDS.slice(0, -1)
+  });
+  restore = mockGithubFetchForRuntimeBrief(guideContent, invalidCoverage);
+  try {
+    const deps = makeDeps({ resumeChainFromBody: async () => resumeStateWithRuntimeBrief("chain-head-v764-coverage") });
+    const result = await agentBootstrapFromBody({
+      actor_id: "test:v764-coverage",
+      task: "coverage invalid brief",
+      chain: "cairnstone-v6-project-memory",
+      mode: "optimized_sparse",
+      include_inbox: false
+    }, makeEnv(), deps);
+    assert.equal(result.ok, true);
+    assert.equal(result.instructions.selection.fallback.code, "runtime_brief_required_rule_coverage_invalid");
+    assert.equal(result.instructions.content, guideContent);
+  } finally {
+    restore();
+  }
+});
+
+test("V7.6.4 accepted runtime-brief path HEAD participates in V7.0 race protection", async () => {
+  const guideContent = "# Operating Guide\n" + "authority\n".repeat(80);
+  const briefDocument = await makeRuntimeBriefDocument({ guideContent });
+  const restore = mockGithubFetchForRuntimeBrief(guideContent, briefDocument);
+  try {
+    let call = 0;
+    const deps = makeDeps({
+      resumeChainFromBody: async () => {
+        call += 1;
+        return call === 1
+          ? resumeStateWithRuntimeBrief("chain-head-v764-race", { briefStone: "brief-BEFORE" })
+          : resumeStateWithRuntimeBrief("chain-head-v764-race", { briefStone: "brief-AFTER" });
+      }
+    });
+    const result = await agentBootstrapFromBody({
+      actor_id: "test:v764-race",
+      task: "brief race",
+      chain: "cairnstone-v6-project-memory",
+      mode: "optimized_sparse",
+      include_inbox: false
+    }, makeEnv(), deps);
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "context_compile_race");
+    assert.equal(result.detail, "chain_or_path_heads_changed_during_compile");
+  } finally {
+    restore();
+  }
 });
