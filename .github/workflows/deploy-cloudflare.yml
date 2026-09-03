@@ -1020,14 +1020,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CHECKPOINT="startup"
+          trap 'echo "::error title=V7.6.1 live acceptance::checkpoint=${CHECKPOINT}"' ERR
           BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
           RPC="$BASE/mcp"
           CHAIN="cairnstone-v6-project-memory"
           TASK="what's next in the roadmap"
 
+          CHECKPOINT="health"
           health="$(curl -fsS "$BASE/health")"
           echo "$health" | jq -e '.ok == true and ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null) and ((.mcp_tools | index("cairnstone_model_route")) != null)' >/dev/null
 
+          CHECKPOINT="capture_before"
           before="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume")"
           before_head="$(echo "$before" | jq -r '.canonical_head.hash')"
           roadmap_head="$(echo "$before" | jq -r '.path_heads[] | select(.path == "docs/ROADMAP_V7.md") | .stone_hash')"
@@ -1037,9 +1041,12 @@ jobs:
           test -n "$roadmap_head"
           test "$path_count" -gt 2
 
+          CHECKPOINT="legacy_bootstrap"
           legacy_payload="$(jq -nc --arg task "$TASK" --arg chain "$CHAIN" '{jsonrpc:"2.0",id:7611,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v761-acceptance",task:$task,chain:$chain,mode:"legacy_full",include_inbox:false,include_profile:true}}}')"
           legacy_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$legacy_payload")"
           legacy="$(echo "$legacy_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$legacy" | jq -c '{checkpoint:"legacy_bootstrap",ok,error,package_id,chain_head:.authority.chain_head.stone_hash,path_head_count:(.authority.path_heads|length),sparse:(.authority.sparse//null),limits,authority_bytes:(.diagnostics.bootstrap_package.sections.authority_bytes//null)}'
+          CHECKPOINT="legacy_assert"
           echo "$legacy" | jq -e --arg head "$before_head" --argjson count "$path_count" '
             .ok == true and
             .schema == "cairnstone-agent-context-v1" and
@@ -1052,9 +1059,12 @@ jobs:
             .diagnostics.bootstrap_package.ok == true
           ' >/dev/null
 
+          CHECKPOINT="sparse_bootstrap"
           sparse_payload="$(jq -nc --arg task "$TASK" --arg chain "$CHAIN" '{jsonrpc:"2.0",id:7612,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v761-acceptance",task:$task,chain:$chain,mode:"optimized_sparse",include_inbox:false,include_profile:true}}}')"
           sparse_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$sparse_payload")"
           sparse="$(echo "$sparse_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$sparse" | jq -c '{checkpoint:"sparse_bootstrap",ok,error,package_id,chain_head:.authority.chain_head.stone_hash,path_head_count:(.authority.path_heads|length),selected_paths:[.authority.path_heads[].path],sparse:(.authority.sparse//null),limits,authority_bytes:(.diagnostics.bootstrap_package.sections.authority_bytes//null)}'
+          CHECKPOINT="sparse_assert"
           echo "$sparse" | jq -e --arg head "$before_head" --arg roadmap "$roadmap_head" --argjson count "$path_count" --argjson legacy_bytes "$(echo "$legacy" | jq '.limits.package_bytes')" --argjson legacy_authority_bytes "$(echo "$legacy" | jq '.diagnostics.bootstrap_package.sections.authority_bytes')" '
             .ok == true and
             .schema == "cairnstone-agent-context-v1" and
@@ -1079,6 +1089,8 @@ jobs:
             .policy.mutation_authority == false
           ' >/dev/null
 
+          CHECKPOINT="semantic_parity"
+          echo "$sparse" | jq -c --argjson legacy "$legacy" '{checkpoint:"semantic_parity",instructions_equal:(.instructions==$legacy.instructions),skills_equal:(.skills==$legacy.skills),memory_equal:(.memory==$legacy.memory),capabilities_equal:(.capabilities==$legacy.capabilities),policy_equal:(.policy==$legacy.policy),chain_head_equal:(.authority.chain_head==$legacy.authority.chain_head)}'
           echo "$sparse" | jq -e --argjson legacy "$legacy" '
             .instructions == $legacy.instructions and
             .skills == $legacy.skills and
@@ -1088,6 +1100,7 @@ jobs:
             .authority.chain_head == $legacy.authority.chain_head
           ' >/dev/null
 
+          CHECKPOINT="sparse_repeat"
           sparse_repeat_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$sparse_payload")"
           sparse_repeat="$(echo "$sparse_repeat_outer" | jq -c '.result.content[0].text | fromjson')"
           test "$(echo "$sparse" | jq -r '.package_id')" = "$(echo "$sparse_repeat" | jq -r '.package_id')"
@@ -1096,29 +1109,37 @@ jobs:
 
           package_id="$(echo "$sparse" | jq -r '.package_id')"
 
+          CHECKPOINT="workers_route"
           workers_payload="$(jq -nc --argjson ctx "$sparse" '{jsonrpc:"2.0",id:7613,method:"tools/call",params:{name:"cairnstone_model_route",arguments:{context_package:$ctx,route:{provider:"workers-ai",model:"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},request:{tools:[],generation:{max_output_tokens:180,temperature:0}}}}}')"
           workers_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$workers_payload")"
           workers="$(echo "$workers_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$workers" | jq -c '{checkpoint:"workers_route",ok,error,detail,package_id,request_ir_id,route,policy,attempts:(.attempts//.observability.attempts//null),diagnostic:(.diagnostic//null)}'
+          CHECKPOINT="workers_assert"
           echo "$workers" | jq -e --arg package "$package_id" '
             .ok == true and .package_id == $package and .route.provider == "workers-ai" and
             .policy.tool_intents_only == true and .policy.execution_authority == false and .policy.mutation_authority == false
           ' >/dev/null
           request_ir_id="$(echo "$workers" | jq -r '.request_ir_id')"
 
+          CHECKPOINT="deepseek_route"
           deepseek_payload="$(jq -nc --argjson ctx "$sparse" '{jsonrpc:"2.0",id:7614,method:"tools/call",params:{name:"cairnstone_model_route",arguments:{context_package:$ctx,route:{provider:"deepseek",model:"deepseek-chat",credential_mode:"byok",credential_alias:"default"},request:{tools:[],generation:{max_output_tokens:180,temperature:0}}}}}')"
           deepseek_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$deepseek_payload")"
           deepseek="$(echo "$deepseek_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$deepseek" | jq -c '{checkpoint:"deepseek_route",ok,error,detail,package_id,request_ir_id,route,policy,attempts:(.attempts//.observability.attempts//null),diagnostic:(.diagnostic//null)}'
+          CHECKPOINT="deepseek_assert"
           echo "$deepseek" | jq -e --arg package "$package_id" --arg request "$request_ir_id" '
             .ok == true and .package_id == $package and .request_ir_id == $request and .route.provider == "deepseek" and
             .policy.tool_intents_only == true and .policy.execution_authority == false and .policy.mutation_authority == false
           ' >/dev/null
 
+          CHECKPOINT="tamper_assert"
           tampered="$(echo "$sparse" | jq '.authority.sparse.path_heads_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"')"
           tampered_payload="$(jq -nc --argjson ctx "$tampered" '{jsonrpc:"2.0",id:7615,method:"tools/call",params:{name:"cairnstone_model_route",arguments:{context_package:$ctx,route:{provider:"mock-a",model:"mock-a/text-tools-v1"},request:{tools:[],generation:{max_output_tokens:32,temperature:0}}}}}')"
           tampered_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$tampered_payload")"
           tampered_result="$(echo "$tampered_outer" | jq -c '.result.content[0].text | fromjson')"
           echo "$tampered_result" | jq -e '.ok == false and .error == "invalid_context_package" and .detail == "package_id_hash_mismatch"' >/dev/null
 
+          CHECKPOINT="accepted_state_unchanged"
           after="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume")"
           after_head="$(echo "$after" | jq -r '.canonical_head.hash')"
           after_paths="$(echo "$after" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
@@ -1129,6 +1150,7 @@ jobs:
           sparse_bytes="$(echo "$sparse" | jq -r '.limits.package_bytes')"
           legacy_authority_bytes="$(echo "$legacy" | jq -r '.diagnostics.bootstrap_package.sections.authority_bytes')"
           sparse_authority_bytes="$(echo "$sparse" | jq -r '.diagnostics.bootstrap_package.sections.authority_bytes')"
+          CHECKPOINT="complete"
           echo "V7.6.1 live acceptance passed: legacy=${legacy_bytes}B sparse=${sparse_bytes}B; authority legacy=${legacy_authority_bytes}B sparse=${sparse_authority_bytes}B; full path-head authority remained cryptographically committed, task-relevant heads stayed represented, Workers AI + DeepSeek preserved package/request identity, sparse-root tampering failed closed, and accepted state remained unchanged."
 
       - name: V7.6.2b native tool hydration live acceptance
