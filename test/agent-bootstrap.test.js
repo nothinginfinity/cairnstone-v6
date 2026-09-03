@@ -477,7 +477,17 @@ test("V7.6.1 optimized_sparse is deterministic, retains relevant accepted heads,
     assert.equal(first.authority.sparse.authority_manifest_id, second.authority.sparse.authority_manifest_id);
     assert.equal(first.package_id, second.package_id);
     assert.ok(first.limits.package_bytes < legacy.limits.package_bytes);
-    assert.deepEqual(first.instructions, legacy.instructions);
+    assert.equal(first.instructions.path, legacy.instructions.path);
+    assert.equal(first.instructions.stone_hash, legacy.instructions.stone_hash);
+    assert.equal(first.instructions.repo, legacy.instructions.repo);
+    assert.equal(first.instructions.commit_sha, legacy.instructions.commit_sha);
+    assert.deepEqual(first.instructions.content_identity, legacy.instructions.content_identity);
+    assert.deepEqual(first.instructions.transmitted_content_identity, legacy.instructions.transmitted_content_identity);
+    assert.equal(first.instructions.content, legacy.instructions.content);
+    assert.equal(first.instructions.truncated, legacy.instructions.truncated);
+    assert.equal(legacy.instructions.selection.representation, "full_guide");
+    assert.equal(first.instructions.selection.representation, "full_guide_fallback");
+    assert.equal(first.instructions.selection.fallback.code, "runtime_brief_unaccepted");
     assert.deepEqual(first.skills, legacy.skills);
     assert.deepEqual(first.policy, legacy.policy);
     assert.deepEqual(first.authority.chain_head, legacy.authority.chain_head);
@@ -748,7 +758,7 @@ test("V7.6.4 accepted identity-bound runtime brief is deterministic and material
     const deps = makeDeps({ resumeChainFromBody: async () => resumeStateWithRuntimeBrief("chain-head-v764") });
     const body = {
       actor_id: "test:v764-brief",
-      task: "use the accepted canonical runtime brief",
+      task: "roadmap status",
       chain: "cairnstone-v6-project-memory",
       mode: "optimized_sparse",
       include_inbox: false,
