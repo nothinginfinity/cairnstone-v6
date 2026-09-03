@@ -1089,13 +1089,24 @@ jobs:
             .policy.mutation_authority == false
           ' >/dev/null
 
-          echo "$sparse" | jq -c --argjson legacy "$legacy" '{checkpoint:"semantic_parity",instructions_equal:(.instructions==$legacy.instructions),skills_equal:(.skills==$legacy.skills),memory_equal:(.memory==$legacy.memory),capabilities_equal:(.capabilities==$legacy.capabilities),policy_equal:(.policy==$legacy.policy),chain_head_equal:(.authority.chain_head==$legacy.authority.chain_head)}'
+          echo "$sparse" | jq -c --argjson legacy "$legacy" '{checkpoint:"semantic_parity",instructions_equal:(.instructions==$legacy.instructions),skills_equal:(.skills==$legacy.skills),memory_equal:(.memory==$legacy.memory),legacy_memory_items:($legacy.memory.items|length),sparse_memory_items:(.memory.items|length),legacy_memory_truncated:$legacy.memory.truncated,sparse_memory_truncated:.memory.truncated,capabilities_equal:(.capabilities==$legacy.capabilities),policy_equal:(.policy==$legacy.policy),chain_head_equal:(.authority.chain_head==$legacy.authority.chain_head)}'
           CHECKPOINT="parity_instructions"
           echo "$sparse" | jq -e --argjson legacy "$legacy" '.instructions == $legacy.instructions' >/dev/null
           CHECKPOINT="parity_skills"
           echo "$sparse" | jq -e --argjson legacy "$legacy" '.skills == $legacy.skills' >/dev/null
-          CHECKPOINT="parity_memory"
-          echo "$sparse" | jq -e --argjson legacy "$legacy" '.memory == $legacy.memory' >/dev/null
+          # Size discipline may trim memory from the larger legacy envelope while
+          # optimized_sparse has room to retain more evidence. Require identical
+          # retrieval semantics and preservation of every legacy evidence item;
+          # sparse may be a strict evidence superset.
+          CHECKPOINT="parity_memory_semantics"
+          echo "$sparse" | jq -e --argjson legacy "$legacy" '
+            (.memory.items) as $sparse_items |
+            ($legacy.memory.items) as $legacy_items |
+            .memory.query == $legacy.memory.query and
+            .memory.retrieval_policy == $legacy.memory.retrieval_policy and
+            ($sparse_items | length) >= ($legacy_items | length) and
+            all($legacy_items[]; . as $legacy_item | any($sparse_items[]; . == $legacy_item))
+          ' >/dev/null
           CHECKPOINT="parity_capabilities"
           echo "$sparse" | jq -e --argjson legacy "$legacy" '.capabilities == $legacy.capabilities' >/dev/null
           CHECKPOINT="parity_policy"
