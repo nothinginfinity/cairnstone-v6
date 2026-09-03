@@ -24,6 +24,9 @@ const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
 const MAX_SKILLS_HARD = 10;
 const INSTRUCTIONS_BYTE_CAP = 20000;
 const AMBIGUITY_SCORE_MARGIN = 2;
+const BOOTSTRAP_MODES = new Set(["legacy_full", "optimized_sparse"]);
+const SPARSE_AUTHORITY_SCHEMA = "cairnstone-sparse-authority-v1";
+const SPARSE_PATH_HEAD_CAP = 24;
 
 const DEFAULT_LIMITS = {
   max_skills: 5,
@@ -97,6 +100,11 @@ export const AGENT_BOOTSTRAP_TOOL_DEFINITION = {
         },
         additionalProperties: false
       },
+      mode: {
+        type: "string",
+        enum: ["legacy_full", "optimized_sparse"],
+        description: "V7.6.1 bootstrap transmission mode. Defaults to legacy_full. optimized_sparse preserves the complete accepted path-head authority through a deterministic cryptographic manifest/root while transmitting only task-relevant represented path HEAD metadata."
+      },
       include_inbox: { type: "boolean", description: "Defaults to true. Non-mutating inbox listing only." },
       include_profile: {
         type: "boolean",
@@ -125,6 +133,7 @@ export async function agentBootstrapFromBody(body, env, deps) {
     let task;
     let chain;
     let instructionsChain;
+    let bootstrapMode;
     try {
       actorId = requiredActorId(body && body.actor_id, "actor_id");
       task = requiredText(body && body.task, "task", TASK_MAX_LENGTH);
@@ -137,6 +146,7 @@ export async function agentBootstrapFromBody(body, env, deps) {
       instructionsChain = body && typeof body.instructions_chain === "string" && body.instructions_chain.trim()
         ? requiredText(body.instructions_chain, "instructions_chain", 300)
         : chain;
+      bootstrapMode = normalizeBootstrapMode(body && body.mode);
     } catch (error) {
       return { ok: false, error: mapValidationError(error) };
     }
@@ -196,6 +206,20 @@ export async function agentBootstrapFromBody(body, env, deps) {
     // ---- Bounded, deterministic memory/evidence retrieval ----
     const memory = await compileMemory(env, chain, task, resume, limits);
 
+    // ---- V7.6.1 authority transmission envelope ----
+    // The snapshot/race fingerprint above and below ALWAYS covers the full
+    // accepted path-head vector. optimized_sparse changes only what metadata
+    // is transmitted to the reasoning model; it never changes accepted-state
+    // authority or the pointers protected by the race check.
+    const authority = await compileAuthorityEnvelope({
+      resume,
+      chain,
+      task,
+      memory: memory.value,
+      mode: bootstrapMode,
+      includeCanonicalInstructionsPath: instructionsChain === chain
+    });
+
     // ---- Capability coverage / policy evidence ----
     const capabilitiesOut = compileCapabilityEvidence(capabilities, skillsResult.value);
 
@@ -210,22 +234,7 @@ export async function agentBootstrapFromBody(body, env, deps) {
       actor: { actor_id: actorId },
       request: { task, chain },
       runtime,
-      authority: {
-        chain,
-        chain_head: {
-          stone_hash: resume.canonical_head.hash,
-          path: resume.canonical_head.path,
-          repo: resume.canonical_head.repo,
-          commit_sha: resume.canonical_head.commit_sha
-        },
-        path_heads: resume.path_heads.map(item => ({
-          path: item.path,
-          stone_hash: item.stone_hash,
-          repo: item.repo,
-          commit_sha: item.commit_sha
-        })),
-        timestamp_ordering_used: false
-      },
+      authority,
       instructions: instructions.value,
       coordination,
       skills: skillsResult.value,
@@ -330,6 +339,123 @@ async function captureAuthoritySnapshot(env, chain, deps) {
 
 function sameAuthoritySnapshot(a, b) {
   return a.fingerprint === b.fingerprint;
+}
+
+function compactAcceptedPathHead(item) {
+  return {
+    path: item.path,
+    stone_hash: item.stone_hash,
+    repo: item.repo,
+    commit_sha: item.commit_sha
+  };
+}
+
+function canonicalPathHeadPointers(resume) {
+  return (resume.path_heads || [])
+    .map(item => ({ path: item.path, stone_hash: item.stone_hash }))
+    .sort((a, b) => a.path.localeCompare(b.path) || a.stone_hash.localeCompare(b.stone_hash));
+}
+
+function selectSparsePathHeads(resume, task, memory, includeCanonicalInstructionsPath) {
+  const full = (resume.path_heads || []).map(compactAcceptedPathHead);
+  const byPath = new Map(full.map(item => [item.path, item]));
+  const selected = new Set();
+  const addPath = path => {
+    if (typeof path !== "string" || !byPath.has(path) || selected.size >= SPARSE_PATH_HEAD_CAP) return;
+    selected.add(path);
+  };
+
+  // Preserve direct authority context for the canonical chain orientation and
+  // canonical instructions when those paths belong to this target chain.
+  addPath(resume.canonical_head && resume.canonical_head.path);
+  if (includeCanonicalInstructionsPath) addPath(DEFAULT_INSTRUCTIONS_PATH);
+
+  // Any accepted path-head evidence actually selected for the task must be
+  // represented in the sparse envelope. Historical evidence is intentionally
+  // not promoted into accepted authority merely because it was retrieved.
+  for (const item of (memory && Array.isArray(memory.items) ? memory.items : [])) {
+    if (item && (item.authority_class === "PATH_HEAD" || item.authority_class === "CHAIN_HEAD")) addPath(item.path);
+  }
+
+  // Deterministic lexical fallback makes obvious task/path relationships
+  // representable even when bounded memory retrieval returns no row. Ranking
+  // is token-overlap first and path lexical order second; there is no model
+  // call and no timestamp ordering.
+  const terms = tokenizeTask(task);
+  const ranked = full
+    .map(item => ({
+      path: item.path,
+      score: terms.reduce((sum, term) => sum + (String(item.path).toLowerCase().includes(term) ? 1 : 0), 0)
+    }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+  for (const item of ranked) addPath(item.path);
+
+  return full
+    .filter(item => selected.has(item.path))
+    .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function compileAuthorityEnvelope({ resume, chain, task, memory, mode, includeCanonicalInstructionsPath }) {
+  const chainHead = {
+    stone_hash: resume.canonical_head.hash,
+    path: resume.canonical_head.path,
+    repo: resume.canonical_head.repo,
+    commit_sha: resume.canonical_head.commit_sha
+  };
+
+  // legacy_full is intentionally byte/identity compatible with the existing
+  // V7.0 package shape. Explicit mode:"legacy_full" and an omitted mode yield
+  // the same authority object and therefore the same package_id.
+  if (mode === "legacy_full") {
+    return {
+      chain,
+      chain_head: chainHead,
+      path_heads: (resume.path_heads || []).map(compactAcceptedPathHead),
+      timestamp_ordering_used: false
+    };
+  }
+
+  const pointers = canonicalPathHeadPointers(resume);
+  const pathHeadsDigest = "sha256:" + await sha256Text(stableJson(pointers));
+  const manifestIdentityPayload = {
+    schema: SPARSE_AUTHORITY_SCHEMA,
+    chain,
+    chain_head: resume.canonical_head.hash,
+    path_head_count: pointers.length,
+    path_heads_digest: pathHeadsDigest
+  };
+  const authorityManifestId = "sha256:" + await sha256Text(stableJson(manifestIdentityPayload));
+  const represented = selectSparsePathHeads(resume, task, memory, includeCanonicalInstructionsPath);
+
+  return {
+    chain,
+    chain_head: chainHead,
+    path_heads: represented,
+    timestamp_ordering_used: false,
+    sparse: {
+      schema: SPARSE_AUTHORITY_SCHEMA,
+      mode: "optimized_sparse",
+      authority_manifest_id: authorityManifestId,
+      path_heads_digest: pathHeadsDigest,
+      full_path_head_count: pointers.length,
+      represented_path_head_count: represented.length,
+      omitted_path_head_count: Math.max(0, pointers.length - represented.length),
+      selection: {
+        deterministic: true,
+        max_path_heads: SPARSE_PATH_HEAD_CAP,
+        preserves_selected_authority_evidence: true,
+        task_path_token_matching: true,
+        timestamp_ordering_used: false
+      },
+      expansion: {
+        tool: "cairnstone_resume_chain",
+        arguments: { chain },
+        expected_authority_manifest_id: authorityManifestId,
+        expected_path_heads_digest: pathHeadsDigest
+      }
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -719,7 +845,7 @@ function enforceSizeDiscipline(packageBody, limits, instructionsValue) {
 // ---------------------------------------------------------------------------
 
 export function hashablePayload(packageBody) {
-  return {
+  const payload = {
     schema: packageBody.schema,
     actor_id: packageBody.actor.actor_id,
     task: packageBody.request.task,
@@ -762,6 +888,15 @@ export function hashablePayload(packageBody) {
     effective_limits: packageBody.limits,
     policy: packageBody.policy
   };
+
+  // V7.6.1 sparse packages bind package identity to the COMPLETE accepted
+  // authority set through the cryptographic manifest/root, even though only
+  // represented path-head metadata is transmitted. Legacy packages omit this
+  // field entirely to preserve their established package_id semantics.
+  if (packageBody.authority && packageBody.authority.sparse) {
+    payload.authority_sparse = packageBody.authority.sparse;
+  }
+  return payload;
 }
 
 // ---------------------------------------------------------------------------
@@ -801,7 +936,14 @@ function mapValidationError(error) {
   if (message.includes("invalid_actor_id")) return "invalid_actor_id";
   if (message.includes("invalid_task")) return "invalid_task";
   if (message.includes("invalid_chain")) return "chain_not_found";
+  if (message.includes("invalid_bootstrap_mode")) return "invalid_bootstrap_mode";
   return message;
+}
+
+function normalizeBootstrapMode(value) {
+  if (value === undefined || value === null || value === "") return "legacy_full";
+  if (typeof value !== "string" || !BOOTSTRAP_MODES.has(value.trim())) throw new Error("invalid_bootstrap_mode");
+  return value.trim();
 }
 
 function normalizeCapabilities(value) {
