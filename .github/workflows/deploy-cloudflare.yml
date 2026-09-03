@@ -99,6 +99,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v764_acceptance:
+        description: "Run V7.6.4 canonical instruction runtime-brief/fallback live acceptance after deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       run_v762b_acceptance:
         description: "Run V7.6.2b native tool hydration (Mcp-Session-Id, cairnstone_load_tools, listChanged) live acceptance after deploy"
         required: false
@@ -1298,6 +1306,123 @@ jobs:
 
           echo "::notice title=V7.6.3 compact orientation metrics::full_resume=${full_bytes}B compact_one_path=${compact_bytes}B compact_zero_path=${zero_bytes}B manifest_orientation=${manifest_bytes}B accepted_paths=${path_count}"
           echo "V7.6.3 live acceptance passed: compact resume/manifest preserved canonical HEAD provenance + HEAD edges, reused the exact V7.6.1 full-vector authority root, returned only requested/recent path metadata, emitted a deterministic accepted-state cursor and full-expansion identity, reduced serialized response bytes, and left accepted state unchanged."
+
+      - name: V7.6.4 canonical instruction runtime brief live acceptance
+        if: github.event.inputs.run_v764_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="init"
+          trap 'echo "::error title=V7.6.4 acceptance failed::stage=${stage}"' ERR
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+          RPC="$BASE/mcp"
+          CHAIN="cairnstone-v6-project-memory"
+          GUIDE="docs/AI_OPERATING_GUIDE.md"
+          BRIEF="docs/AI_RUNTIME_BRIEF.json"
+
+          stage="health_snapshot"
+          health="$(curl -fsS "$BASE/health")"
+          echo "$health" | jq -e '.ok == true and .version == "0.5.24" and ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null) and ((.mcp_tools | index("cairnstone_model_route")) != null)' >/dev/null
+          before="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume")"
+          before_head="$(echo "$before" | jq -r '.canonical_head.hash')"
+          before_paths="$(echo "$before" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          guide_head="$(echo "$before" | jq -r --arg path "$GUIDE" '.path_heads[] | select(.path == $path) | .stone_hash')"
+          brief_head="$(echo "$before" | jq -r --arg path "$BRIEF" '[.path_heads[] | select(.path == $path) | .stone_hash][0] // empty')"
+          test -n "$before_head"
+          test -n "$guide_head"
+
+          stage="legacy_full"
+          legacy_payload="$(jq -nc --arg chain "$CHAIN" '{jsonrpc:"2.0",id:7641,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v764-acceptance",task:"V7.6.4 canonical instruction runtime brief acceptance",chain:$chain,mode:"legacy_full",include_inbox:false,include_profile:true,limits:{max_memory_hits:0,max_memory_bytes:0,max_inbox_items:0,max_package_bytes:180000}}}}')"
+          legacy_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$legacy_payload")"
+          legacy="$(echo "$legacy_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$legacy" | jq -e --arg guide "$guide_head" '
+            .ok == true and
+            .schema == "cairnstone-agent-context-v1" and
+            .instructions.path == "docs/AI_OPERATING_GUIDE.md" and
+            .instructions.stone_hash == $guide and
+            .instructions.truncated == false and
+            .instructions.selection.requested_mode == "legacy_full" and
+            .instructions.selection.representation == "full_guide" and
+            .instructions.selection.fallback == null and
+            .instructions.content_identity.bytes == 24674 and
+            .instructions.transmitted_content_identity.bytes == 24674 and
+            .limits.instructions_bytes == 24674 and
+            .policy.accepted_state_only_for_authority == true and
+            .policy.execution_authority == false and
+            .policy.mutation_authority == false
+          ' >/dev/null
+
+          stage="optimized"
+          optimized_payload="$(jq -nc --arg chain "$CHAIN" '{jsonrpc:"2.0",id:7642,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v764-acceptance",task:"V7.6.4 AI_RUNTIME_BRIEF runtime brief acceptance",chain:$chain,mode:"optimized_sparse",include_inbox:false,include_profile:true,limits:{max_memory_hits:0,max_memory_bytes:0,max_inbox_items:0,max_package_bytes:180000}}}}')"
+          optimized_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$optimized_payload")"
+          optimized="$(echo "$optimized_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$optimized" | jq -e --arg guide "$guide_head" '
+            .ok == true and
+            .schema == "cairnstone-agent-context-v1" and
+            .instructions.path == "docs/AI_OPERATING_GUIDE.md" and
+            .instructions.stone_hash == $guide and
+            .instructions.content_identity.bytes == 24674 and
+            .instructions.truncated == false and
+            .instructions.selection.requested_mode == "optimized_sparse" and
+            .authority.sparse.mode == "optimized_sparse" and
+            .policy.accepted_state_only_for_authority == true and
+            .policy.execution_authority == false and
+            .policy.mutation_authority == false
+          ' >/dev/null
+
+          if [ -z "$brief_head" ]; then
+            stage="pre_acceptance_fallback"
+            echo "$optimized" | jq -e --argjson legacy "$legacy" '
+              .instructions.selection.representation == "full_guide_fallback" and
+              .instructions.selection.runtime_brief_path == "docs/AI_RUNTIME_BRIEF.json" and
+              .instructions.selection.fallback.code == "runtime_brief_unaccepted" and
+              .instructions.content == $legacy.instructions.content and
+              .instructions.content_identity == $legacy.instructions.content_identity and
+              .instructions.transmitted_content_identity == $legacy.instructions.transmitted_content_identity and
+              .package_id != $legacy.package_id
+            ' >/dev/null
+            echo "::notice title=V7.6.4 phase-1 fallback verified::brief_path_head=absent full_guide_bytes=$(echo "$optimized" | jq -r '.limits.instructions_bytes') package_bytes=$(echo "$optimized" | jq -r '.limits.package_bytes')"
+          else
+            stage="accepted_brief"
+            echo "$optimized" | jq -e --arg brief "$brief_head" --argjson legacy "$legacy" '
+              .instructions.selection.representation == "runtime_brief" and
+              .instructions.selection.fallback == null and
+              .instructions.selection.runtime_brief.path == "docs/AI_RUNTIME_BRIEF.json" and
+              .instructions.selection.runtime_brief.stone_hash == $brief and
+              .instructions.selection.runtime_brief.schema == "cairnstone-canonical-instruction-runtime-brief-v1" and
+              (.instructions.selection.runtime_brief.commit_sha | test("^[0-9a-f]{40}$")) and
+              .instructions.transmitted_content_identity.bytes < .instructions.content_identity.bytes and
+              .limits.instructions_bytes == .instructions.transmitted_content_identity.bytes and
+              (.instructions.content | split("\n") | length) == 16 and
+              any(.authority.path_heads[]; .path == "docs/AI_RUNTIME_BRIEF.json" and .stone_hash == $brief) and
+              .package_id != $legacy.package_id and
+              .limits.package_bytes < $legacy.limits.package_bytes
+            ' >/dev/null
+
+            stage="accepted_brief_repeat"
+            repeat_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$optimized_payload")"
+            repeat="$(echo "$repeat_outer" | jq -c '.result.content[0].text | fromjson')"
+            test "$(echo "$optimized" | jq -r '.package_id')" = "$(echo "$repeat" | jq -r '.package_id')"
+            test "$(echo "$optimized" | jq -r '.instructions.transmitted_content_identity.sha256')" = "$(echo "$repeat" | jq -r '.instructions.transmitted_content_identity.sha256')"
+
+            stage="selection_identity_tamper"
+            tampered="$(echo "$optimized" | jq '.instructions.selection.runtime_brief.stone_hash = "tampered-brief-stone"')"
+            tamper_payload="$(jq -nc --argjson ctx "$tampered" '{jsonrpc:"2.0",id:7643,method:"tools/call",params:{name:"cairnstone_model_route",arguments:{context_package:$ctx,route:{provider:"mock-a",model:"mock-a/text-tools-v1"},request:{tools:[],generation:{max_output_tokens:32,temperature:0}}}}}')"
+            tamper_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$tamper_payload")"
+            tamper="$(echo "$tamper_outer" | jq -c '.result.content[0].text | fromjson')"
+            echo "$tamper" | jq -e '.ok == false and .error == "invalid_context_package" and .detail == "package_id_hash_mismatch"' >/dev/null
+
+            echo "::notice title=V7.6.4 phase-2 runtime brief verified::full_guide_bytes=$(echo "$legacy" | jq -r '.limits.instructions_bytes') runtime_brief_bytes=$(echo "$optimized" | jq -r '.limits.instructions_bytes') legacy_package_bytes=$(echo "$legacy" | jq -r '.limits.package_bytes') optimized_package_bytes=$(echo "$optimized" | jq -r '.limits.package_bytes') brief_head=${brief_head}"
+          fi
+
+          stage="accepted_state_unchanged"
+          after="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume")"
+          after_head="$(echo "$after" | jq -r '.canonical_head.hash')"
+          after_paths="$(echo "$after" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          test "$before_head" = "$after_head"
+          test "$before_paths" = "$after_paths"
+
+          echo "V7.6.4 live acceptance passed for the current acceptance phase: complete full-guide legacy behavior remained the default, optimized mode either failed safely to the accepted full guide or used the accepted identity-bound runtime brief, instruction-selection metadata was package-ID-bound, and accepted project state remained unchanged."
 
       - name: V7.6.2b native tool hydration live acceptance
         if: github.event.inputs.run_v762b_acceptance == 'true'
