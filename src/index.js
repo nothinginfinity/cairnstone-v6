@@ -23,7 +23,8 @@ import {
 } from "./skills.js";
 import {
   agentBootstrapFromBody,
-  AGENT_BOOTSTRAP_TOOL_DEFINITION
+  AGENT_BOOTSTRAP_TOOL_DEFINITION,
+  computeAcceptedAuthorityManifest
 } from "./agent-bootstrap.js";
 import {
   previewPaidAgentQuoteFromBody,
@@ -77,7 +78,7 @@ import {
   LOAD_TOOLS_TOOL_DEFINITION
 } from "./mcp-session.js";
 
-const VERSION = "0.5.20";
+const VERSION = "0.5.21";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -179,7 +180,11 @@ export default {
       if (request.method === "GET" && manifestV2Match) {
         const chain = decodeURIComponent(manifestV2Match[1]);
         if (!chain) return json({ ok: false, error: "missing_chain", route: "/v2/chains/:chain/manifest" }, 400);
-        return json(await getChainManifestV2(env, chain, { detail: url.searchParams.get("detail") || undefined, since: url.searchParams.get("since") || undefined }));
+        return json(await getChainManifestV2(env, chain, {
+          detail: url.searchParams.get("detail") || undefined,
+          since: url.searchParams.get("since") || undefined,
+          paths: url.searchParams.getAll("path")
+        }));
       }
       const stoneV2Match = url.pathname.match(/^\/v2\/stones\/([^/]+)$/);
       if (request.method === "GET" && stoneV2Match) {
@@ -191,7 +196,12 @@ export default {
       if (request.method === "GET" && resumeV2Match) {
         const chain = decodeURIComponent(resumeV2Match[1]);
         if (!chain) return json({ ok: false, error: "missing_chain", route: "/v2/chains/:chain/resume" }, 400);
-        return json(await resumeChainFromBody({ chain }, env));
+        return json(await resumeChainFromBody({
+          chain,
+          detail: url.searchParams.get("detail") || undefined,
+          since: url.searchParams.get("since") || undefined,
+          paths: url.searchParams.getAll("path")
+        }, env));
       }
 
       const stoneMatch = url.pathname.match(/^\/v1\/stones\/([^/]+)$/);
@@ -295,9 +305,9 @@ function routes() {
     "GET /stones/:hash",
     "POST /v2/commit",
     "POST /v2/find",
-    "GET /v2/chains/:chain/manifest?detail=summary|compact|full&since=ISO",
+    "GET /v2/chains/:chain/manifest?detail=summary|compact|orientation|full&since=ISO&path=...",
     "GET /v2/stones/:hash?level=lod1-5",
-    "GET /v2/chains/:chain/resume"
+    "GET /v2/chains/:chain/resume?detail=full|compact&since=ISO&path=..."
   ];
 }
 
@@ -1150,25 +1160,29 @@ function mcpTools() {
     },
     {
       name: "cairnstone_manifest_v2",
-      description: "Token-efficient chain manifest. detail=summary returns counts + chain head + per-path heads only (~500B). detail=compact (default) returns short-hash nodes with duplicate collapsing, per-path heads, and edges as 'from>to:type' strings. detail=full returns the v1 shape. since=ISO date returns only stones created after it (delta pickup). Prefer this over cairnstone_get_chain_manifest.",
+      description: "Token-efficient chain manifest. detail=orientation returns bounded HEAD provenance + the complete accepted-authority digest/counts + HEAD edges, with path heads included only when requested by paths[] and/or since. detail=summary and detail=compact preserve their legacy behavior and include the accepted path-head list, so their serialized size scales with mature-chain path count and must be measured rather than treated as constant. detail=full returns the v1 shape. Prefer orientation for normal mature-chain pickup and full for explicit expansion.",
       inputSchema: {
         type: "object",
         required: ["chain"],
         properties: {
           chain: { type: "string" },
-          detail: { type: "string", enum: ["summary", "compact", "full"] },
-          since: { type: "string", description: "ISO date/datetime; only include stones created at or after this" }
+          detail: { type: "string", enum: ["summary", "compact", "orientation", "full"] },
+          since: { type: "string", description: "ISO date/datetime. For orientation, include accepted path heads updated at/after this cursor; for legacy compact/summary, preserves existing stone-delta behavior." },
+          paths: { type: "array", items: { type: "string" }, maxItems: 50, description: "orientation only: exact accepted paths to include even when outside the since window." }
         }
       }
     },
     {
       name: "cairnstone_resume_chain",
-      description: "V6.4: deterministic one-call chain resume/orientation. Returns the exact accepted canonical state for a chain in a single response -- chain-level HEAD (resolved directly from chain_heads, never inferred from timestamps), the HEAD stone's structured GitHub provenance and metadata, every accepted path_head, and every graph edge (inbound and outbound) directly connected to HEAD. Read-only: never creates stones, never moves chain_heads or path_heads, never reconciles or accepts source. Use this as the first call when resuming work on a chain instead of separately fetching the manifest, guessing HEAD from timestamps, and parsing lod5 prose.",
+      description: "Deterministic one-call chain resume/orientation. detail=full (default, backward compatible) returns canonical HEAD provenance, every accepted path head, and every edge touching HEAD. V7.6.3 detail=compact returns the same HEAD provenance/HEAD-edge neighborhood plus the complete accepted-authority digest/root and counts while transmitting path-head metadata only for exact paths[] and/or accepted heads updated since an ISO cursor. Compact responses include an accepted-state next_cursor and explicit full-expansion recipe. Read-only: never creates stones or moves accepted state.",
       inputSchema: {
         type: "object",
         required: ["chain"],
         properties: {
-          chain: { type: "string" }
+          chain: { type: "string" },
+          detail: { type: "string", enum: ["full", "compact"] },
+          since: { type: "string", description: "compact only: ISO accepted-state cursor; include path heads updated at/after it." },
+          paths: { type: "array", items: { type: "string" }, maxItems: 50, description: "compact only: exact accepted paths whose metadata should be represented." }
         }
       }
     },
@@ -2527,8 +2541,17 @@ async function ftsIndexRefs(env, stoneHash, chain, refs) {
 
 async function getChainManifestV2(env, chain, options = {}) {
   requireBindings(env);
-  const detail = ["summary", "compact", "full"].includes(options.detail) ? options.detail : "compact";
+  const detail = ["summary", "compact", "orientation", "full"].includes(options.detail) ? options.detail : "compact";
   if (detail === "full") return getChainManifest(env, chain);
+  if (detail === "orientation") {
+    const orientation = await resumeChainFromBody({
+      chain,
+      detail: "compact",
+      since: options.since,
+      paths: options.paths
+    }, env);
+    return orientation && orientation.ok ? { ...orientation, detail: "orientation", surface: "manifest_v2" } : orientation;
+  }
   const since = typeof options.since === "string" && options.since ? options.since : null;
 
   const headRow = await env.CAIRNSTONE_DB.prepare("SELECT head_hash, updated_at FROM chain_heads WHERE chain = ?").bind(chain).first();
@@ -2599,16 +2622,55 @@ async function getChainManifestV2(env, chain, options = {}) {
   return out;
 }
 
-// V6.4: deterministic chain resume/orientation. One call returns the exact accepted
-// canonical state for `chain` -- HEAD resolved directly from chain_heads (never from
-// created_at ordering), the HEAD stone's structured provenance/metadata read from stored
-// columns and JSON (never parsed out of lod5/lod4 prose), every accepted path_head, and
-// every graph edge touching HEAD in either direction. Strictly read-only: no INSERT/UPDATE
-// of any kind. Fails closed with explicit error codes rather than degrading into a vague
-// orientation on a corrupt or incomplete canonical state.
+const MAX_ORIENTATION_PATHS = 50;
+
+function normalizeOrientationPaths(value) {
+  if (value === undefined || value === null) return { ok: true, paths: [] };
+  if (!Array.isArray(value)) return { ok: false, error: "invalid_paths", detail: "paths must be an array of exact accepted path strings" };
+  const paths = [...new Set(value.filter(item => typeof item === "string" && item.trim()).map(item => item.trim()))];
+  if (paths.length > MAX_ORIENTATION_PATHS) return { ok: false, error: "too_many_paths", max_paths: MAX_ORIENTATION_PATHS };
+  return { ok: true, paths };
+}
+
+function normalizeOrientationSince(value) {
+  if (value === undefined || value === null || value === "") return { ok: true, since: null };
+  const timestamp = Date.parse(String(value));
+  if (!Number.isFinite(timestamp)) return { ok: false, error: "invalid_since", detail: "since must be an ISO date/datetime" };
+  return { ok: true, since: new Date(timestamp).toISOString() };
+}
+
+export function selectOrientationPathHeads(pathHeads, { paths = [], since = null } = {}) {
+  const requested = new Set(paths);
+  return (Array.isArray(pathHeads) ? pathHeads : []).filter(item =>
+    requested.has(item.path) || (since !== null && String(item.updated_at || "") >= since)
+  );
+}
+
+export function latestAcceptedStateCursor(headUpdatedAt, pathHeads) {
+  const candidates = [headUpdatedAt, ...(Array.isArray(pathHeads) ? pathHeads.map(item => item.updated_at) : [])]
+    .filter(value => typeof value === "string" && value);
+  return candidates.length ? candidates.sort().at(-1) : null;
+}
+
+// V6.4 full mode remains byte/shape compatible. V7.6.3 compact mode reuses
+// the exact V7.6.1 accepted-authority manifest identity while omitting
+// unrequested path-head metadata from transmission.
 async function resumeChainFromBody(body, env) {
   requireBindings(env);
   const chain = requiredString(body.chain, "chain");
+  const detail = body.detail === undefined || body.detail === null || body.detail === "" ? "full" : String(body.detail);
+  if (!["full", "compact"].includes(detail)) return { ok: false, error: "invalid_resume_detail", allowed: ["full", "compact"] };
+
+  let requestedPaths = [];
+  let since = null;
+  if (detail === "compact") {
+    const normalizedPaths = normalizeOrientationPaths(body.paths);
+    if (!normalizedPaths.ok) return { ...normalizedPaths, chain };
+    const normalizedSince = normalizeOrientationSince(body.since);
+    if (!normalizedSince.ok) return { ...normalizedSince, chain };
+    requestedPaths = normalizedPaths.paths;
+    since = normalizedSince.since;
+  }
 
   const headRow = await env.CAIRNSTONE_DB.prepare(
     "SELECT head_hash, updated_at FROM chain_heads WHERE chain = ?"
@@ -2693,6 +2755,65 @@ async function resumeChainFromBody(body, env) {
     commit_sha: headStoneRow.commit_sha || null,
     source_type: metadata.source_type || (isObject(metadata.github) ? "github_file" : null)
   };
+
+  if (detail === "compact") {
+    const authorityManifest = await computeAcceptedAuthorityManifest({
+      chain,
+      chain_head: canonical_head.hash,
+      path_heads
+    });
+    const representedPathHeads = selectOrientationPathHeads(path_heads, { paths: requestedPaths, since });
+    const representedPathSet = new Set(representedPathHeads.map(item => item.path));
+    const missingRequestedPaths = requestedPaths.filter(path => !path_heads.some(item => item.path === path));
+    const recentPathHeadCount = since === null
+      ? 0
+      : path_heads.filter(item => String(item.updated_at || "") >= since).length;
+    const nextCursor = latestAcceptedStateCursor(headRow.updated_at, path_heads);
+
+    return {
+      ok: true,
+      chain,
+      detail: "compact",
+      canonical_head,
+      provenance,
+      authority: {
+        ...authorityManifest,
+        mode: "compact_orientation",
+        represented_path_head_count: representedPathHeads.length,
+        omitted_path_head_count: Math.max(0, authorityManifest.full_path_head_count - representedPathHeads.length)
+      },
+      path_heads: representedPathHeads,
+      path_head_selection: {
+        requested_paths: requestedPaths,
+        requested_paths_missing: missingRequestedPaths,
+        since,
+        since_inclusive: true,
+        selection_mode: requestedPaths.length && since ? "requested_or_since" : requestedPaths.length ? "requested" : since ? "since" : "none",
+        recent_path_head_count: recentPathHeadCount,
+        returned_path_head_count: representedPathSet.size
+      },
+      edges: { outbound, inbound },
+      head_edges_complete: true,
+      path_heads_complete: representedPathHeads.length === path_heads.length,
+      accepted_state_cursor: {
+        since,
+        next_cursor: nextCursor,
+        since_inclusive: true,
+        chain_head_updated_at: headRow.updated_at,
+        chain_head_changed_since: since === null ? null : String(headRow.updated_at || "") >= since
+      },
+      expansion: {
+        tool: "cairnstone_resume_chain",
+        arguments: { chain, detail: "full" },
+        expected_authority_manifest_id: authorityManifest.authority_manifest_id,
+        expected_path_heads_digest: authorityManifest.path_heads_digest
+      },
+      resume: {
+        canonical_source: "chain_head",
+        timestamp_ordering_used: false
+      }
+    };
+  }
 
   return {
     ok: true,
