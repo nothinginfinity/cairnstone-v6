@@ -83,6 +83,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v761_acceptance:
+        description: "Run V7.6.1 optimized_sparse authority-envelope parity + cross-provider live acceptance after deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       run_v762b_acceptance:
         description: "Run V7.6.2b native tool hydration (Mcp-Session-Id, cairnstone_load_tools, listChanged) live acceptance after deploy"
         required: false
@@ -1006,6 +1014,122 @@ jobs:
 
           echo "V7.4.1 live acceptance passed: repo-debugger reused one durable profile on the independent praxiq-call chain, its governed reconcile read preserved the actual drift summary into model grounding, Workers AI and DeepSeek preserved identical package/request/profile/classification identity with zero model tool surface and zero mutation authority, an unlisted chain failed closed before work, and both canonical chains remained unchanged."
 
+
+      - name: V7.6.1 optimized sparse authority live acceptance
+        if: github.event.inputs.run_v761_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+          RPC="$BASE/mcp"
+          CHAIN="cairnstone-v6-project-memory"
+          TASK="what's next in the roadmap"
+
+          health="$(curl -fsS "$BASE/health")"
+          echo "$health" | jq -e '.ok == true and ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null) and ((.mcp_tools | index("cairnstone_model_route")) != null)' >/dev/null
+
+          before="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume")"
+          before_head="$(echo "$before" | jq -r '.canonical_head.hash')"
+          roadmap_head="$(echo "$before" | jq -r '.path_heads[] | select(.path == "docs/ROADMAP_V7.md") | .stone_hash')"
+          before_paths="$(echo "$before" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          path_count="$(echo "$before" | jq -r '.path_heads | length')"
+          test -n "$before_head"
+          test -n "$roadmap_head"
+          test "$path_count" -gt 2
+
+          legacy_payload="$(jq -nc --arg task "$TASK" --arg chain "$CHAIN" '{jsonrpc:"2.0",id:7611,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v761-acceptance",task:$task,chain:$chain,mode:"legacy_full",include_inbox:false,include_profile:true}}}')"
+          legacy_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$legacy_payload")"
+          legacy="$(echo "$legacy_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$legacy" | jq -e --arg head "$before_head" --argjson count "$path_count" '
+            .ok == true and
+            .schema == "cairnstone-agent-context-v1" and
+            .authority.chain_head.stone_hash == $head and
+            (.authority.path_heads | length) == $count and
+            (.authority | has("sparse") | not) and
+            .policy.accepted_state_only_for_authority == true and
+            .policy.execution_authority == false and
+            .policy.mutation_authority == false and
+            .diagnostics.bootstrap_package.ok == true
+          ' >/dev/null
+
+          sparse_payload="$(jq -nc --arg task "$TASK" --arg chain "$CHAIN" '{jsonrpc:"2.0",id:7612,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v761-acceptance",task:$task,chain:$chain,mode:"optimized_sparse",include_inbox:false,include_profile:true}}}')"
+          sparse_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$sparse_payload")"
+          sparse="$(echo "$sparse_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$sparse" | jq -e --arg head "$before_head" --arg roadmap "$roadmap_head" --argjson count "$path_count" --argjson legacy_bytes "$(echo "$legacy" | jq '.limits.package_bytes')" --argjson legacy_authority_bytes "$(echo "$legacy" | jq '.diagnostics.bootstrap_package.sections.authority_bytes')" '
+            .ok == true and
+            .schema == "cairnstone-agent-context-v1" and
+            .authority.chain_head.stone_hash == $head and
+            .authority.sparse.schema == "cairnstone-sparse-authority-v1" and
+            .authority.sparse.mode == "optimized_sparse" and
+            (.authority.sparse.authority_manifest_id | test("^sha256:[0-9a-f]{64}$")) and
+            (.authority.sparse.path_heads_digest | test("^sha256:[0-9a-f]{64}$")) and
+            .authority.sparse.full_path_head_count == $count and
+            .authority.sparse.represented_path_head_count == (.authority.path_heads | length) and
+            .authority.sparse.omitted_path_head_count == ($count - (.authority.path_heads | length)) and
+            .authority.sparse.omitted_path_head_count > 0 and
+            (.authority.path_heads | length) < $count and
+            any(.authority.path_heads[]; .path == "docs/AI_OPERATING_GUIDE.md") and
+            any(.authority.path_heads[]; .path == "docs/ROADMAP_V7.md" and .stone_hash == $roadmap) and
+            .authority.sparse.expansion.tool == "cairnstone_resume_chain" and
+            .authority.sparse.expansion.expected_path_heads_digest == .authority.sparse.path_heads_digest and
+            .limits.package_bytes < $legacy_bytes and
+            .diagnostics.bootstrap_package.sections.authority_bytes < $legacy_authority_bytes and
+            .policy.accepted_state_only_for_authority == true and
+            .policy.execution_authority == false and
+            .policy.mutation_authority == false
+          ' >/dev/null
+
+          echo "$sparse" | jq -e --argjson legacy "$legacy" '
+            .instructions == $legacy.instructions and
+            .skills == $legacy.skills and
+            .memory == $legacy.memory and
+            .capabilities == $legacy.capabilities and
+            .policy == $legacy.policy and
+            .authority.chain_head == $legacy.authority.chain_head
+          ' >/dev/null
+
+          sparse_repeat_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$sparse_payload")"
+          sparse_repeat="$(echo "$sparse_repeat_outer" | jq -c '.result.content[0].text | fromjson')"
+          test "$(echo "$sparse" | jq -r '.package_id')" = "$(echo "$sparse_repeat" | jq -r '.package_id')"
+          test "$(echo "$sparse" | jq -r '.authority.sparse.path_heads_digest')" = "$(echo "$sparse_repeat" | jq -r '.authority.sparse.path_heads_digest')"
+          test "$(echo "$sparse" | jq -r '.authority.sparse.authority_manifest_id')" = "$(echo "$sparse_repeat" | jq -r '.authority.sparse.authority_manifest_id')"
+
+          package_id="$(echo "$sparse" | jq -r '.package_id')"
+
+          workers_payload="$(jq -nc --argjson ctx "$sparse" '{jsonrpc:"2.0",id:7613,method:"tools/call",params:{name:"cairnstone_model_route",arguments:{context_package:$ctx,route:{provider:"workers-ai",model:"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},request:{tools:[],generation:{max_output_tokens:180,temperature:0}}}}}')"
+          workers_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$workers_payload")"
+          workers="$(echo "$workers_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$workers" | jq -e --arg package "$package_id" '
+            .ok == true and .package_id == $package and .route.provider == "workers-ai" and
+            .policy.tool_intents_only == true and .policy.execution_authority == false and .policy.mutation_authority == false
+          ' >/dev/null
+          request_ir_id="$(echo "$workers" | jq -r '.request_ir_id')"
+
+          deepseek_payload="$(jq -nc --argjson ctx "$sparse" '{jsonrpc:"2.0",id:7614,method:"tools/call",params:{name:"cairnstone_model_route",arguments:{context_package:$ctx,route:{provider:"deepseek",model:"deepseek-chat",credential_mode:"byok",credential_alias:"default"},request:{tools:[],generation:{max_output_tokens:180,temperature:0}}}}}')"
+          deepseek_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$deepseek_payload")"
+          deepseek="$(echo "$deepseek_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$deepseek" | jq -e --arg package "$package_id" --arg request "$request_ir_id" '
+            .ok == true and .package_id == $package and .request_ir_id == $request and .route.provider == "deepseek" and
+            .policy.tool_intents_only == true and .policy.execution_authority == false and .policy.mutation_authority == false
+          ' >/dev/null
+
+          tampered="$(echo "$sparse" | jq '.authority.sparse.path_heads_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"')"
+          tampered_payload="$(jq -nc --argjson ctx "$tampered" '{jsonrpc:"2.0",id:7615,method:"tools/call",params:{name:"cairnstone_model_route",arguments:{context_package:$ctx,route:{provider:"mock-a",model:"mock-a/text-tools-v1"},request:{tools:[],generation:{max_output_tokens:32,temperature:0}}}}}')"
+          tampered_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$tampered_payload")"
+          tampered_result="$(echo "$tampered_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$tampered_result" | jq -e '.ok == false and .error == "invalid_context_package" and .detail == "package_id_hash_mismatch"' >/dev/null
+
+          after="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume")"
+          after_head="$(echo "$after" | jq -r '.canonical_head.hash')"
+          after_paths="$(echo "$after" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          test "$before_head" = "$after_head"
+          test "$before_paths" = "$after_paths"
+
+          legacy_bytes="$(echo "$legacy" | jq -r '.limits.package_bytes')"
+          sparse_bytes="$(echo "$sparse" | jq -r '.limits.package_bytes')"
+          legacy_authority_bytes="$(echo "$legacy" | jq -r '.diagnostics.bootstrap_package.sections.authority_bytes')"
+          sparse_authority_bytes="$(echo "$sparse" | jq -r '.diagnostics.bootstrap_package.sections.authority_bytes')"
+          echo "V7.6.1 live acceptance passed: legacy=${legacy_bytes}B sparse=${sparse_bytes}B; authority legacy=${legacy_authority_bytes}B sparse=${sparse_authority_bytes}B; full path-head authority remained cryptographically committed, task-relevant heads stayed represented, Workers AI + DeepSeek preserved package/request identity, sparse-root tampering failed closed, and accepted state remained unchanged."
 
       - name: V7.6.2b native tool hydration live acceptance
         if: github.event.inputs.run_v762b_acceptance == 'true'
