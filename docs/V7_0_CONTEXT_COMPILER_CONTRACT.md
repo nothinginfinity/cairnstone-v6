@@ -296,6 +296,16 @@ If a chain does not define an accepted canonical instruction path, the compiler 
 
 It must never silently read mutable `main` as authority.
 
+#### V7.6.4 canonical instruction runtime-brief extension
+
+`docs/AI_OPERATING_GUIDE.md` remains the sole canonical instruction authority. `legacy_full` is still the default/rollback mode and transmits the complete accepted guide selected by its CairnStone path HEAD; V7.6.4 removes the old character-cap truncation from that legacy path.
+
+An explicit `optimized_sparse` compile may additionally resolve accepted path HEAD `docs/AI_RUNTIME_BRIEF.json`. The brief is not a second authority: it is a Git-versioned, CairnStone-accepted, machine-readable compiled representation whose `authority.guide` object must exactly match the accepted full guide path, stone hash, immutable repo/commit, SHA-256, Git blob SHA, and byte length. Its schema is `cairnstone-canonical-instruction-runtime-brief-v1`, its top-level/authority/rule object shapes are closed, and its ordered `required_rule_ids` plus ordered `{id,text}` rule vector must exactly cover the runtime-critical rule contract enforced in source.
+
+For optimized mode the compiler always resolves/fetches the accepted full guide first. If the brief is missing/unaccepted, mutable, unreadable, malformed, identity-stale, coverage-invalid, or authority-expanding, the compiler transmits the complete accepted full guide instead and returns explicit typed `instructions.selection.representation="full_guide_fallback"` metadata with a fallback code. It never silently uses a partial/untrusted brief. If validation succeeds, only the deterministic rendered `RULE_ID: rule text` brief lines become model-visible instruction content while the `instructions` object still preserves the full-guide authority identity and separately records the accepted runtime-brief provenance plus transmitted-content identity.
+
+The initial/final V7.0 authority snapshots continue to cover the complete accepted path-head vector. Therefore once the brief has an accepted path HEAD, any brief-pointer change during compilation produces the same `context_compile_race` fail-closed behavior as any other accepted authority change. Cross-project instruction-chain mode retains the existing dual-chain snapshot rule.
+
 ### 5.5 Coordination / AC1
 
 Bootstrap must check coordination without consuming messages.
@@ -469,7 +479,7 @@ The hashed payload must include at minimum:
 - chain;
 - chain HEAD;
 - accepted path HEADs represented in the package; in `optimized_sparse`, also the deterministic full accepted path-head digest/root and full/represented/omitted counts so omitted authority remains identity-bearing;
-- canonical instruction identity/content identity;
+- canonical full-guide instruction identity/content identity plus the model-visible transmitted-content identity and deterministic instruction-selection/runtime-brief/fallback metadata;
 - AC1 inbox snapshot metadata included in the package;
 - accepted skills manifest HEAD;
 - selected skill IDs/versions/stone hashes/commit SHAs/content identities;
