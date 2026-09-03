@@ -428,7 +428,7 @@ Acceptance should prove at least one real paid subagent call end-to-end: x402 pa
 
 ## V7.6 — Context Efficiency & MCP Surface Optimization
 
-Status: **IN PROGRESS — V7.6.0 profiler, V7.6.2a portable Tool Vault, V7.6.2b native-hydration implementation, V7.6.1 sparse authority, and V7.6.3 compact orientation/manifest reads are COMPLETE/live-verified. V7.6.4 canonical instruction runtime brief is NEXT, only if the measured lower-risk wins justify it.** Optimize the existing canonical CairnStone V7 codebase in-place behind additive compatibility boundaries; do not fork a competing optimized repo. `legacy_full` remains the production/default bootstrap and rollback path; `optimized_sparse` remains explicit opt-in until the V7.6 canary/default gate closes. Native hydration remains optional/experimental until the separate cross-client interop recommendation gate is proven.
+Status: **IN PROGRESS — V7.6.0 profiler, V7.6.2a portable Tool Vault, V7.6.2b native-hydration implementation, V7.6.1 sparse authority, V7.6.3 compact orientation/manifest reads, and V7.6.4 canonical instruction runtime brief are COMPLETE/live-verified. V7.6.5 canary/default flip is NEXT.** Optimize the existing canonical CairnStone V7 codebase in-place behind additive compatibility boundaries; do not fork a competing optimized repo. `legacy_full` remains the production/default bootstrap and rollback path; `optimized_sparse` remains explicit opt-in until the V7.6 canary/default gate closes. Native hydration remains optional/experimental until the separate cross-client interop recommendation gate is proven.
 
 Primary goals:
 
@@ -524,7 +524,7 @@ Acceptance for V7.6.2 must prove:
 - native dynamic hydration, if enabled, falls back cleanly to portable deferred execution when a client cannot refresh/rebind schemas;
 - growing the Tool Vault does not materially increase core startup schema bytes except for explicitly added core primitives.
 
-Execution priority inside V7.6 is now: **V7.6.0 exact profiler COMPLETE -> V7.6.2a portable Deferred Tool Hydration COMPLETE -> V7.6.2b native hydration implementation COMPLETE (cross-client recommendation gate still open) -> V7.6.1 sparse authority COMPLETE -> V7.6.3 compact reads COMPLETE -> V7.6.4 instruction brief NEXT only if still worthwhile -> V7.6.5 canary/default flip.**
+Execution priority inside V7.6 is now: **V7.6.0 exact profiler COMPLETE -> V7.6.2a portable Deferred Tool Hydration COMPLETE -> V7.6.2b native hydration implementation COMPLETE (cross-client recommendation gate still open) -> V7.6.1 sparse authority COMPLETE -> V7.6.3 compact reads COMPLETE -> V7.6.4 canonical instruction runtime brief COMPLETE -> V7.6.5 canary/default flip NEXT.**
 
 ### V7.6.3 — Compact orientation/manifest reads
 
@@ -536,11 +536,24 @@ No default flip occurred. Full resume remains the compatibility/rollback path; c
 
 ### V7.6.4 — Canonical instruction runtime brief
 
-Higher-risk and deferred until earlier wins are measured. The full `docs/AI_OPERATING_GUIDE.md` remains canonical authority. Any runtime brief must be Git-versioned, CairnStone-accepted, identity-bound to the full guide, coverage-tested for safety/authority rules, and fail closed to the full guide when stale or mismatched. Never optimize by arbitrary truncation.
+Status: **COMPLETE + LIVE-VERIFIED on runtime `0.5.24`.** The full `docs/AI_OPERATING_GUIDE.md` remains sole canonical instruction authority; `docs/AI_RUNTIME_BRIEF.json` is an accepted, Git-versioned, identity-bound compiled representation that `cairnstone_agent_bootstrap` may select under explicit opt-in `optimized_sparse` mode. `legacy_full` remains the production/default rollback path.
+
+`docs/AI_RUNTIME_BRIEF.json` is CairnStone-accepted at path HEAD `fd077d0f4a7832696a6506bc6df1de96eacb28420af9d39ba8ca664f9b88bb46`, Git-backed at immutable commit `3bc60af184f664431eeb1980a3b59b0d6d75f8c7`, and identity-bound to the accepted full-guide stone `ceda7249c1e624133fde669405b0e5a6c477bf4b3cd25624651da809d1977260` (guide commit `4bf89402e87fdd86d2d01f749ce236902bd2d8c4`, 24,674 bytes, SHA-256 `52eb1ec4278a0150d7f00e05810090596d354c513e7adb1da08cc11d13feb550`).
+
+Two live acceptance phases passed on final implementation/workflow commit `3bc60af184f664431eeb1980a3b59b0d6d75f8c7`:
+
+- **Phase 1 (`33778437564`)** — pre-acceptance safety branch: with no accepted runtime-brief path HEAD, explicit `optimized_sparse` fell back to the complete accepted guide with typed `runtime_brief_unaccepted` semantics; full regression and deployment passed.
+- **Phase 2 (`33780053649`)** — after acceptance: proved accepted `runtime_brief` selection, retained full-guide canonical identity, deterministic repeat package/transmitted-content identity, package-ID-bound selection metadata, fail-closed `invalid_context_package`/`package_id_hash_mismatch` on deliberate stone-hash tamper, and unchanged accepted project state from bootstrap/model-route acceptance.
+
+Measured live reduction from run `33780053649`: full guide instructions 24,674 B vs runtime-brief instructions 4,728 B (-80.84%, 5.22x smaller); legacy bootstrap package 61,113 B vs optimized bootstrap package 20,683 B (-66.16%, 2.95x smaller). This clears the V7.6 mature-chain >=50% package-reduction target for the accepted sample.
+
+All V7.6.4 changed repo paths are re-stoned/accepted at final immutable commit `3bc60af184f664431eeb1980a3b59b0d6d75f8c7` with zero drift: `docs/AI_RUNTIME_BRIEF.json`, `src/agent-bootstrap.js`, `test/agent-bootstrap.test.js`, `src/index.js`, `docs/V7_0_CONTEXT_COMPILER_CONTRACT.md`, and `.github/workflows/deploy-cloudflare.yml`. All three supported JS/test stones (`src/agent-bootstrap.js`, `src/index.js`, `test/agent-bootstrap.test.js`) AST-lint with 0 errors. JSON/Markdown/YAML changes were validated through the two live acceptance runs rather than AST lint.
+
+Invariants preserved: `docs/AI_OPERATING_GUIDE.md` remains sole canonical instruction authority; the runtime brief never expands authority; `legacy_full` remains default/rollback until V7.6.5 closes.
 
 ### V7.6.5 — Canary/default flip
 
-Only after V7.6.0-.4 parity gates: run the full V7.0-V7.5 regression matrix, cross-provider identity checks, deliberate authority-race tests, tool-policy/human-confirmed mutation tests, secret-isolation tests, and live canary. Keep one-step rollback to legacy behavior before making optimized mode recommended/default.
+Status: **NEXT.** All V7.6.0-.4 parity gates are closed. Run the full V7.0-V7.5 regression matrix, cross-provider identity checks, deliberate authority-race tests, tool-policy/human-confirmed mutation tests, secret-isolation tests, and live canary. Keep one-step rollback to legacy behavior (including `legacy_full` for the V7.6.4 runtime brief) before making optimized mode recommended/default.
 
 Initial quantitative targets: >=50% reduction in mature-chain bootstrap bytes; >=50% reduction in tool-schema bytes for the recommended core profile; approximately 8k-15k combined startup tokens where task complexity permits; zero authority/policy regression and no extra model calls merely to reconstruct deterministic CairnStone state.
 
@@ -627,7 +640,7 @@ V7.4 Cross-project agent profiles (COMPLETE — V7.4.0 + generalized profile sys
         ↓
 V7.5 x402 paid sub-agent runtime (IN PROGRESS — V7.5.0 contract/quote boundary started; settlement gated)
         ↓
-V7.6 Context Efficiency & MCP Surface Optimization (IN PROGRESS — profiler + Tool Vault + sparse authority + compact reads complete/live; instruction brief next only if worthwhile, then measured canary gate)
+V7.6 Context Efficiency & MCP Surface Optimization (IN PROGRESS — profiler + Tool Vault + sparse authority + compact reads + canonical instruction runtime brief complete/live; canary/default flip next)
         ↓
 V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (PLANNED / READ-FIRST — catalog + scope contract → multi-chain search → grounded Q&A → Console Scope → saved workspaces → live scale/citation gate)
 ```
