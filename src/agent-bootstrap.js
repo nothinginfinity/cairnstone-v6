@@ -456,9 +456,9 @@ async function compileAuthorityEnvelope({ resume, chain, task, memory, mode, inc
       mode: "optimized_sparse",
       authority_manifest_id: authorityManifestId,
       path_heads_digest: pathHeadsDigest,
-      full_path_head_count: pointers.length,
+      full_path_head_count: authorityManifest.full_path_head_count,
       represented_path_head_count: represented.length,
-      omitted_path_head_count: Math.max(0, pointers.length - represented.length),
+      omitted_path_head_count: Math.max(0, authorityManifest.full_path_head_count - represented.length),
       selection: {
         deterministic: true,
         max_path_heads: SPARSE_PATH_HEAD_CAP,
