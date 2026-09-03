@@ -242,7 +242,8 @@ export async function agentBootstrapFromBody(body, env, deps) {
       task,
       memory: memory.value,
       mode: bootstrapMode,
-      includeCanonicalInstructionsPath: instructionsChain === chain
+      includeCanonicalInstructionsPath: instructionsChain === chain,
+      includeRuntimeBriefPath: instructionsChain === chain && instructions.value.selection?.representation === "runtime_brief"
     });
 
     // ---- Capability coverage / policy evidence ----
@@ -402,7 +403,7 @@ export async function computeAcceptedAuthorityManifest({ chain, chain_head, path
   };
 }
 
-function selectSparsePathHeads(resume, task, memory, includeCanonicalInstructionsPath) {
+function selectSparsePathHeads(resume, task, memory, includeCanonicalInstructionsPath, includeRuntimeBriefPath) {
   const full = (resume.path_heads || []).map(compactAcceptedPathHead);
   const byPath = new Map(full.map(item => [item.path, item]));
   const selected = new Set();
@@ -415,6 +416,7 @@ function selectSparsePathHeads(resume, task, memory, includeCanonicalInstruction
   // canonical instructions when those paths belong to this target chain.
   addPath(resume.canonical_head && resume.canonical_head.path);
   if (includeCanonicalInstructionsPath) addPath(DEFAULT_INSTRUCTIONS_PATH);
+  if (includeRuntimeBriefPath) addPath(DEFAULT_RUNTIME_BRIEF_PATH);
 
   // Any accepted path-head evidence actually selected for the task must be
   // represented in the sparse envelope. Historical evidence is intentionally
@@ -442,7 +444,7 @@ function selectSparsePathHeads(resume, task, memory, includeCanonicalInstruction
     .sort((a, b) => a.path.localeCompare(b.path));
 }
 
-async function compileAuthorityEnvelope({ resume, chain, task, memory, mode, includeCanonicalInstructionsPath }) {
+async function compileAuthorityEnvelope({ resume, chain, task, memory, mode, includeCanonicalInstructionsPath, includeRuntimeBriefPath }) {
   const chainHead = {
     stone_hash: resume.canonical_head.hash,
     path: resume.canonical_head.path,
@@ -469,7 +471,7 @@ async function compileAuthorityEnvelope({ resume, chain, task, memory, mode, inc
   });
   const pathHeadsDigest = authorityManifest.path_heads_digest;
   const authorityManifestId = authorityManifest.authority_manifest_id;
-  const represented = selectSparsePathHeads(resume, task, memory, includeCanonicalInstructionsPath);
+  const represented = selectSparsePathHeads(resume, task, memory, includeCanonicalInstructionsPath, includeRuntimeBriefPath);
 
   return {
     chain,
