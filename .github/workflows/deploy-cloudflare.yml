@@ -1183,11 +1183,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          stage="init"
+          trap 'echo "::error title=V7.6.3 acceptance failed::stage=${stage}"' ERR
           BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
           RPC="$BASE/mcp"
           CHAIN="cairnstone-v6-project-memory"
           ROADMAP="docs/ROADMAP_V7.md"
 
+          stage="health_and_snapshot"
           health="$(curl -fsS "$BASE/health")"
           echo "$health" | jq -e '
             .ok == true and
@@ -1206,6 +1209,7 @@ jobs:
           test -n "$roadmap_head"
           test "$path_count" -gt 2
 
+          stage="compact_one_path"
           compact="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume?detail=compact&path=docs%2FROADMAP_V7.md")"
           echo "$compact" | jq -e --arg head "$before_head" --arg roadmap "$roadmap_head" --argjson count "$path_count" --argjson full "$before" '
             .ok == true and
@@ -1233,6 +1237,7 @@ jobs:
             .expansion.expected_path_heads_digest == .authority.path_heads_digest
           ' >/dev/null
 
+          stage="compact_zero_path"
           zero="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume?detail=compact")"
           echo "$zero" | jq -e --arg root "$(echo "$compact" | jq -r '.authority.authority_manifest_id')" --arg digest "$(echo "$compact" | jq -r '.authority.path_heads_digest')" --argjson count "$path_count" '
             .ok == true and
@@ -1245,6 +1250,7 @@ jobs:
             .path_head_selection.selection_mode == "none"
           ' >/dev/null
 
+          stage="future_delta"
           future="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume?detail=compact&since=2099-01-01T00%3A00%3A00Z")"
           echo "$future" | jq -e '
             .ok == true and
@@ -1254,6 +1260,7 @@ jobs:
             (.path_heads | length) == 0
           ' >/dev/null
 
+          stage="manifest_orientation"
           manifest="$(curl -fsS "$BASE/v2/chains/$CHAIN/manifest?detail=orientation&path=docs%2FROADMAP_V7.md")"
           echo "$manifest" | jq -e --arg root "$(echo "$compact" | jq -r '.authority.authority_manifest_id')" --arg digest "$(echo "$compact" | jq -r '.authority.path_heads_digest')" --arg roadmap "$roadmap_head" '
             .ok == true and
@@ -1265,6 +1272,7 @@ jobs:
             .path_heads[0].stone_hash == $roadmap
           ' >/dev/null
 
+          stage="bootstrap_root_parity"
           bootstrap_payload="$(jq -nc --arg chain "$CHAIN" '{jsonrpc:"2.0",id:7631,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v763-acceptance",task:"compact orientation parity",chain:$chain,mode:"optimized_sparse",include_inbox:false,limits:{max_memory_hits:0,max_memory_bytes:0,max_inbox_items:0}}}}')"
           bootstrap_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$bootstrap_payload")"
           bootstrap="$(echo "$bootstrap_outer" | jq -c '.result.content[0].text | fromjson')"
@@ -1274,6 +1282,7 @@ jobs:
             .authority.sparse.path_heads_digest == $digest
           ' >/dev/null
 
+          stage="size_telemetry"
           full_bytes="$(printf '%s' "$before" | wc -c | tr -d ' ')"
           compact_bytes="$(printf '%s' "$compact" | wc -c | tr -d ' ')"
           zero_bytes="$(printf '%s' "$zero" | wc -c | tr -d ' ')"
