@@ -689,14 +689,14 @@ async function compileMemory(env, chain, task, resume, limits) {
     try {
       const sql = `SELECT ref_id, stone_hash, chain, path, preview, bm25(refs_fts, ${FTS_BM25_WEIGHTS}) AS score
                    FROM refs_fts WHERE refs_fts MATCH ? AND chain = ?
-                   ORDER BY bm25(refs_fts, ${FTS_BM25_WEIGHTS}) LIMIT ?`;
+                   ORDER BY bm25(refs_fts, ${FTS_BM25_WEIGHTS}) ASC, stone_hash ASC, ref_id ASC LIMIT ?`;
       rows = (await env.CAIRNSTONE_DB.prepare(sql).bind(matchExpr, chain, Math.max(limits.max_memory_hits * 3, 10)).all()).results || [];
     } catch {
       const like = `%${terms.join("%")}%`;
       const sql = `SELECT r.ref_id, r.stone_hash, s.chain_hash AS chain, r.path, r.preview, 0 AS score
                    FROM refs r JOIN stones s ON s.hash = r.stone_hash
                    WHERE s.chain_hash = ? AND (LOWER(COALESCE(r.keywords,'')) LIKE ? OR LOWER(COALESCE(r.preview,'')) LIKE ?)
-                   LIMIT ?`;
+                   ORDER BY r.stone_hash ASC, r.ref_id ASC LIMIT ?`;
       rows = (await env.CAIRNSTONE_DB.prepare(sql).bind(chain, like, like, Math.max(limits.max_memory_hits * 3, 10)).all()).results || [];
     }
   }
