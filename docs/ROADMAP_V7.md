@@ -428,7 +428,7 @@ Acceptance should prove at least one real paid subagent call end-to-end: x402 pa
 
 ## V7.6 — Context Efficiency & MCP Surface Optimization
 
-Status: **IN PROGRESS — V7.6.0 profiler, V7.6.2a portable Tool Vault, V7.6.2b native-hydration implementation, and V7.6.1 sparse authority are COMPLETE/live-verified. V7.6.3 compact orientation/manifest reads are NEXT.** Optimize the existing canonical CairnStone V7 codebase in-place behind additive compatibility boundaries; do not fork a competing optimized repo. `legacy_full` remains the production/default bootstrap and rollback path; `optimized_sparse` remains explicit opt-in until the V7.6 canary/default gate closes. Native hydration remains optional/experimental until the separate cross-client interop recommendation gate is proven.
+Status: **IN PROGRESS — V7.6.0 profiler, V7.6.2a portable Tool Vault, V7.6.2b native-hydration implementation, V7.6.1 sparse authority, and V7.6.3 compact orientation/manifest reads are COMPLETE/live-verified. V7.6.4 canonical instruction runtime brief is NEXT, only if the measured lower-risk wins justify it.** Optimize the existing canonical CairnStone V7 codebase in-place behind additive compatibility boundaries; do not fork a competing optimized repo. `legacy_full` remains the production/default bootstrap and rollback path; `optimized_sparse` remains explicit opt-in until the V7.6 canary/default gate closes. Native hydration remains optional/experimental until the separate cross-client interop recommendation gate is proven.
 
 Primary goals:
 
@@ -451,7 +451,7 @@ Status: **COMPLETE + LIVE-VERIFIED.** `cairnstone_agent_bootstrap` now supports 
 
 Strict production acceptance run `33700403342` at runtime/workflow commit `e9076c9d52d6ec41ab535dc47b1929d75aebbf96` passed the full regression suite, deployment, legacy/default compatibility, deterministic sparse repeat identity, complete-root tamper rejection, accepted-state immutability, and real Workers AI + DeepSeek routing with provider-neutral package/request identity preserved. The live mature-chain measurement was **63,345 B legacy package vs 61,153 B sparse package (-3.46%)**, while the authority section fell from **22,579 B to 5,594 B (-75.22%)** with **24/117** accepted path heads represented and all 117 cryptographically committed. The smaller envelope also retained additional bounded memory evidence that legacy size discipline had to trim, so whole-package savings are intentionally reported separately from authority-section savings. The overall V7.6 >=50% mature-chain package target therefore remains an optimization-track target rather than a V7.6.1-only claim.
 
-The acceptance process also surfaced and fixed a pre-existing determinism weakness in memory retrieval: equal-BM25 FTS rows and fallback rows now have stable `stone_hash` / `ref_id` tie-breaking. `legacy_full` remains the production/default rollback path; no default flip occurred. V7.6.3 compact orientation/manifest reads are next.
+The acceptance process also surfaced and fixed a pre-existing determinism weakness in memory retrieval: equal-BM25 FTS rows and fallback rows now have stable `stone_hash` / `ref_id` tie-breaking. `legacy_full` remains the production/default rollback path; no default flip occurred. V7.6.3 compact orientation/manifest reads are now complete; V7.6.4 is next if still worthwhile after the measured compact-read win.
 
 ### V7.6.2 — Deferred Tool Hydration / CairnStone Tool Vault
 
@@ -524,11 +524,15 @@ Acceptance for V7.6.2 must prove:
 - native dynamic hydration, if enabled, falls back cleanly to portable deferred execution when a client cannot refresh/rebind schemas;
 - growing the Tool Vault does not materially increase core startup schema bytes except for explicitly added core primitives.
 
-Execution priority inside V7.6 is now: **V7.6.0 exact profiler COMPLETE -> V7.6.2a portable Deferred Tool Hydration COMPLETE -> V7.6.2b native hydration implementation COMPLETE (cross-client recommendation gate still open) -> V7.6.1 sparse authority COMPLETE -> V7.6.3 compact reads NEXT -> V7.6.4 instruction brief only if still worthwhile -> V7.6.5 canary/default flip.**
+Execution priority inside V7.6 is now: **V7.6.0 exact profiler COMPLETE -> V7.6.2a portable Deferred Tool Hydration COMPLETE -> V7.6.2b native hydration implementation COMPLETE (cross-client recommendation gate still open) -> V7.6.1 sparse authority COMPLETE -> V7.6.3 compact reads COMPLETE -> V7.6.4 instruction brief NEXT only if still worthwhile -> V7.6.5 canary/default flip.**
 
 ### V7.6.3 — Compact orientation/manifest reads
 
-Add bounded/detail-aware resume and manifest responses for mature chains: chain HEAD + provenance, authority digest/counts, relevant/recent path heads as requested, HEAD edges, and delta support, with explicit full expansion still available. Replace fixed-size documentation claims with measured size telemetry.
+Status: **COMPLETE + LIVE-VERIFIED on runtime 0.5.21.** Full `cairnstone_resume_chain` remains the backward-compatible default. Explicit `detail=compact` now returns canonical HEAD + provenance, the complete V7.6.1 `cairnstone-sparse-authority-v1` root/digest/counts, every edge touching HEAD, an accepted-state cursor, and only exact requested `paths[]` and/or accepted path heads updated since an ISO cursor. `cairnstone_manifest_v2 detail=orientation` exposes the same bounded authority-preserving orientation surface, while explicit full expansion remains available and identity-bound to the compact response.
+
+Strict production acceptance run `33705805798` at deployed acceptance/workflow commit `d0d96950ea07a3e022cf053e0cfbe0bee6c8c61a` passed the full regression suite, deployment, exact authority-root/digest parity with V7.6.1 `optimized_sparse`, requested-path selection, zero-path orientation, future-cursor delta behavior, manifest-orientation parity, explicit full-expansion identity, serialized-size ordering, and unchanged accepted chain/path-head state. The mature-chain measurement at **118 accepted paths** was **30,414 B full resume -> 4,606 B compact one-path (-84.85%)**, with **4,337 B** for zero-path compact orientation and **4,634 B** for one-path manifest orientation. Fixed-size documentation claims were removed in favor of measured telemetry.
+
+No default flip occurred. Full resume remains the compatibility/rollback path; compact/orientation reads are additive opt-in modes. V7.6.4 is next only if a canonical instruction runtime brief remains worthwhile after these measured lower-risk gains.
 
 ### V7.6.4 — Canonical instruction runtime brief
 
@@ -623,7 +627,7 @@ V7.4 Cross-project agent profiles (COMPLETE — V7.4.0 + generalized profile sys
         ↓
 V7.5 x402 paid sub-agent runtime (IN PROGRESS — V7.5.0 contract/quote boundary started; settlement gated)
         ↓
-V7.6 Context Efficiency & MCP Surface Optimization (IN PROGRESS — profiler + Tool Vault + sparse authority complete/live; compact reads next, then measured canary gate)
+V7.6 Context Efficiency & MCP Surface Optimization (IN PROGRESS — profiler + Tool Vault + sparse authority + compact reads complete/live; instruction brief next only if worthwhile, then measured canary gate)
         ↓
 V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (PLANNED / READ-FIRST — catalog + scope contract → multi-chain search → grounded Q&A → Console Scope → saved workspaces → live scale/citation gate)
 ```
