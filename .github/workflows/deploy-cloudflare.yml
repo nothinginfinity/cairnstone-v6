@@ -1311,13 +1311,23 @@ jobs:
           health="$(curl -fsS "$BASE/health")"
           echo "$health" | jq -e '
             .ok == true and
-            ((.mcp_tools | index("cairnstone_load_tools")) != null) and
+            .version == "0.5.22" and
+            ((.mcp_tools | index("cairnstone_load_tools")) == null) and
             ((.mcp_core_tools | index("cairnstone_load_tools")) != null)
           ' >/dev/null
 
           # Full /mcp legacy profile must not advertise experimental listChanged.
           full_init="$(curl -fsS -X POST "$FULL" -H 'content-type: application/json' -H 'accept: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}')"
           echo "$full_init" | jq -e '.result.capabilities.tools == {}' >/dev/null
+
+          # Full /mcp must not advertise the core-only hydration control tool.
+          full_list="$(curl -fsS -X POST "$FULL" -H 'content-type: application/json' -H 'accept: application/json' --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')"
+          echo "$full_list" | jq -e '(.result.tools | map(.name) | index("cairnstone_load_tools")) == null' >/dev/null
+
+          # Even a manual full-profile call gets an explicit core-profile diagnostic, never unknown_tool.
+          full_load="$(curl -fsS -X POST "$FULL" -H 'content-type: application/json' -H 'accept: application/json' --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cairnstone_load_tools","arguments":{"tool_ids":["cairnstone_get_source_freshness"]}}}')"
+          full_load_payload="$(echo "$full_load" | jq -c '.result.content[0].text | fromjson')"
+          echo "$full_load_payload" | jq -e '.ok == false and .error == "native_hydration_requires_core_profile" and .endpoint == "/mcp/core" and .portable_fallback_required == true' >/dev/null
 
           # Establish a core session and confirm listChanged is advertised.
           init_headers="$(mktemp)"
@@ -1386,7 +1396,7 @@ jobs:
           post_delete_payload="$(echo "$post_delete_hydrate" | jq -c '.result.content[0].text | fromjson')"
           echo "$post_delete_payload" | jq -e '.ok == false and .portable_fallback_required == true' >/dev/null
 
-          echo "V7.6.2b live acceptance passed: full /mcp stayed on legacy capabilities, /mcp/core sessions established real D1-backed state, ineligible mutation-class hydration was rejected, eligible hydration was session-isolated and directly callable only after hydration, SSE-capable callers received a genuine notifications/tools/list_changed event before the result while JSON-only callers got an honest portable_fallback_required signal, DELETE terminated hydration state, and a deleted/unknown session failed closed."
+          echo "V7.6.2b live acceptance passed: full /mcp stayed on legacy capabilities and no longer advertised the core-only cairnstone_load_tools control primitive, manual full-profile hydration calls failed with an explicit /mcp/core diagnostic instead of unknown_tool, /mcp/core sessions established real D1-backed state, ineligible mutation-class hydration was rejected, eligible hydration was session-isolated and directly callable only after hydration, SSE-capable callers received a genuine notifications/tools/list_changed event before the result while JSON-only callers got an honest portable_fallback_required signal, DELETE terminated hydration state, and a deleted/unknown session failed closed."
 
   v741_diagnostic:
     needs: deploy
