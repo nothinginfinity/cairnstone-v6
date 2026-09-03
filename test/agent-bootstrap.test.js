@@ -400,3 +400,150 @@ test("V7.0 authority-first retrieval: explicit historical roadmap question keeps
     restore();
   }
 });
+
+test("V7.6.1 legacy_full remains the default and explicit legacy mode preserves package identity", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    const extraPathHeads = [
+      { path: "docs/ROADMAP_V7.md", stone_hash: "roadmap-head", repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A },
+      { path: "src/index.js", stone_hash: "index-head", repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A }
+    ];
+    const deps = makeDeps({ resumeChainFromBody: async () => resumeStateWithHead("chain-head-stable", extraPathHeads) });
+    const base = { actor_id: "test:v761-legacy", task: "roadmap status", chain: "cairnstone-v6-project-memory", include_inbox: false };
+    const implicit = await agentBootstrapFromBody(base, makeEnv(), deps);
+    const explicit = await agentBootstrapFromBody({ ...base, mode: "legacy_full" }, makeEnv(), deps);
+
+    assert.equal(implicit.ok, true);
+    assert.equal(explicit.ok, true);
+    assert.equal(implicit.package_id, explicit.package_id);
+    assert.deepEqual(implicit.authority, explicit.authority);
+    assert.equal(Object.prototype.hasOwnProperty.call(implicit.authority, "sparse"), false);
+    assert.equal(implicit.authority.path_heads.length, 3);
+  } finally {
+    restore();
+  }
+});
+
+test("V7.6.1 optimized_sparse is deterministic, retains relevant accepted heads, and reduces authority transmission", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    const extraPathHeads = [
+      { path: "docs/ROADMAP_V7.md", stone_hash: "roadmap-head", repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A },
+      ...Array.from({ length: 40 }, (_, index) => ({
+        path: `project-memory/archive/item-${String(index).padStart(2, "0")}.md`,
+        stone_hash: `archive-head-${String(index).padStart(2, "0")}`,
+        repo: null,
+        commit_sha: null
+      }))
+    ];
+    const deps = makeDeps({ resumeChainFromBody: async () => resumeStateWithHead("chain-head-stable", extraPathHeads) });
+    const base = {
+      actor_id: "test:v761-sparse",
+      task: "What is next in the roadmap?",
+      chain: "cairnstone-v6-project-memory",
+      include_inbox: false,
+      limits: { max_memory_hits: 0, max_memory_bytes: 0, max_inbox_items: 0 }
+    };
+    const legacy = await agentBootstrapFromBody({ ...base, mode: "legacy_full" }, makeEnv(), deps);
+    const first = await agentBootstrapFromBody({ ...base, mode: "optimized_sparse" }, makeEnv(), deps);
+    const second = await agentBootstrapFromBody({ ...base, mode: "optimized_sparse" }, makeEnv(), deps);
+
+    assert.equal(legacy.ok, true);
+    assert.equal(first.ok, true);
+    assert.equal(second.ok, true);
+    assert.equal(first.authority.sparse.schema, "cairnstone-sparse-authority-v1");
+    assert.equal(first.authority.sparse.mode, "optimized_sparse");
+    assert.match(first.authority.sparse.path_heads_digest, /^sha256:[0-9a-f]{64}$/);
+    assert.match(first.authority.sparse.authority_manifest_id, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(first.authority.sparse.full_path_head_count, 42);
+    assert.equal(first.authority.sparse.represented_path_head_count, first.authority.path_heads.length);
+    assert.equal(first.authority.sparse.omitted_path_head_count, 42 - first.authority.path_heads.length);
+    assert.ok(first.authority.path_heads.length < legacy.authority.path_heads.length);
+    assert.ok(first.authority.path_heads.some(item => item.path === INSTRUCTIONS_PATH));
+    assert.ok(first.authority.path_heads.some(item => item.path === "docs/ROADMAP_V7.md"));
+    assert.equal(first.authority.sparse.expansion.tool, "cairnstone_resume_chain");
+    assert.equal(first.authority.sparse.path_heads_digest, second.authority.sparse.path_heads_digest);
+    assert.equal(first.authority.sparse.authority_manifest_id, second.authority.sparse.authority_manifest_id);
+    assert.equal(first.package_id, second.package_id);
+    assert.ok(first.limits.package_bytes < legacy.limits.package_bytes);
+    assert.deepEqual(first.instructions, legacy.instructions);
+    assert.deepEqual(first.skills, legacy.skills);
+    assert.deepEqual(first.policy, legacy.policy);
+    assert.deepEqual(first.authority.chain_head, legacy.authority.chain_head);
+  } finally {
+    restore();
+  }
+});
+
+test("V7.6.1 optimized_sparse package identity commits to omitted accepted path heads", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    const makeState = omittedStone => resumeStateWithHead("chain-head-stable", [
+      { path: "docs/ROADMAP_V7.md", stone_hash: "roadmap-head", repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A },
+      { path: "unrelated/omitted.txt", stone_hash: omittedStone, repo: null, commit_sha: null }
+    ]);
+    const body = {
+      actor_id: "test:v761-root",
+      task: "roadmap",
+      chain: "cairnstone-v6-project-memory",
+      mode: "optimized_sparse",
+      include_inbox: false,
+      limits: { max_memory_hits: 0, max_memory_bytes: 0, max_inbox_items: 0 }
+    };
+    const before = await agentBootstrapFromBody(body, makeEnv(), makeDeps({ resumeChainFromBody: async () => makeState("omitted-BEFORE") }));
+    const after = await agentBootstrapFromBody(body, makeEnv(), makeDeps({ resumeChainFromBody: async () => makeState("omitted-AFTER") }));
+
+    assert.equal(before.ok, true);
+    assert.equal(after.ok, true);
+    assert.equal(before.authority.path_heads.some(item => item.path === "unrelated/omitted.txt"), false);
+    assert.equal(after.authority.path_heads.some(item => item.path === "unrelated/omitted.txt"), false);
+    assert.deepEqual(before.authority.path_heads, after.authority.path_heads);
+    assert.notEqual(before.authority.sparse.path_heads_digest, after.authority.sparse.path_heads_digest);
+    assert.notEqual(before.authority.sparse.authority_manifest_id, after.authority.sparse.authority_manifest_id);
+    assert.notEqual(before.package_id, after.package_id);
+  } finally {
+    restore();
+  }
+});
+
+test("V7.6.1 optimized_sparse race protection includes omitted accepted path heads", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    let call = 0;
+    const state = omittedStone => resumeStateWithHead("chain-head-stable", [
+      { path: "docs/ROADMAP_V7.md", stone_hash: "roadmap-head", repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A },
+      { path: "unrelated/omitted.txt", stone_hash: omittedStone, repo: null, commit_sha: null }
+    ]);
+    const deps = makeDeps({
+      resumeChainFromBody: async () => {
+        call += 1;
+        return call === 1 ? state("omitted-BEFORE") : state("omitted-AFTER");
+      }
+    });
+    const result = await agentBootstrapFromBody({
+      actor_id: "test:v761-race",
+      task: "roadmap",
+      chain: "cairnstone-v6-project-memory",
+      mode: "optimized_sparse",
+      include_inbox: false,
+      limits: { max_memory_hits: 0, max_memory_bytes: 0, max_inbox_items: 0 }
+    }, makeEnv(), deps);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "context_compile_race");
+    assert.equal(result.detail, "chain_or_path_heads_changed_during_compile");
+  } finally {
+    restore();
+  }
+});
+
+test("V7.6.1 invalid bootstrap mode fails closed", async () => {
+  const result = await agentBootstrapFromBody({
+    actor_id: "test:v761-invalid",
+    task: "invalid mode",
+    chain: "cairnstone-v6-project-memory",
+    mode: "sparse-ish"
+  }, makeEnv(), makeDeps());
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "invalid_bootstrap_mode");
+});
