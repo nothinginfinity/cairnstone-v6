@@ -78,7 +78,7 @@ import {
   LOAD_TOOLS_TOOL_DEFINITION
 } from "./mcp-session.js";
 
-const VERSION = "0.5.21";
+const VERSION = "0.5.22";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -248,7 +248,7 @@ function landing(env, url) {
     r2: Boolean(env.CAIRNSTONE_RAW),
     github_token_available: Boolean(env.GITHUB_TOKEN),
     endpoints: routes(),
-    mcp_tools: mcpTools().map(tool => tool.name)
+    mcp_tools: mcpToolsForProfile(false).map(tool => tool.name)
   };
 }
 
@@ -263,7 +263,7 @@ function health(env) {
     r2: Boolean(env.CAIRNSTONE_RAW),
     github_token_available: Boolean(env.GITHUB_TOKEN),
     endpoints: routes(),
-    mcp_tools: mcpTools().map(tool => tool.name),
+    mcp_tools: mcpToolsForProfile(false).map(tool => tool.name),
     // V7.6.2a: /mcp/core exposes only this bounded boot subset; every other
     // catalog tool remains reachable generically via
     // cairnstone_tool_search -> cairnstone_get_tool_contract ->
@@ -311,9 +311,12 @@ function routes() {
   ];
 }
 
-function mcpToolsForProfile(core, hydratedToolIds) {
+export function mcpToolsForProfile(core, hydratedToolIds) {
   const all = mcpTools();
-  if (!core) return all;
+  // cairnstone_load_tools is a /mcp/core session-control primitive, not a
+  // full-profile tool. Full /mcp already exposes the complete native catalog
+  // and deliberately does not establish listChanged/session hydration state.
+  if (!core) return all.filter(tool => tool.name !== "cairnstone_load_tools");
   const hydrated = hydratedToolIds instanceof Set
     ? hydratedToolIds
     : new Set(Array.isArray(hydratedToolIds) ? hydratedToolIds : []);
@@ -484,7 +487,7 @@ function wrapToolResult(id, output) {
   });
 }
 
-async function handleMcpRpc(rpc, env, options = {}) {
+export async function handleMcpRpc(rpc, env, options = {}) {
   const core = options.core === true;
   const sessionId = options.sessionId || null;
   const id = rpc && Object.prototype.hasOwnProperty.call(rpc, "id") ? rpc.id : null;
@@ -521,7 +524,17 @@ async function handleMcpRpc(rpc, env, options = {}) {
       const name = requiredString(params.name, "name");
       const args = isObject(params.arguments) ? params.arguments : {};
 
-      if (core && name === "cairnstone_load_tools") {
+      if (name === "cairnstone_load_tools") {
+        if (!core) {
+          return wrapToolResult(id, {
+            ok: false,
+            error: "native_hydration_requires_core_profile",
+            endpoint: "/mcp/core",
+            notification_delivered: false,
+            portable_fallback_required: true,
+            hint: "cairnstone_load_tools manages session-scoped native hydration and is only available on /mcp/core. Full /mcp already exposes the complete native tool catalog and does not advertise listChanged."
+          });
+        }
         return loadToolsRpcResult(id, args, env, sessionId);
       }
 
@@ -731,7 +744,7 @@ async function callMcpTool(name, args, env) {
     // V7.6.0: exact live MCP tool-schema source for the optional
     // include_profile diagnostics -- the same mcpTools() the tools/list
     // RPC method returns, never a hand-maintained/duplicate list.
-    mcpToolDefinitions: mcpTools()
+    mcpToolDefinitions: mcpToolsForProfile(false)
   });
   if (name === "cairnstone_model_capabilities") return modelCapabilitiesFromBody(args, env);
   if (name === "cairnstone_tool_registry") return toolRegistryFromBody(args, env);
