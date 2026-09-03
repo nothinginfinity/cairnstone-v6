@@ -15,14 +15,33 @@ import { computeBootstrapPackageProfile, computeMcpSchemaProfile, computeCombine
 
 export const AGENT_CONTEXT_SCHEMA = "cairnstone-agent-context-v1";
 export const DEFAULT_INSTRUCTIONS_PATH = "docs/AI_OPERATING_GUIDE.md";
+export const DEFAULT_RUNTIME_BRIEF_PATH = "docs/AI_RUNTIME_BRIEF.json";
+export const RUNTIME_BRIEF_SCHEMA = "cairnstone-canonical-instruction-runtime-brief-v1";
 export const DEFAULT_SKILLS_CHAIN = "cairnstone-v6-skills";
+export const REQUIRED_RUNTIME_RULE_IDS = Object.freeze([
+  "AUTH-CHAIN-001",
+  "AUTH-HEAD-002",
+  "ORIENT-AC1-003",
+  "SKILL-AUTH-004",
+  "GIT-PROV-005",
+  "FRESH-LIVE-006",
+  "GRAPH-HEAD-007",
+  "MODEL-NONAUTH-008",
+  "EXEC-BOUNDARY-009",
+  "SECRET-ISOLATION-010",
+  "FAIL-CLOSED-011",
+  "INSTR-PRECEDENCE-012",
+  "TOOL-SELECT-013",
+  "ACCEPT-WRITE-014",
+  "VERIFY-DEPLOY-015",
+  "CONCURRENCY-016"
+]);
 
 const TASK_MAX_LENGTH = 4000;
 const ACTOR_ID_RE = /^[A-Za-z][A-Za-z0-9_-]*:[A-Za-z0-9][A-Za-z0-9._:@/-]*$/;
 const TOOL_CLASSES = new Set(["read", "mutation", "execution", "unknown"]);
 const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
 const MAX_SKILLS_HARD = 10;
-const INSTRUCTIONS_BYTE_CAP = 20000;
 const AMBIGUITY_SCORE_MARGIN = 2;
 const BOOTSTRAP_MODES = new Set(["legacy_full", "optimized_sparse"]);
 const SPARSE_AUTHORITY_SCHEMA = "cairnstone-sparse-authority-v1";
@@ -103,7 +122,7 @@ export const AGENT_BOOTSTRAP_TOOL_DEFINITION = {
       mode: {
         type: "string",
         enum: ["legacy_full", "optimized_sparse"],
-        description: "V7.6.1 bootstrap transmission mode. Defaults to legacy_full. optimized_sparse preserves the complete accepted path-head authority through a deterministic cryptographic manifest/root while transmitting only task-relevant represented path HEAD metadata."
+        description: "V7.6 bootstrap transmission mode. Defaults to legacy_full. legacy_full transmits the complete accepted canonical operating guide. optimized_sparse preserves the complete accepted path-head authority cryptographically and may use the identity-bound accepted canonical runtime brief; any missing/stale/invalid brief falls back explicitly to the full accepted guide."
       },
       include_inbox: { type: "boolean", description: "Defaults to true. Non-mutating inbox listing only." },
       include_profile: {
@@ -172,7 +191,13 @@ export async function agentBootstrapFromBody(body, env, deps) {
     if (!instructionsSnapshot1.ok) {
       return { ...instructionsSnapshot1, error: "canonical_instructions_chain_unavailable", instructions_chain: instructionsChain };
     }
-    const instructions = await loadCanonicalInstructions(env, instructionsSnapshot1.resume, DEFAULT_INSTRUCTIONS_PATH);
+    const instructions = await compileCanonicalInstructions({
+      env,
+      resume: instructionsSnapshot1.resume,
+      mode: bootstrapMode,
+      guidePath: DEFAULT_INSTRUCTIONS_PATH,
+      briefPath: DEFAULT_RUNTIME_BRIEF_PATH
+    });
     if (!instructions.ok) return { ...instructions, instructions_chain: instructionsChain };
     if (instructionsChain !== chain) instructions.value.authority_chain = instructionsChain;
 
@@ -480,6 +505,144 @@ async function compileAuthorityEnvelope({ resume, chain, task, memory, mode, inc
 // Canonical instructions
 // ---------------------------------------------------------------------------
 
+async function compileCanonicalInstructions({ env, resume, mode, guidePath, briefPath }) {
+  const guide = await loadCanonicalInstructions(env, resume, guidePath);
+  if (!guide.ok) return guide;
+
+  const fullGuide = guide.value;
+  if (mode === "legacy_full") {
+    return {
+      ok: true,
+      value: {
+        ...fullGuide,
+        transmitted_content_identity: fullGuide.content_identity,
+        selection: {
+          requested_mode: "legacy_full",
+          representation: "full_guide",
+          fallback: null
+        }
+      }
+    };
+  }
+
+  const fallback = (code, detail = null) => ({
+    ok: true,
+    value: {
+      ...fullGuide,
+      transmitted_content_identity: fullGuide.content_identity,
+      selection: {
+        requested_mode: "optimized_sparse",
+        representation: "full_guide_fallback",
+        runtime_brief_path: briefPath,
+        fallback: { code, ...(detail ? { detail } : {}) }
+      }
+    }
+  });
+
+  const briefEntry = (resume.path_heads || []).find(item => item.path === briefPath);
+  if (!briefEntry) return fallback("runtime_brief_unaccepted");
+  if (!FULL_SHA_RE.test(String(briefEntry.commit_sha || "")) || !briefEntry.repo || !String(briefEntry.repo).includes("/")) {
+    return fallback("runtime_brief_source_not_immutable", String(briefEntry.commit_sha || "missing_commit_sha"));
+  }
+
+  const fetched = await fetchAcceptedGitHubText(env, briefEntry.repo, briefPath, briefEntry.commit_sha);
+  if (!fetched.ok) return fallback("runtime_brief_fetch_failed", fetched.error || "unknown_fetch_error");
+
+  let document;
+  try {
+    document = JSON.parse(fetched.content);
+  } catch {
+    return fallback("runtime_brief_json_invalid");
+  }
+
+  const validated = validateRuntimeBriefDocument(document, fullGuide);
+  if (!validated.ok) return fallback(validated.error, validated.detail || null);
+
+  const transmittedContentIdentity = {
+    sha256: await sha256Text(validated.rendered_content),
+    bytes: utf8Bytes(validated.rendered_content)
+  };
+
+  return {
+    ok: true,
+    value: {
+      ...fullGuide,
+      content: validated.rendered_content,
+      transmitted_content_identity: transmittedContentIdentity,
+      selection: {
+        requested_mode: "optimized_sparse",
+        representation: "runtime_brief",
+        runtime_brief: {
+          path: briefPath,
+          stone_hash: briefEntry.stone_hash,
+          repo: briefEntry.repo,
+          commit_sha: briefEntry.commit_sha,
+          schema: RUNTIME_BRIEF_SCHEMA,
+          content_identity: fetched.content_identity
+        },
+        fallback: null
+      }
+    }
+  };
+}
+
+function exactObjectKeys(value, expectedKeys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...expectedKeys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+export function validateRuntimeBriefDocument(document, expectedGuide) {
+  if (!exactObjectKeys(document, ["schema", "authority", "required_rule_ids", "rules"])) {
+    return { ok: false, error: "runtime_brief_shape_invalid", detail: "top_level_keys" };
+  }
+  if (document.schema !== RUNTIME_BRIEF_SCHEMA) {
+    return { ok: false, error: "runtime_brief_schema_invalid" };
+  }
+  if (!exactObjectKeys(document.authority, ["guide", "full_guide_remains_canonical", "provider_neutral", "authority_expansion"]) ||
+      document.authority.full_guide_remains_canonical !== true ||
+      document.authority.provider_neutral !== true ||
+      document.authority.authority_expansion !== false) {
+    return { ok: false, error: "runtime_brief_shape_invalid", detail: "authority_contract" };
+  }
+  if (!exactObjectKeys(document.authority.guide, ["path", "stone_hash", "repo", "commit_sha", "content_identity"]) ||
+      !exactObjectKeys(document.authority.guide.content_identity, ["sha256", "git_blob_sha", "bytes"])) {
+    return { ok: false, error: "runtime_brief_shape_invalid", detail: "guide_identity_shape" };
+  }
+
+  const expectedGuideIdentity = {
+    path: expectedGuide.path,
+    stone_hash: expectedGuide.stone_hash,
+    repo: expectedGuide.repo,
+    commit_sha: expectedGuide.commit_sha,
+    content_identity: expectedGuide.content_identity
+  };
+  if (stableJson(document.authority.guide) !== stableJson(expectedGuideIdentity)) {
+    return { ok: false, error: "runtime_brief_guide_identity_mismatch" };
+  }
+
+  if (!Array.isArray(document.required_rule_ids) ||
+      stableJson(document.required_rule_ids) !== stableJson(REQUIRED_RUNTIME_RULE_IDS)) {
+    return { ok: false, error: "runtime_brief_required_rule_coverage_invalid", detail: "required_rule_ids" };
+  }
+  if (!Array.isArray(document.rules) || document.rules.length !== REQUIRED_RUNTIME_RULE_IDS.length) {
+    return { ok: false, error: "runtime_brief_required_rule_coverage_invalid", detail: "rules_length" };
+  }
+
+  const rendered = [];
+  for (let index = 0; index < REQUIRED_RUNTIME_RULE_IDS.length; index += 1) {
+    const rule = document.rules[index];
+    const expectedId = REQUIRED_RUNTIME_RULE_IDS[index];
+    if (!exactObjectKeys(rule, ["id", "text"]) || rule.id !== expectedId || typeof rule.text !== "string" || !rule.text.trim()) {
+      return { ok: false, error: "runtime_brief_required_rule_coverage_invalid", detail: `rule:${expectedId}` };
+    }
+    rendered.push(`${rule.id}: ${rule.text.trim()}`);
+  }
+
+  return { ok: true, rendered_content: rendered.join("\n") };
+}
+
 async function loadCanonicalInstructions(env, resume, path) {
   const entry = (resume.path_heads || []).find(item => item.path === path);
   if (!entry) {
@@ -491,9 +654,6 @@ async function loadCanonicalInstructions(env, resume, path) {
   const fetched = await fetchAcceptedGitHubText(env, entry.repo, path, entry.commit_sha);
   if (!fetched.ok) return { ...fetched, path };
 
-  const truncated = fetched.content.length > INSTRUCTIONS_BYTE_CAP;
-  const content = truncated ? fetched.content.slice(0, INSTRUCTIONS_BYTE_CAP) : fetched.content;
-
   return {
     ok: true,
     value: {
@@ -502,8 +662,8 @@ async function loadCanonicalInstructions(env, resume, path) {
       repo: entry.repo,
       commit_sha: entry.commit_sha,
       content_identity: fetched.content_identity,
-      content,
-      truncated
+      content: fetched.content,
+      truncated: false
     }
   };
 }
@@ -875,6 +1035,8 @@ export function hashablePayload(packageBody) {
       stone_hash: packageBody.instructions.stone_hash,
       commit_sha: packageBody.instructions.commit_sha,
       content_identity: packageBody.instructions.content_identity,
+      transmitted_content_identity: packageBody.instructions.transmitted_content_identity,
+      selection: packageBody.instructions.selection,
       truncated: packageBody.instructions.truncated,
       ...(packageBody.instructions.authority_chain ? { authority_chain: packageBody.instructions.authority_chain } : {})
     },
