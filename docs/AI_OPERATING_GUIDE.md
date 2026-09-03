@@ -113,13 +113,21 @@ count and version — this list will keep growing.
 
 ### Reading / orientation
 - `cairnstone_resume_chain` — **call this first when picking up work on a
-  chain.** One deterministic call: canonical chain HEAD (never inferred from
-  timestamps), its GitHub provenance, every accepted path HEAD, every graph
-  edge touching HEAD. Read-only.
+  chain.** `detail=full` remains the backward-compatible default: canonical
+  chain HEAD (never inferred from timestamps), GitHub provenance, every
+  accepted path HEAD, and every graph edge touching HEAD. V7.6.3
+  `detail=compact` keeps HEAD/provenance + HEAD edges and cryptographically
+  commits to the complete accepted path-head vector while transmitting path
+  metadata only for requested `paths[]` and/or heads changed since an ISO
+  cursor. Compact mode returns an accepted-state `next_cursor` and explicit
+  full-expansion identity. Read-only.
 - `cairnstone_manifest_v2` — token-efficient chain manifest.
-  `detail=summary` (~500B, counts + heads only), `detail=compact` (default,
-  short-hash nodes + edges as `from>to:type` strings), `detail=full`.
-  `since=<ISO date>` for delta pickup.
+  `detail=orientation` uses the V7.6.3 bounded orientation response;
+  `detail=summary` and `detail=compact` preserve their legacy shapes and still
+  scale with the number of accepted path HEADs; `detail=full` remains the
+  explicit full graph form. Treat serialized size as measured telemetry, not
+  a fixed byte constant. `since=<ISO date>` supports delta pickup, and
+  orientation also accepts exact `paths[]`.
 - `cairnstone_get_chain_manifest` — the older, fuller manifest call (every
   stone's lod5 + every edge). Still useful for a full graph dump.
 - `cairnstone_stone_v2` — read one stone by hash. No `level` → compact
