@@ -1089,16 +1089,19 @@ jobs:
             .policy.mutation_authority == false
           ' >/dev/null
 
-          CHECKPOINT="semantic_parity"
           echo "$sparse" | jq -c --argjson legacy "$legacy" '{checkpoint:"semantic_parity",instructions_equal:(.instructions==$legacy.instructions),skills_equal:(.skills==$legacy.skills),memory_equal:(.memory==$legacy.memory),capabilities_equal:(.capabilities==$legacy.capabilities),policy_equal:(.policy==$legacy.policy),chain_head_equal:(.authority.chain_head==$legacy.authority.chain_head)}'
-          echo "$sparse" | jq -e --argjson legacy "$legacy" '
-            .instructions == $legacy.instructions and
-            .skills == $legacy.skills and
-            .memory == $legacy.memory and
-            .capabilities == $legacy.capabilities and
-            .policy == $legacy.policy and
-            .authority.chain_head == $legacy.authority.chain_head
-          ' >/dev/null
+          CHECKPOINT="parity_instructions"
+          echo "$sparse" | jq -e --argjson legacy "$legacy" '.instructions == $legacy.instructions' >/dev/null
+          CHECKPOINT="parity_skills"
+          echo "$sparse" | jq -e --argjson legacy "$legacy" '.skills == $legacy.skills' >/dev/null
+          CHECKPOINT="parity_memory"
+          echo "$sparse" | jq -e --argjson legacy "$legacy" '.memory == $legacy.memory' >/dev/null
+          CHECKPOINT="parity_capabilities"
+          echo "$sparse" | jq -e --argjson legacy "$legacy" '.capabilities == $legacy.capabilities' >/dev/null
+          CHECKPOINT="parity_policy"
+          echo "$sparse" | jq -e --argjson legacy "$legacy" '.policy == $legacy.policy' >/dev/null
+          CHECKPOINT="parity_chain_head"
+          echo "$sparse" | jq -e --argjson legacy "$legacy" '.authority.chain_head == $legacy.authority.chain_head' >/dev/null
 
           CHECKPOINT="sparse_repeat"
           sparse_repeat_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$sparse_payload")"
