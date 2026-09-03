@@ -91,6 +91,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v763_acceptance:
+        description: "Run V7.6.3 compact orientation/manifest authority-root + size live acceptance after deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       run_v762b_acceptance:
         description: "Run V7.6.2b native tool hydration (Mcp-Session-Id, cairnstone_load_tools, listChanged) live acceptance after deploy"
         required: false
@@ -1169,6 +1177,118 @@ jobs:
           full_heads="$(echo "$sparse" | jq -r '.authority.sparse.full_path_head_count')"
           echo "::notice title=V7.6.1 sparse authority metrics::legacy=${legacy_bytes}B sparse=${sparse_bytes}B authority_legacy=${legacy_authority_bytes}B authority_sparse=${sparse_authority_bytes}B represented_heads=${represented_heads}/${full_heads}"
           echo "V7.6.1 live acceptance passed: legacy=${legacy_bytes}B sparse=${sparse_bytes}B; authority legacy=${legacy_authority_bytes}B sparse=${sparse_authority_bytes}B; full path-head authority remained cryptographically committed, task-relevant heads stayed represented, Workers AI + DeepSeek preserved package/request identity, sparse-root tampering failed closed, and accepted state remained unchanged."
+
+      - name: V7.6.3 compact orientation/manifest live acceptance
+        if: github.event.inputs.run_v763_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+          RPC="$BASE/mcp"
+          CHAIN="cairnstone-v6-project-memory"
+          ROADMAP="docs/ROADMAP_V7.md"
+
+          health="$(curl -fsS "$BASE/health")"
+          echo "$health" | jq -e '
+            .ok == true and
+            .version == "0.5.21" and
+            ((.mcp_tools | index("cairnstone_resume_chain")) != null) and
+            ((.mcp_tools | index("cairnstone_manifest_v2")) != null) and
+            ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null)
+          ' >/dev/null
+
+          before="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume")"
+          before_head="$(echo "$before" | jq -r '.canonical_head.hash')"
+          before_paths="$(echo "$before" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          path_count="$(echo "$before" | jq -r '.path_heads | length')"
+          roadmap_head="$(echo "$before" | jq -r --arg path "$ROADMAP" '.path_heads[] | select(.path == $path) | .stone_hash')"
+          test -n "$before_head"
+          test -n "$roadmap_head"
+          test "$path_count" -gt 2
+
+          compact="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume?detail=compact&path=docs%2FROADMAP_V7.md")"
+          echo "$compact" | jq -e --arg head "$before_head" --arg roadmap "$roadmap_head" --argjson count "$path_count" --argjson full "$before" '
+            .ok == true and
+            .detail == "compact" and
+            .canonical_head.hash == $head and
+            .provenance == $full.provenance and
+            .edges == $full.edges and
+            .head_edges_complete == true and
+            .authority.schema == "cairnstone-sparse-authority-v1" and
+            .authority.mode == "compact_orientation" and
+            (.authority.authority_manifest_id | test("^sha256:[0-9a-f]{64}$")) and
+            (.authority.path_heads_digest | test("^sha256:[0-9a-f]{64}$")) and
+            .authority.full_path_head_count == $count and
+            .authority.represented_path_head_count == 1 and
+            .authority.omitted_path_head_count == ($count - 1) and
+            (.path_heads | length) == 1 and
+            .path_heads[0].path == "docs/ROADMAP_V7.md" and
+            .path_heads[0].stone_hash == $roadmap and
+            .path_head_selection.requested_paths == ["docs/ROADMAP_V7.md"] and
+            .path_head_selection.requested_paths_missing == [] and
+            (.accepted_state_cursor.next_cursor | type) == "string" and
+            .expansion.tool == "cairnstone_resume_chain" and
+            .expansion.arguments.detail == "full" and
+            .expansion.expected_authority_manifest_id == .authority.authority_manifest_id and
+            .expansion.expected_path_heads_digest == .authority.path_heads_digest
+          ' >/dev/null
+
+          zero="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume?detail=compact")"
+          echo "$zero" | jq -e --arg root "$(echo "$compact" | jq -r '.authority.authority_manifest_id')" --arg digest "$(echo "$compact" | jq -r '.authority.path_heads_digest')" --argjson count "$path_count" '
+            .ok == true and
+            .authority.authority_manifest_id == $root and
+            .authority.path_heads_digest == $digest and
+            .authority.full_path_head_count == $count and
+            .authority.represented_path_head_count == 0 and
+            .authority.omitted_path_head_count == $count and
+            (.path_heads | length) == 0 and
+            .path_head_selection.selection_mode == "none"
+          ' >/dev/null
+
+          future="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume?detail=compact&since=2099-01-01T00%3A00%3A00Z")"
+          echo "$future" | jq -e '
+            .ok == true and
+            .path_head_selection.selection_mode == "since" and
+            .path_head_selection.since == "2099-01-01T00:00:00.000Z" and
+            .path_head_selection.recent_path_head_count == 0 and
+            (.path_heads | length) == 0
+          ' >/dev/null
+
+          manifest="$(curl -fsS "$BASE/v2/chains/$CHAIN/manifest?detail=orientation&path=docs%2FROADMAP_V7.md")"
+          echo "$manifest" | jq -e --arg root "$(echo "$compact" | jq -r '.authority.authority_manifest_id')" --arg digest "$(echo "$compact" | jq -r '.authority.path_heads_digest')" --arg roadmap "$roadmap_head" '
+            .ok == true and
+            .detail == "orientation" and
+            .surface == "manifest_v2" and
+            .authority.authority_manifest_id == $root and
+            .authority.path_heads_digest == $digest and
+            (.path_heads | length) == 1 and
+            .path_heads[0].stone_hash == $roadmap
+          ' >/dev/null
+
+          bootstrap_payload="$(jq -nc --arg chain "$CHAIN" '{jsonrpc:"2.0",id:7631,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v763-acceptance",task:"compact orientation parity",chain:$chain,mode:"optimized_sparse",include_inbox:false,limits:{max_memory_hits:0,max_memory_bytes:0,max_inbox_items:0}}}}')"
+          bootstrap_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$bootstrap_payload")"
+          bootstrap="$(echo "$bootstrap_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$bootstrap" | jq -e --arg root "$(echo "$compact" | jq -r '.authority.authority_manifest_id')" --arg digest "$(echo "$compact" | jq -r '.authority.path_heads_digest')" '
+            .ok == true and
+            .authority.sparse.authority_manifest_id == $root and
+            .authority.sparse.path_heads_digest == $digest
+          ' >/dev/null
+
+          full_bytes="$(printf '%s' "$before" | wc -c | tr -d ' ')"
+          compact_bytes="$(printf '%s' "$compact" | wc -c | tr -d ' ')"
+          zero_bytes="$(printf '%s' "$zero" | wc -c | tr -d ' ')"
+          manifest_bytes="$(printf '%s' "$manifest" | wc -c | tr -d ' ')"
+          test "$compact_bytes" -lt "$full_bytes"
+          test "$zero_bytes" -lt "$compact_bytes"
+
+          after="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume")"
+          after_head="$(echo "$after" | jq -r '.canonical_head.hash')"
+          after_paths="$(echo "$after" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          test "$before_head" = "$after_head"
+          test "$before_paths" = "$after_paths"
+
+          echo "::notice title=V7.6.3 compact orientation metrics::full_resume=${full_bytes}B compact_one_path=${compact_bytes}B compact_zero_path=${zero_bytes}B manifest_orientation=${manifest_bytes}B accepted_paths=${path_count}"
+          echo "V7.6.3 live acceptance passed: compact resume/manifest preserved canonical HEAD provenance + HEAD edges, reused the exact V7.6.1 full-vector authority root, returned only requested/recent path metadata, emitted a deterministic accepted-state cursor and full-expansion identity, reduced serialized response bytes, and left accepted state unchanged."
 
       - name: V7.6.2b native tool hydration live acceptance
         if: github.event.inputs.run_v762b_acceptance == 'true'
