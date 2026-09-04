@@ -43,8 +43,9 @@ function resumeStateWithHead(hash, extraPathHeads = []) {
   };
 }
 
-function makeMemoryEnv({ rows, refs, raw }) {
+function makeMemoryEnv({ rows, refs, raw, authorityRows = [] }) {
   const env = makeEnv();
+  const allRows = [...authorityRows, ...rows];
   env.CAIRNSTONE_DB = {
     prepare(sql) {
       let bound = [];
@@ -55,6 +56,12 @@ function makeMemoryEnv({ rows, refs, raw }) {
           return { results: [] };
         },
         async first() {
+          if (sql.includes("FROM refs_fts WHERE") && sql.includes("stone_hash = ?")) {
+            return allRows.find(row => row.stone_hash === bound[2]) || null;
+          }
+          if (sql.includes("WHERE r.stone_hash = ?")) {
+            return allRows.find(row => row.stone_hash === bound[0]) || null;
+          }
           if (sql.includes("SELECT * FROM refs WHERE ref_id = ?")) return refs[bound[0]] || null;
           return null;
         }
@@ -194,7 +201,8 @@ test("V7.4.1 internal cross-project bootstrap keeps target authority while sourc
         actor_id: "cairnstone:repo-debugger",
         task: "Is praxiq-call currently drifted from GitHub?",
         chain: "praxiq-call",
-        instructions_chain: "cairnstone-v6-project-memory"
+        instructions_chain: "cairnstone-v6-project-memory",
+        limits: { max_memory_hits: 0, max_memory_bytes: 0 }
       },
       makeEnv(),
       deps
@@ -365,6 +373,72 @@ test("V7.0 authority-first retrieval: current roadmap question ranks accepted au
     assert.equal(roadmapItems.length, 1);
     assert.equal(roadmapItems[0].stone_hash, roadmapHead);
     assert.equal(roadmapItems[0].authority_class, "PATH_HEAD");
+  } finally {
+    restore();
+  }
+});
+
+test("V7.6.5 structural authority retrieval: current CHAIN_HEAD and task-relevant roadmap PATH_HEAD are guaranteed ahead of a BM25 workflow collision", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    const roadmapPath = "docs/ROADMAP_V7.md";
+    const workflowPath = ".github/workflows/deploy-cloudflare.yml";
+    const chainHead = "chain-head-stable";
+    const roadmapHead = "roadmap-current";
+    const workflowHead = "workflow-current";
+    // Simulate the live scale failure: the bounded BM25 window is completely
+    // occupied by a current workflow PATH_HEAD whose acceptance script itself
+    // contains the query terms. Neither current chain HEAD nor roadmap PATH_HEAD
+    // appears in that BM25 window.
+    const rows = Array.from({ length: 15 }, (_, index) => ({
+      ref_id: `workflow-collision-${index}`,
+      stone_hash: workflowHead,
+      path: workflowPath,
+      score: -100 + index
+    }));
+    const authorityRows = [
+      { ref_id: "chain-head-ref", stone_hash: chainHead, path: "project-memory/current-start.md", score: -1 },
+      { ref_id: "roadmap-head-ref", stone_hash: roadmapHead, path: roadmapPath, score: -1 }
+    ];
+    const everyRow = [...authorityRows, ...rows];
+    const refs = Object.fromEntries(everyRow.map(row => [row.ref_id, {
+      ref_id: row.ref_id,
+      raw_key: `raw/${row.ref_id}`,
+      line_start: 1,
+      line_end: 1
+    }]));
+    const raw = Object.fromEntries(everyRow.map(row => [
+      `raw/${row.ref_id}`,
+      row.ref_id === "chain-head-ref"
+        ? "V7.6.4 complete; V7.6.5 canary/default flip is next"
+        : row.ref_id === "roadmap-head-ref"
+          ? "V7.6.5 is the current next roadmap slice"
+          : "workflow acceptance fixture contains roadmap query terms"
+    ]));
+    const deps = makeDeps({
+      resumeChainFromBody: async () => resumeStateWithHead(chainHead, [
+        { path: roadmapPath, stone_hash: roadmapHead, repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A },
+        { path: workflowPath, stone_hash: workflowHead, repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A }
+      ])
+    });
+
+    const result = await agentBootstrapFromBody(
+      { actor_id: "test:v765-structural", task: "what's next in the roadmap", chain: "cairnstone-v6-project-memory", include_inbox: false },
+      makeMemoryEnv({ rows, authorityRows, refs, raw }),
+      deps
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.memory.retrieval_policy.structural_authority_guarantee.enabled, true);
+    assert.equal(result.memory.retrieval_policy.structural_authority_guarantee.chain_head_seeded, true);
+    assert.deepEqual(result.memory.retrieval_policy.structural_authority_guarantee.task_path_heads_seeded, [roadmapPath]);
+    assert.equal(result.memory.retrieval_policy.structural_authority_guarantee.bm25_supplemental_only, true);
+    assert.equal(result.memory.items[0].authority_class, "CHAIN_HEAD");
+    assert.equal(result.memory.items[0].stone_hash, chainHead);
+    assert.equal(result.memory.items[1].authority_class, "PATH_HEAD");
+    assert.equal(result.memory.items[1].path, roadmapPath);
+    assert.equal(result.memory.items[1].stone_hash, roadmapHead);
+    assert.ok(result.memory.items.some(item => item.path === workflowPath), "BM25 evidence remains supplemental after the guaranteed floor");
   } finally {
     restore();
   }
@@ -567,7 +641,13 @@ test("V7.6.1 legacy_full remains the default and explicit legacy mode preserves 
       { path: "src/index.js", stone_hash: "index-head", repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A }
     ];
     const deps = makeDeps({ resumeChainFromBody: async () => resumeStateWithHead("chain-head-stable", extraPathHeads) });
-    const base = { actor_id: "test:v761-legacy", task: "roadmap status", chain: "cairnstone-v6-project-memory", include_inbox: false };
+    const base = {
+      actor_id: "test:v761-legacy",
+      task: "roadmap status",
+      chain: "cairnstone-v6-project-memory",
+      include_inbox: false,
+      limits: { max_memory_hits: 0, max_memory_bytes: 0, max_inbox_items: 0 }
+    };
     const implicit = await agentBootstrapFromBody(base, makeEnv(), deps);
     const explicit = await agentBootstrapFromBody({ ...base, mode: "legacy_full" }, makeEnv(), deps);
 
