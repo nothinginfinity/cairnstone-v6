@@ -450,6 +450,81 @@ test("V7.6.5 structural authority retrieval: current CHAIN_HEAD and task-relevan
   }
 });
 
+test("V7.6.5 structural authority retrieval: path tie-break context spans the full multi-ref canonical HEAD", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    const roadmapPath = "docs/ROADMAP_V7.md";
+    const legacyRoadmapPath = "docs/ROADMAP_V6.md";
+    const workflowPath = ".github/workflows/deploy-cloudflare.yml";
+    const chainHead = "chain-head-multiref";
+    const roadmapHead = "roadmap-v7-current";
+    const legacyRoadmapHead = "roadmap-v6-current";
+    const workflowHead = "workflow-current";
+    const rows = Array.from({ length: 15 }, (_, index) => ({
+      ref_id: `workflow-multiref-collision-${index}`,
+      stone_hash: workflowHead,
+      path: workflowPath,
+      score: -100 + index
+    }));
+    // The query-matching CHAIN_HEAD ref is deliberately the LAST ref. Its
+    // local window does not name either roadmap path. The explicit accepted
+    // V7 roadmap authority reference lives in line 1 of the same immutable
+    // raw stone. Window-only tie-breaking therefore chooses ROADMAP_V6 by
+    // lexical fallback; full-HEAD context must choose ROADMAP_V7.
+    const authorityRows = [
+      { ref_id: "chain-head-ref-late", stone_hash: chainHead, path: "project-memory/current-start.md", score: -1 },
+      { ref_id: "roadmap-v7-head-ref", stone_hash: roadmapHead, path: roadmapPath, score: -1 },
+      { ref_id: "roadmap-v6-head-ref", stone_hash: legacyRoadmapHead, path: legacyRoadmapPath, score: -1 }
+    ];
+    const everyRow = [...authorityRows, ...rows];
+    const refs = Object.fromEntries(everyRow.map(row => [row.ref_id, {
+      ref_id: row.ref_id,
+      raw_key: row.ref_id === "chain-head-ref-late" ? "raw/chain-head-shared" : `raw/${row.ref_id}`,
+      line_start: row.ref_id === "chain-head-ref-late" ? 81 : 1,
+      line_end: row.ref_id === "chain-head-ref-late" ? 81 : 1
+    }]));
+    const chainHeadLines = [
+      "Accepted authority: docs/ROADMAP_V7.md path HEAD: roadmap-v7-current.",
+      ...Array.from({ length: 79 }, (_, index) => `orientation filler ${index + 2}`),
+      "V7.6.5 default flip is the next roadmap work."
+    ];
+    const raw = Object.fromEntries(everyRow
+      .filter(row => row.ref_id !== "chain-head-ref-late")
+      .map(row => [
+        `raw/${row.ref_id}`,
+        row.ref_id === "roadmap-v7-head-ref"
+          ? "V7.6.5 is the current next roadmap slice"
+          : row.ref_id === "roadmap-v6-head-ref"
+            ? "V6 compatibility roadmap"
+            : "workflow acceptance fixture contains roadmap query terms"
+      ]));
+    raw["raw/chain-head-shared"] = chainHeadLines.join("\n");
+
+    const deps = makeDeps({
+      resumeChainFromBody: async () => resumeStateWithHead(chainHead, [
+        { path: roadmapPath, stone_hash: roadmapHead, repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A },
+        { path: legacyRoadmapPath, stone_hash: legacyRoadmapHead, repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A },
+        { path: workflowPath, stone_hash: workflowHead, repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A }
+      ])
+    });
+
+    const result = await agentBootstrapFromBody(
+      { actor_id: "test:v765-multiref", task: "what's next in the roadmap", chain: "cairnstone-v6-project-memory", include_inbox: false },
+      makeMemoryEnv({ rows, authorityRows, refs, raw }),
+      deps
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.memory.items[0].stone_hash, chainHead);
+    assert.equal(result.memory.items[0].line_start, 81, "fixture must prove the matched CHAIN_HEAD ref is not the authority-reference ref");
+    assert.deepEqual(result.memory.retrieval_policy.structural_authority_guarantee.task_path_heads_seeded, [roadmapPath]);
+    assert.equal(result.memory.items[1].path, roadmapPath);
+    assert.equal(result.memory.items[1].stone_hash, roadmapHead);
+  } finally {
+    restore();
+  }
+});
+
 test("V7.0 authority-first retrieval: explicit historical roadmap question keeps superseded same-path evidence after current authority", async () => {
   const restore = mockGithubFetchOnce();
   try {
