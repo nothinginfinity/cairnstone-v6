@@ -413,7 +413,7 @@ test("V7.6.5 structural authority retrieval: current CHAIN_HEAD and task-relevan
     const raw = Object.fromEntries(everyRow.map(row => [
       `raw/${row.ref_id}`,
       row.ref_id === "chain-head-ref"
-        ? "V7.6.4 complete; docs/ROADMAP_V7.md is the current accepted roadmap and V7.6.5 canary/default flip is next"
+        ? "V7.6.4 complete. Accepted authority: docs/ROADMAP_V7.md path HEAD: roadmap-current — V7.6.5 canary/default flip is next. Unrelated historical drift includes docs/ROADMAP_V6.md."
         : row.ref_id === "roadmap-head-ref"
           ? "V7.6.5 is the current next roadmap slice"
           : row.ref_id === "legacy-roadmap-head-ref"
