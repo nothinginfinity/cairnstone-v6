@@ -184,6 +184,12 @@ jobs:
             .memory.retrieval_policy.same_path_historical_suppression == true and
             .memory.retrieval_policy.historical_same_path_suppressed >= 1 and
             (.memory.retrieval_policy.ordering == ["CHAIN_HEAD","PATH_HEAD","HISTORICAL"]) and
+            .memory.retrieval_policy.structural_authority_guarantee.enabled == true and
+            .memory.retrieval_policy.structural_authority_guarantee.chain_head_seeded == true and
+            (.memory.retrieval_policy.structural_authority_guarantee.task_path_heads_seeded | index("docs/ROADMAP_V7.md")) != null and
+            .memory.retrieval_policy.structural_authority_guarantee.bm25_supplemental_only == true and
+            .memory.items[0].authority_class == "CHAIN_HEAD" and .memory.items[0].stone_hash == $head and
+            .memory.items[1].authority_class == "PATH_HEAD" and .memory.items[1].path == "docs/ROADMAP_V7.md" and .memory.items[1].stone_hash == $roadmap and
             any(.memory.items[]; .authority_class == "CHAIN_HEAD" and .stone_hash == $head) and
             any(.memory.items[]; .authority_class == "PATH_HEAD" and .path == "docs/ROADMAP_V7.md" and .stone_hash == $roadmap) and
             (all(.memory.items[]; (.path != "docs/ROADMAP_V7.md") or (.authority_class != "HISTORICAL")))
