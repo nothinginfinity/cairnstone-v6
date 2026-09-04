@@ -1148,8 +1148,24 @@ jobs:
             .instructions.selection.requested_mode == "optimized_sparse" and
             $legacy.instructions.selection.requested_mode == "legacy_full"
           ' >/dev/null
-          CHECKPOINT="parity_skills"
-          echo "$sparse" | jq -e --argjson legacy "$legacy" '.skills == $legacy.skills' >/dev/null
+          # The larger legacy envelope may size-trim optional specialized
+          # skill bodies before protected authority evidence, while sparse can
+          # retain more. Accepted skill authority/resolution must be identical,
+          # and sparse must preserve every skill body retained by legacy.
+          CHECKPOINT="parity_skill_semantics"
+          echo "$sparse" | jq -e --argjson legacy "$legacy" '
+            (.skills.accepted_bundle.skills) as $sparse_skills |
+            ($legacy.skills.accepted_bundle.skills) as $legacy_skills |
+            .skills.chain == $legacy.skills.chain and
+            .skills.manifest_head == $legacy.skills.manifest_head and
+            .skills.resolution_mode == $legacy.skills.resolution_mode and
+            .skills.boot == $legacy.skills.boot and
+            .skills.recommendations == $legacy.skills.recommendations and
+            .skills.ambiguous == $legacy.skills.ambiguous and
+            .skills.accepted_bundle.bundle_identity == $legacy.skills.accepted_bundle.bundle_identity and
+            ($sparse_skills | length) >= ($legacy_skills | length) and
+            all($legacy_skills[]; . as $legacy_skill | any($sparse_skills[]; . == $legacy_skill))
+          ' >/dev/null
           # Size discipline may trim memory from the larger legacy envelope while
           # optimized_sparse has room to retain more evidence. Require identical
           # retrieval semantics and preservation of every legacy evidence item;
