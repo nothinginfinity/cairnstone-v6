@@ -174,8 +174,27 @@ jobs:
           test -n "$roadmap_head"
 
           current_payload="$(jq -nc '{jsonrpc:"2.0",id:701,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v70-authority-acceptance",task:"what'"'"'s next in the roadmap",chain:"cairnstone-v6-project-memory",include_inbox:false,limits:{max_inbox_items:0}}}}')"
-          current_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$current_payload")"
-          current="$(echo "$current_outer" | jq -c '.result.content[0].text | fromjson')"
+          # Worker deployment propagation can lag wrangler success while the
+          # runtime version remains unchanged. Wait on the exact V7.6.5
+          # behavioral signature instead of treating version/tool presence as
+          # proof that the newly deployed module is serving traffic.
+          current=""
+          for attempt in {1..30}; do
+            current_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$current_payload" || true)"
+            current="$(echo "$current_outer" | jq -c '.result.content[0].text | fromjson' 2>/dev/null || true)"
+            if echo "$current" | jq -e --arg head "$before_head" --arg roadmap "$roadmap_head" '
+              .ok == true and
+              .memory.retrieval_policy.structural_authority_guarantee.enabled == true and
+              .memory.retrieval_policy.structural_authority_guarantee.chain_head_seeded == true and
+              (.memory.retrieval_policy.structural_authority_guarantee.task_path_heads_seeded | index("docs/ROADMAP_V7.md")) != null and
+              .memory.items[0].stone_hash == $head and
+              .memory.items[1].path == "docs/ROADMAP_V7.md" and
+              .memory.items[1].stone_hash == $roadmap
+            ' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
           echo "$current" | jq -e --arg head "$before_head" --arg roadmap "$roadmap_head" '
             .ok == true and
             .schema == "cairnstone-agent-context-v1" and
