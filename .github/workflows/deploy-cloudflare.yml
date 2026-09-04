@@ -214,7 +214,7 @@ jobs:
             (all(.memory.items[]; (.path != "docs/ROADMAP_V7.md") or (.authority_class != "HISTORICAL")))
           ' >/dev/null
 
-          historical_payload="$(jq -nc '{jsonrpc:"2.0",id:702,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v70-authority-acceptance",task:"How did the roadmap change before V7.3.3?",chain:"cairnstone-v6-project-memory",include_inbox:false,limits:{max_inbox_items:0}}}}')"
+          historical_payload="$(jq -nc '{jsonrpc:"2.0",id:702,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v70-authority-acceptance",task:"How did the roadmap change before V7.3.3?",chain:"cairnstone-v6-project-memory",include_inbox:false,limits:{max_inbox_items:0,max_package_bytes:180000}}}}')"
           historical_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$historical_payload")"
           historical="$(echo "$historical_outer" | jq -c '.result.content[0].text | fromjson')"
           echo "$historical" | jq -e '
