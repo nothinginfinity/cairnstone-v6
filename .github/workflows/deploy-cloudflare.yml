@@ -392,6 +392,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          STAGE="setup"
+          trap 'echo "::error title=V7.2 live acceptance failure::stage=${STAGE} line=${LINENO}"' ERR
+          STAGE="health"
           BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
 
           health="$(curl -fsS "$BASE/health")"
@@ -401,10 +404,12 @@ jobs:
           before_head="$(echo "$before" | jq -r '.canonical_head.hash')"
           before_paths="$(echo "$before" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
 
+          STAGE="workers_delegate"
           delegated="$(curl -fsS -X POST "$BASE/mcp" \
             -H 'content-type: application/json' \
             -H 'accept: application/json' \
             --data '{"jsonrpc":"2.0","id":72,"method":"tools/call","params":{"name":"cairnstone_delegate","arguments":{"actor_id":"github-actions:v72-acceptance","task":"Summarize the current accepted V7.2 project state in one short paragraph. Do not request or execute tools.","chain":"cairnstone-v6-project-memory","route":{"provider":"workers-ai","model":"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},"generation":{"max_output_tokens":256,"temperature":0},"limits":{"max_package_bytes":180000},"include_inbox":false}}}')"
+          STAGE="workers_assert"
           echo "$delegated" | jq -e '
             (.result.content[0].text | fromjson) as $r |
             $r.ok == true and
@@ -427,10 +432,12 @@ jobs:
           PACKAGE_ID="$(echo "$delegated" | jq -r '(.result.content[0].text | fromjson).package_id')"
           REQUEST_IR_ID="$(echo "$delegated" | jq -r '(.result.content[0].text | fromjson).request_ir_id')"
 
+          STAGE="deepseek_delegate"
           deepseek="$(curl -fsS -X POST "$BASE/mcp" \
             -H 'content-type: application/json' \
             -H 'accept: application/json' \
             --data '{"jsonrpc":"2.0","id":721,"method":"tools/call","params":{"name":"cairnstone_delegate","arguments":{"actor_id":"github-actions:v72-acceptance","task":"Summarize the current accepted V7.2 project state in one short paragraph. Do not request or execute tools.","chain":"cairnstone-v6-project-memory","route":{"provider":"deepseek","model":"deepseek-chat","credential_mode":"byok","credential_alias":"default"},"generation":{"max_output_tokens":256,"temperature":0},"limits":{"max_package_bytes":180000},"include_inbox":false}}}')"
+          STAGE="deepseek_assert"
           echo "$deepseek" | jq -e --arg package "$PACKAGE_ID" --arg request "$REQUEST_IR_ID" '
             (.result.content[0].text | fromjson) as $r |
             $r.ok == true and
@@ -449,10 +456,12 @@ jobs:
             $r.diagnostics.external_model_calls >= 1
           ' >/dev/null
 
+          STAGE="missing_provider"
           failed_provider="$(curl -fsS -X POST "$BASE/mcp" \
             -H 'content-type: application/json' \
             -H 'accept: application/json' \
             --data '{"jsonrpc":"2.0","id":722,"method":"tools/call","params":{"name":"cairnstone_delegate","arguments":{"actor_id":"github-actions:v72-acceptance","task":"Summarize the current accepted V7.2 project state in one short paragraph. Do not request or execute tools.","chain":"cairnstone-v6-project-memory","route":{"provider":"deepseek","model":"deepseek-chat","credential_mode":"byok","credential_alias":"v72_missing"},"generation":{"max_output_tokens":256,"temperature":0},"limits":{"max_package_bytes":180000},"include_inbox":false}}}')"
+          STAGE="missing_provider_assert"
           echo "$failed_provider" | jq -e --arg package "$PACKAGE_ID" --arg request "$REQUEST_IR_ID" '
             (.result.content[0].text | fromjson) as $r |
             $r.ok == false and
@@ -471,6 +480,7 @@ jobs:
             $r.observability.attempts[0].error == "provider_auth_failed"
           ' >/dev/null
 
+          STAGE="dispatch"
           DISPATCH_ID="msg:v72-dispatch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           dispatch_payload="$(jq -nc \
             --arg id "$DISPATCH_ID" \
@@ -495,13 +505,16 @@ jobs:
             $r.handoff.policy.accepted_state_authority == false
           ' >/dev/null
 
+          STAGE="dispatch_replay"
           replayed="$(curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' -H 'accept: application/json' --data "$dispatch_payload")"
           echo "$replayed" | jq -e '(.result.content[0].text | fromjson) | .ok == true and .idempotent_replay == true' >/dev/null
 
+          STAGE="dispatch_inbox"
           inbox_payload="$(jq -nc '{jsonrpc:"2.0",id:74,method:"tools/call",params:{name:"cairnstone_get_inbox",arguments:{recipient_id:"github-actions:v72-inbox",limit:50}}}')"
           inbox="$(curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' -H 'accept: application/json' --data "$inbox_payload")"
           echo "$inbox" | jq -e --arg id "$DISPATCH_ID" '(.result.content[0].text | fromjson) as $r | any($r.messages[]; .message_id == $id and .intent == "handoff" and .status == "delivered")' >/dev/null
 
+          STAGE="dispatch_read"
           read_payload="$(jq -nc --arg id "$DISPATCH_ID" '{jsonrpc:"2.0",id:75,method:"tools/call",params:{name:"cairnstone_read_message",arguments:{recipient_id:"github-actions:v72-inbox",message_id:$id}}}')"
           read_back="$(curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' -H 'accept: application/json' --data "$read_payload")"
           echo "$read_back" | jq -e --arg package "$PACKAGE_ID" --arg commit "$GITHUB_SHA" '
@@ -521,6 +534,7 @@ jobs:
             $p.policy.accepted_state_authority == false
           ' >/dev/null
 
+          STAGE="mirror"
           MIRROR_ID="msg:v72-github-mirror-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mirror_payload="$(jq -nc \
             --arg id "$MIRROR_ID" \
@@ -549,6 +563,7 @@ jobs:
             ($r.github_inbox_mirror.artifacts[0].path | startswith("cairnstone-inbox/v72-acceptance/"))
           ' >/dev/null
 
+          STAGE="mirror_replay"
           mirror_replayed="$(curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' -H 'accept: application/json' --data "$mirror_payload")"
           echo "$mirror_replayed" | jq -e '
             (.result.content[0].text | fromjson) as $r |
@@ -559,6 +574,7 @@ jobs:
             $r.github_inbox_mirror.artifacts[0].idempotent_replay == true
           ' >/dev/null
 
+          STAGE="mirror_failure_isolation"
           FAIL_ID="msg:v72-github-mirror-failure-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           fail_payload="$(jq -nc \
             --arg id "$FAIL_ID" \
@@ -578,6 +594,7 @@ jobs:
             ($r.github_inbox_mirror.failures | length) == 1
           ' >/dev/null
 
+          STAGE="mirror_failure_inbox"
           failed_inbox_payload="$(jq -nc '{jsonrpc:"2.0",id:78,method:"tools/call",params:{name:"cairnstone_get_inbox",arguments:{recipient_id:"github-actions:v72-mirror-failure",limit:50}}}')"
           failed_inbox="$(curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' -H 'accept: application/json' --data "$failed_inbox_payload")"
           echo "$failed_inbox" | jq -e --arg id "$FAIL_ID" '(.result.content[0].text | fromjson) as $r | any($r.messages[]; .message_id == $id and .intent == "handoff" and .status == "delivered")' >/dev/null
