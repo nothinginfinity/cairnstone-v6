@@ -382,9 +382,11 @@ test("V7.6.5 structural authority retrieval: current CHAIN_HEAD and task-relevan
   const restore = mockGithubFetchOnce();
   try {
     const roadmapPath = "docs/ROADMAP_V7.md";
+    const legacyRoadmapPath = "docs/ROADMAP_V6.md";
     const workflowPath = ".github/workflows/deploy-cloudflare.yml";
     const chainHead = "chain-head-stable";
     const roadmapHead = "roadmap-current";
+    const legacyRoadmapHead = "roadmap-v6-current";
     const workflowHead = "workflow-current";
     // Simulate the live scale failure: the bounded BM25 window is completely
     // occupied by a current workflow PATH_HEAD whose acceptance script itself
@@ -398,7 +400,8 @@ test("V7.6.5 structural authority retrieval: current CHAIN_HEAD and task-relevan
     }));
     const authorityRows = [
       { ref_id: "chain-head-ref", stone_hash: chainHead, path: "project-memory/current-start.md", score: -1 },
-      { ref_id: "roadmap-head-ref", stone_hash: roadmapHead, path: roadmapPath, score: -1 }
+      { ref_id: "roadmap-head-ref", stone_hash: roadmapHead, path: roadmapPath, score: -1 },
+      { ref_id: "legacy-roadmap-head-ref", stone_hash: legacyRoadmapHead, path: legacyRoadmapPath, score: -1 }
     ];
     const everyRow = [...authorityRows, ...rows];
     const refs = Object.fromEntries(everyRow.map(row => [row.ref_id, {
@@ -410,14 +413,17 @@ test("V7.6.5 structural authority retrieval: current CHAIN_HEAD and task-relevan
     const raw = Object.fromEntries(everyRow.map(row => [
       `raw/${row.ref_id}`,
       row.ref_id === "chain-head-ref"
-        ? "V7.6.4 complete; V7.6.5 canary/default flip is next"
+        ? "V7.6.4 complete; docs/ROADMAP_V7.md is the current accepted roadmap and V7.6.5 canary/default flip is next"
         : row.ref_id === "roadmap-head-ref"
           ? "V7.6.5 is the current next roadmap slice"
-          : "workflow acceptance fixture contains roadmap query terms"
+          : row.ref_id === "legacy-roadmap-head-ref"
+            ? "V6 historical roadmap remains an accepted path head for compatibility"
+            : "workflow acceptance fixture contains roadmap query terms"
     ]));
     const deps = makeDeps({
       resumeChainFromBody: async () => resumeStateWithHead(chainHead, [
         { path: roadmapPath, stone_hash: roadmapHead, repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A },
+        { path: legacyRoadmapPath, stone_hash: legacyRoadmapHead, repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A },
         { path: workflowPath, stone_hash: workflowHead, repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A }
       ])
     });
