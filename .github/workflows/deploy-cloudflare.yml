@@ -221,7 +221,7 @@ jobs:
           test "$before_head" = "$after_head"
           test "$before_paths" = "$after_paths"
 
-          echo "V7.0 authority-first retrieval acceptance passed: current queries ranked accepted authority first and suppressed superseded same-path roadmap history, explicit history retained it, and live Workers AI answered V7.3.3 while accepted state remained unchanged."
+          echo "V7.0 authority-first retrieval acceptance passed: current queries ranked accepted authority first and suppressed superseded same-path roadmap history, explicit history retained it, and live Workers AI's delegated answer was grounded in current accepted chain/path-head authority while accepted state remained unchanged."
 
       - name: V6.2.1 live correctness acceptance
         if: github.event.inputs.run_v621_acceptance == 'true'
