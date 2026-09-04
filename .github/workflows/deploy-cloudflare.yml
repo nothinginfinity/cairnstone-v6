@@ -404,7 +404,7 @@ jobs:
           delegated="$(curl -fsS -X POST "$BASE/mcp" \
             -H 'content-type: application/json' \
             -H 'accept: application/json' \
-            --data '{"jsonrpc":"2.0","id":72,"method":"tools/call","params":{"name":"cairnstone_delegate","arguments":{"actor_id":"github-actions:v72-acceptance","task":"Summarize the current accepted V7.2 project state in one short paragraph. Do not request or execute tools.","chain":"cairnstone-v6-project-memory","route":{"provider":"workers-ai","model":"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},"generation":{"max_output_tokens":256,"temperature":0},"include_inbox":false}}}')"
+            --data '{"jsonrpc":"2.0","id":72,"method":"tools/call","params":{"name":"cairnstone_delegate","arguments":{"actor_id":"github-actions:v72-acceptance","task":"Summarize the current accepted V7.2 project state in one short paragraph. Do not request or execute tools.","chain":"cairnstone-v6-project-memory","route":{"provider":"workers-ai","model":"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},"generation":{"max_output_tokens":256,"temperature":0},"limits":{"max_package_bytes":180000},"include_inbox":false}}}')"
           echo "$delegated" | jq -e '
             (.result.content[0].text | fromjson) as $r |
             $r.ok == true and
@@ -430,7 +430,7 @@ jobs:
           deepseek="$(curl -fsS -X POST "$BASE/mcp" \
             -H 'content-type: application/json' \
             -H 'accept: application/json' \
-            --data '{"jsonrpc":"2.0","id":721,"method":"tools/call","params":{"name":"cairnstone_delegate","arguments":{"actor_id":"github-actions:v72-acceptance","task":"Summarize the current accepted V7.2 project state in one short paragraph. Do not request or execute tools.","chain":"cairnstone-v6-project-memory","route":{"provider":"deepseek","model":"deepseek-chat","credential_mode":"byok","credential_alias":"default"},"generation":{"max_output_tokens":256,"temperature":0},"include_inbox":false}}}')"
+            --data '{"jsonrpc":"2.0","id":721,"method":"tools/call","params":{"name":"cairnstone_delegate","arguments":{"actor_id":"github-actions:v72-acceptance","task":"Summarize the current accepted V7.2 project state in one short paragraph. Do not request or execute tools.","chain":"cairnstone-v6-project-memory","route":{"provider":"deepseek","model":"deepseek-chat","credential_mode":"byok","credential_alias":"default"},"generation":{"max_output_tokens":256,"temperature":0},"limits":{"max_package_bytes":180000},"include_inbox":false}}}')"
           echo "$deepseek" | jq -e --arg package "$PACKAGE_ID" --arg request "$REQUEST_IR_ID" '
             (.result.content[0].text | fromjson) as $r |
             $r.ok == true and
@@ -452,7 +452,7 @@ jobs:
           failed_provider="$(curl -fsS -X POST "$BASE/mcp" \
             -H 'content-type: application/json' \
             -H 'accept: application/json' \
-            --data '{"jsonrpc":"2.0","id":722,"method":"tools/call","params":{"name":"cairnstone_delegate","arguments":{"actor_id":"github-actions:v72-acceptance","task":"Summarize the current accepted V7.2 project state in one short paragraph. Do not request or execute tools.","chain":"cairnstone-v6-project-memory","route":{"provider":"deepseek","model":"deepseek-chat","credential_mode":"byok","credential_alias":"v72_missing"},"generation":{"max_output_tokens":256,"temperature":0},"include_inbox":false}}}')"
+            --data '{"jsonrpc":"2.0","id":722,"method":"tools/call","params":{"name":"cairnstone_delegate","arguments":{"actor_id":"github-actions:v72-acceptance","task":"Summarize the current accepted V7.2 project state in one short paragraph. Do not request or execute tools.","chain":"cairnstone-v6-project-memory","route":{"provider":"deepseek","model":"deepseek-chat","credential_mode":"byok","credential_alias":"v72_missing"},"generation":{"max_output_tokens":256,"temperature":0},"limits":{"max_package_bytes":180000},"include_inbox":false}}}')"
           echo "$failed_provider" | jq -e --arg package "$PACKAGE_ID" --arg request "$REQUEST_IR_ID" '
             (.result.content[0].text | fromjson) as $r |
             $r.ok == false and
