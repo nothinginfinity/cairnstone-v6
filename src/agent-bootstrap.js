@@ -872,8 +872,11 @@ function selectTaskRelevantPathHeads(resume, task, maxCount = STRUCTURAL_PATH_HE
   return (resume.path_heads || [])
     .filter(item => item && typeof item.path === "string" && item.stone_hash && item.stone_hash !== chainHeadHash)
     .map(item => {
-      const path = item.path.toLowerCase();
-      const score = terms.reduce((sum, term) => sum + (path.includes(term) ? 1 : 0), 0);
+      // Match normalized path tokens, not arbitrary substrings. This prevents
+      // short task words such as "in" from matching the letters inside
+      // unrelated path tokens such as "operating" and outranking ROADMAP.
+      const pathTerms = new Set(String(item.path).toLowerCase().match(/[a-z0-9]{2,}/g) || []);
+      const score = terms.reduce((sum, term) => sum + (pathTerms.has(term) ? 1 : 0), 0);
       return { item, score };
     })
     .filter(entry => entry.score > 0)
