@@ -1,8 +1,8 @@
 # V7.0 — Context Compiler Contract
 
-Status: **implemented and live-accepted; authority-first retrieval correctness hardening accepted on runtime 0.5.12**
+Status: **implemented and live-accepted; authority-first retrieval correctness hardening accepted on runtime 0.5.12; mature-vault authority-floor repair live-verified in V7.6.5**
 Phase boundary: **foundational V7 slice after frozen V6.10 control-plane baseline**
-Runtime implementation: **complete; V7.0 authority-first retrieval hardening live-accepted in GitHub Actions run 32915664885**
+Runtime implementation: **complete; original V7.0 authority-first hardening live-accepted in GitHub Actions run 32915664885; mature-vault structural retrieval + size-discipline repair live-verified in run 33874770559**
 
 ## 1. Purpose
 
@@ -421,11 +421,22 @@ Allowed authority classes:
 
 Retrieval rank never changes authority classification.
 
-Current accepted-state authority also controls presentation order: matching `CHAIN_HEAD` evidence is ordered before matching `PATH_HEAD`, which is ordered before `HISTORICAL`; lexical/BM25 relevance remains the tie-breaker within an authority class.
+Current accepted-state authority also controls presentation order: matching `CHAIN_HEAD` evidence is ordered before matching `PATH_HEAD`, which is ordered before `HISTORICAL`. BM25/FTS is supplemental ranking evidence; it is **not** allowed to decide whether current accepted authority exists in model-visible memory.
+
+When memory is enabled for a task-bearing compile, the compiler establishes a bounded structural current-authority floor before merging supplemental ranked candidates:
+
+1. seed the canonical `CHAIN_HEAD` directly from the accepted chain snapshot;
+2. seed at most the bounded task-relevant accepted `PATH_HEAD` set required by the compile contract (V7.6.5 currently guarantees one deterministic task-relevant path head when one can be selected);
+3. merge BM25/FTS candidates only after those structural seeds;
+4. preserve authority ordering and same-path historical suppression over the merged set.
+
+Task/path relevance is deterministic and accepted-state based. Path matching uses normalized path tokens rather than arbitrary substring matches. When multiple accepted paths tie on task-token relevance, the canonical chain HEAD's own authority context may break the tie: explicit accepted/current/path-HEAD references outrank incidental historical/drift references. Timestamp recency is never a tie-breaker. If the canonical orientation is silent, a stable lexical fallback may be used.
 
 For tasks deterministically classified as current-state/status/next/roadmap queries, if an authoritative matching item exists for a path, superseded `HISTORICAL` matches for that same path are filtered before bounded expansion. Explicit history/comparison queries disable this same-path suppression. Disabling suppression means historical candidates remain eligible; finite `max_memory_hits`, memory-byte, and package-byte budgets may still omit them after higher-authority evidence fills the budget.
 
-The output `memory.retrieval_policy` records the authority ordering, whether current-state same-path suppression applied, and how many historical candidates were suppressed.
+For current-state queries, failure to resolve/read a required structural authority seed is a typed fail-closed condition; the compiler must not return `ok:true` with an apparently successful package whose required current-authority grounding is absent. Likewise, if the protected structural authority floor itself cannot fit the effective memory/package budget, the compiler fails closed rather than silently deleting that floor.
+
+The output `memory.retrieval_policy` records the authority ordering, whether current-state same-path suppression applied, how many historical candidates were suppressed, and the structural-authority guarantee state (including whether chain-head/task-path seeds were established and that BM25 is supplemental only).
 
 Historical evidence can be included when relevant, but must not be presented as current accepted state.
 
@@ -523,6 +534,8 @@ Typed failures should include at least:
 - `accepted_instruction_source_not_immutable`
 - `skills_manifest_unavailable`
 - `accepted_skill_bundle_invalid`
+- `authority_memory_unavailable`
+- `authority_memory_limit_exceeded`
 - `package_size_limit_exceeded`
 - `context_compile_race`
 
@@ -551,6 +564,9 @@ Rules:
 - in `legacy_full`, include compact metadata for all accepted path HEADs; in `optimized_sparse`, include the cryptographically complete full-set authority root/count plus only deterministic task-relevant represented head metadata; never include all bodies;
 - include only selected skill bodies;
 - include bounded task-relevant memory windows;
+- preserve the protected task-relevant current-authority memory floor before optional evidence/body payloads;
+- under package pressure, trim `HISTORICAL` memory first, then surplus/non-protected memory, then optional specialized skill bodies before protected current-authority memory; accepted skill manifest/resolution authority must remain intact even when optional bodies are removed;
+- `optimized_sparse` may retain a strict superset of memory/optional skill bodies that `legacy_full` had to trim, but both modes must preserve the same accepted authority/retrieval semantics and every protected current-authority item retained by the larger envelope;
 - include compact inbox metadata by default;
 - never preload the entire skill catalog;
 - never dump an entire large chain by default.
@@ -707,6 +723,20 @@ Oversized requested context must respect hard server ceilings and return explici
 ### J. Direct MCP acceptance
 
 Production acceptance must verify through direct MCP JSON-RPC, not only internal unit tests or server health advertisement.
+
+### K. Mature-vault authority-floor pressure
+
+Exercise a production-scale or equivalently pressure-filled package at the normal package ceiling with a current-state roadmap/status task.
+
+Require:
+
+- model-visible memory contains the current canonical `CHAIN_HEAD` structural seed;
+- the deterministic task-relevant accepted `PATH_HEAD` structural seed is present when one is selected by the contract;
+- BM25/FTS collisions cannot displace those seeds from the bounded candidate window;
+- same-path stale history remains suppressed for current-state queries;
+- package pressure trims historical/surplus evidence and optional specialized skill bodies before protected current authority;
+- if the protected floor cannot fit, compilation returns a typed failure rather than `ok:true` with the floor missing;
+- `legacy_full` and `optimized_sparse` preserve the same canonical instruction/skill/memory authority semantics even when their transmitted representations or retained optional-body supersets differ.
 
 ## 15. Definition of done
 
