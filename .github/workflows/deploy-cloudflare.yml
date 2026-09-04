@@ -1256,9 +1256,11 @@ jobs:
 
           stage="health_and_snapshot"
           health="$(curl -fsS "$BASE/health")"
+          # Runtime version is telemetry, not behavioral authority. Exact
+          # version pins become stale as later accepted slices advance the
+          # Worker; require the capabilities this acceptance actually needs.
           echo "$health" | jq -e '
             .ok == true and
-            .version == "0.5.21" and
             ((.mcp_tools | index("cairnstone_resume_chain")) != null) and
             ((.mcp_tools | index("cairnstone_manifest_v2")) != null) and
             ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null)
@@ -1378,7 +1380,7 @@ jobs:
 
           stage="health_snapshot"
           health="$(curl -fsS "$BASE/health")"
-          echo "$health" | jq -e '.ok == true and .version == "0.5.24" and ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null) and ((.mcp_tools | index("cairnstone_model_route")) != null)' >/dev/null
+          echo "$health" | jq -e '.ok == true and ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null) and ((.mcp_tools | index("cairnstone_model_route")) != null)' >/dev/null
           before="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume")"
           before_head="$(echo "$before" | jq -r '.canonical_head.hash')"
           before_paths="$(echo "$before" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
