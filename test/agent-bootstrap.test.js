@@ -412,6 +412,153 @@ test("V7.0 authority-first retrieval: explicit historical roadmap question keeps
   }
 });
 
+test("V7.6.5 package-pressure regression: size discipline trims HISTORICAL evidence first and preserves the protected CHAIN_HEAD/PATH_HEAD floor", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    const roadmapPath = "docs/ROADMAP_V7.md";
+    const chainHead = "chain-head-stable";
+    const roadmapHead = "roadmap-current";
+    // Six sizable HISTORICAL candidates compete with the small protected
+    // floor for the memory byte budget. Removing all six HISTORICAL items
+    // is sufficient to fit; the floor must survive untouched.
+    const historicalRows = Array.from({ length: 6 }, (_, index) => ({
+      ref_id: `hist-${index}`,
+      stone_hash: `hist-stone-${index}`,
+      path: `project-memory/older-${index}.md`,
+      score: -20 + index
+    }));
+    const rows = [
+      ...historicalRows,
+      { ref_id: "chain-head-ref", stone_hash: chainHead, path: "project-memory/current-start.md", score: -1 },
+      { ref_id: "roadmap-head-ref", stone_hash: roadmapHead, path: roadmapPath, score: 0 }
+    ];
+    const refs = Object.fromEntries(rows.map(row => [row.ref_id, {
+      ref_id: row.ref_id,
+      raw_key: `raw/${row.ref_id}`,
+      line_start: 1,
+      line_end: 1
+    }]));
+    const raw = Object.fromEntries(rows.map(row => [
+      `raw/${row.ref_id}`,
+      row.ref_id.startsWith("hist-") ? "H".repeat(1500) : "C".repeat(300)
+    ]));
+    const deps = makeDeps({
+      resumeChainFromBody: async () => resumeStateWithHead(chainHead, [
+        { path: roadmapPath, stone_hash: roadmapHead, repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A }
+      ])
+    });
+
+    const result = await agentBootstrapFromBody(
+      {
+        actor_id: "test:v765-pressure-historical",
+        task: "what's next in the roadmap",
+        chain: "cairnstone-v6-project-memory",
+        include_inbox: false,
+        limits: { max_package_bytes: 6000, max_memory_bytes: 60000, max_memory_hits: 10, max_inbox_items: 0 }
+      },
+      makeMemoryEnv({ rows, refs, raw }),
+      deps
+    );
+
+    assert.equal(result.ok, true);
+    assert.ok(result.limits.package_bytes <= result.limits.effective_max_package_bytes);
+    assert.ok(result.limits.instructions_bytes > 0, "instructions must never be omitted");
+    assert.deepEqual(result.memory.items.map(item => item.authority_class), ["CHAIN_HEAD", "PATH_HEAD"]);
+    assert.equal(result.memory.items.find(item => item.authority_class === "CHAIN_HEAD").stone_hash, chainHead);
+    const pathHeadItem = result.memory.items.find(item => item.authority_class === "PATH_HEAD");
+    assert.equal(pathHeadItem.path, roadmapPath);
+    assert.equal(pathHeadItem.stone_hash, roadmapHead);
+    assert.equal(result.memory.truncated, true, "trimming must be reported, not silent");
+  } finally {
+    restore();
+  }
+});
+
+test("V7.6.5 package-pressure regression: size discipline fails closed rather than silently dropping protected CHAIN_HEAD/PATH_HEAD evidence when the floor alone exceeds budget", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    const roadmapPath = "docs/ROADMAP_V7.md";
+    const chainHead = "chain-head-stable";
+    const roadmapHead = "roadmap-current";
+    // Only the two protected floor items are present (no HISTORICAL
+    // candidates at all -- mirrors the live production failure where a
+    // mature vault's structural package plus just the guaranteed evidence
+    // already exceeds the package budget). Before V7.6.5, enforceSizeDiscipline
+    // popped indiscriminately from the end of memory.items and would return
+    // ok:true with PATH_HEAD (and eventually CHAIN_HEAD) silently missing.
+    const rows = [
+      { ref_id: "chain-head-ref", stone_hash: chainHead, path: "project-memory/current-start.md", score: -1 },
+      { ref_id: "roadmap-head-ref", stone_hash: roadmapHead, path: roadmapPath, score: 0 }
+    ];
+    const refs = Object.fromEntries(rows.map(row => [row.ref_id, {
+      ref_id: row.ref_id,
+      raw_key: `raw/${row.ref_id}`,
+      line_start: 1,
+      line_end: 1
+    }]));
+    const raw = Object.fromEntries(rows.map(row => [`raw/${row.ref_id}`, "X".repeat(2500)]));
+    const deps = makeDeps({
+      resumeChainFromBody: async () => resumeStateWithHead(chainHead, [
+        { path: roadmapPath, stone_hash: roadmapHead, repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A }
+      ])
+    });
+
+    // cap=8000: structural package + one 2500-byte floor item fits, but
+    // structural + both floor items does not. The pre-fix implementation
+    // would pop PATH_HEAD to fit and return ok:true with degraded evidence.
+    const degraded = await agentBootstrapFromBody(
+      {
+        actor_id: "test:v765-floor-partial",
+        task: "what's next in the roadmap",
+        chain: "cairnstone-v6-project-memory",
+        include_inbox: false,
+        limits: { max_package_bytes: 8000, max_memory_bytes: 60000, max_memory_hits: 10, max_inbox_items: 0 }
+      },
+      makeMemoryEnv({ rows, refs, raw }),
+      deps
+    );
+    assert.equal(degraded.ok, false, "must fail closed rather than return a package missing guaranteed PATH_HEAD evidence");
+    assert.equal(degraded.error, "package_size_limit_exceeded");
+    assert.ok(degraded.limits.instructions_bytes > 0, "instructions must still be measured, never silently omitted");
+
+    // cap=6000: even more constrained -- structural + either single floor
+    // item alone does not fit either. The pre-fix implementation would pop
+    // BOTH items and return ok:true with memory.items completely empty.
+    const empty = await agentBootstrapFromBody(
+      {
+        actor_id: "test:v765-floor-empty",
+        task: "what's next in the roadmap",
+        chain: "cairnstone-v6-project-memory",
+        include_inbox: false,
+        limits: { max_package_bytes: 6000, max_memory_bytes: 60000, max_memory_hits: 10, max_inbox_items: 0 }
+      },
+      makeMemoryEnv({ rows, refs, raw }),
+      deps
+    );
+    assert.equal(empty.ok, false, "must fail closed rather than return a package with fully empty authority evidence");
+    assert.equal(empty.error, "package_size_limit_exceeded");
+
+    // Sanity: the same fixture with a generous budget succeeds and both
+    // floor items are present, proving the failures above are genuinely
+    // pressure-induced and not a fixture/data-shape mistake.
+    const roomy = await agentBootstrapFromBody(
+      {
+        actor_id: "test:v765-floor-roomy",
+        task: "what's next in the roadmap",
+        chain: "cairnstone-v6-project-memory",
+        include_inbox: false,
+        limits: { max_package_bytes: 64000, max_memory_bytes: 60000, max_memory_hits: 10, max_inbox_items: 0 }
+      },
+      makeMemoryEnv({ rows, refs, raw }),
+      deps
+    );
+    assert.equal(roomy.ok, true);
+    assert.deepEqual(roomy.memory.items.map(item => item.authority_class), ["CHAIN_HEAD", "PATH_HEAD"]);
+  } finally {
+    restore();
+  }
+});
+
 test("V7.6.1 legacy_full remains the default and explicit legacy mode preserves package identity", async () => {
   const restore = mockGithubFetchOnce();
   try {
