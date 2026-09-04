@@ -993,15 +993,63 @@ function enforceSizeDiscipline(packageBody, limits, instructionsValue) {
   const effectiveMax = clampNumber(limits.max_package_bytes, DEFAULT_LIMITS.max_package_bytes, 1000, HARD_LIMITS.max_package_bytes);
 
   const measure = body => utf8Bytes(JSON.stringify(body));
+  const items = packageBody.memory.items;
+
+  // V7.6.5: priority-aware size discipline. compileMemory already
+  // authority-orders items CHAIN_HEAD -> PATH_HEAD -> HISTORICAL. The
+  // protected authority floor below is the first CHAIN_HEAD item and the
+  // first PATH_HEAD item actually present -- the guaranteed current-state
+  // evidence "authority-first retrieval" promises regardless of corpus size
+  // or keyword ranking (V7.0/V7.4.1). Never omit canonical instructions.
+  // Trim order: surplus/HISTORICAL memory items first, then optional
+  // specialized skill bodies (never the core.orient boot skill), and only
+  // then -- as a last resort -- the protected floor itself. If even the
+  // structural package plus the protected floor cannot fit, this fails
+  // closed via the exceeded flag rather than silently shipping a package
+  // with degraded/missing current-authority evidence.
+  let protectedChainHead = null;
+  let protectedPathHead = null;
+  for (const item of items) {
+    if (!protectedChainHead && item.authority_class === "CHAIN_HEAD") protectedChainHead = item;
+    if (!protectedPathHead && item.authority_class === "PATH_HEAD") protectedPathHead = item;
+  }
+  const isProtected = item => item === protectedChainHead || item === protectedPathHead;
+
   let packageBytes = measure(packageBody);
   let truncated = false;
 
-  // Never omit canonical instructions -- trim memory (not authority-critical) first.
-  while (packageBytes > effectiveMax && packageBody.memory.items.length > 0) {
-    packageBody.memory.items.pop();
+  // Step 1: trim non-protected memory items (surplus PATH_HEAD + all
+  // HISTORICAL) from lowest priority first, skipping protected floor entries.
+  while (packageBytes > effectiveMax) {
+    let removeAt = -1;
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (!isProtected(items[i])) { removeAt = i; break; }
+    }
+    if (removeAt === -1) break;
+    items.splice(removeAt, 1);
     packageBody.memory.truncated = true;
     truncated = true;
     packageBytes = measure(packageBody);
+  }
+
+  // Step 2: if still over budget, trim optional specialized skill bodies
+  // (never the boot skill core.orient, never canonical instructions),
+  // before ever touching the protected authority floor.
+  const skillsList = packageBody.skills && packageBody.skills.accepted_bundle && Array.isArray(packageBody.skills.accepted_bundle.skills)
+    ? packageBody.skills.accepted_bundle.skills
+    : null;
+  if (skillsList) {
+    while (packageBytes > effectiveMax) {
+      let removeAt = -1;
+      for (let i = skillsList.length - 1; i >= 0; i--) {
+        if (skillsList[i].skill_id !== "core.orient") { removeAt = i; break; }
+      }
+      if (removeAt === -1) break;
+      skillsList.splice(removeAt, 1);
+      packageBody.skills.truncated = true;
+      truncated = true;
+      packageBytes = measure(packageBody);
+    }
   }
 
   const skillsBytes = utf8Bytes(JSON.stringify(packageBody.skills.accepted_bundle));
@@ -1017,6 +1065,11 @@ function enforceSizeDiscipline(packageBody, limits, instructionsValue) {
     truncated
   };
 
+  // Step 3: fail closed. If the protected authority floor plus the
+  // structural package (instructions, authority envelope, coordination,
+  // capabilities) still exceeds budget even after every non-authoritative
+  // reduction above, report exceeded rather than popping CHAIN_HEAD/PATH_HEAD
+  // evidence out of the package.
   return { exceeded: packageBytes > effectiveMax, limits: limitsOut };
 }
 
