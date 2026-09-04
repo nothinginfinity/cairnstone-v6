@@ -640,7 +640,9 @@ jobs:
             .provider_credentials_in_registry == false and
             .external_model_calls == 0 and
             .tools_executed == 0 and
-            .total == 12 and
+            .total == (.tools | length) and
+            .total >= 12 and
+            all(.tools[]; (.risk_class | type) == "string" and (.authorization | type) == "string") and
             any(.tools[]; .tool_id == "cairnstone_health" and .risk_class == "read" and .authorization == "automatic") and
             any(.tools[]; .tool_id == "cairnstone_commit_v2" and .risk_class == "mutation" and .authorization == "human_confirmation")
           ' >/dev/null
