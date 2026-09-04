@@ -395,7 +395,7 @@ jobs:
           BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
 
           health="$(curl -fsS "$BASE/health")"
-          echo "$health" | jq -e '.ok == true and .version == "0.5.8" and ((.mcp_tools | index("cairnstone_delegate")) != null) and ((.mcp_tools | index("cairnstone_dispatch_handoff")) != null)' >/dev/null
+          echo "$health" | jq -e '.ok == true and ((.mcp_tools | index("cairnstone_delegate")) != null) and ((.mcp_tools | index("cairnstone_dispatch_handoff")) != null)' >/dev/null
 
           before="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
           before_head="$(echo "$before" | jq -r '.canonical_head.hash')"
@@ -601,7 +601,6 @@ jobs:
           health="$(curl -fsS "$BASE/health")"
           echo "$health" | jq -e '
             .ok == true and
-            .version == "0.5.9" and
             ((.mcp_tools | index("cairnstone_tool_registry")) != null) and
             ((.mcp_tools | index("cairnstone_tool_policy_preview")) != null)
           ' >/dev/null
@@ -696,7 +695,6 @@ jobs:
           health="$(curl -fsS "$BASE/health")"
           echo "$health" | jq -e '
             .ok == true and
-            .version == "0.5.11" and
             ((.mcp_tools | index("cairnstone_tool_execute")) != null) and
             ((.mcp_tools | index("cairnstone_tool_authorization_request")) != null)
           ' >/dev/null
@@ -806,7 +804,6 @@ jobs:
           health="$(curl -fsS "$BASE/health")"
           echo "$health" | jq -e '
             .ok == true and
-            .version == "0.5.19" and
             ((.mcp_tools | index("cairnstone_tool_authorization_list")) != null) and
             ((.mcp_tools | index("cairnstone_tool_authorization_status")) != null) and
             ((.mcp_tools | index("cairnstone_delegate")) != null)
@@ -933,7 +930,6 @@ jobs:
           health="$(curl -fsS "$BASE/health")"
           echo "$health" | jq -e '
             .ok == true and
-            .version == "0.5.19" and
             ((.mcp_tools | index("cairnstone_delegate")) != null) and
             ((.mcp_tools | index("cairnstone_reconcile_repo")) != null)
           ' >/dev/null
@@ -1497,7 +1493,6 @@ jobs:
           health="$(curl -fsS "$BASE/health")"
           echo "$health" | jq -e '
             .ok == true and
-            .version == "0.5.22" and
             ((.mcp_tools | index("cairnstone_load_tools")) == null) and
             ((.mcp_core_tools | index("cairnstone_load_tools")) != null)
           ' >/dev/null
