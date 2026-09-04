@@ -926,17 +926,18 @@ function selectTaskRelevantPathHeads(resume, task, maxCount = STRUCTURAL_PATH_HE
     .map(entry => entry.item);
 }
 
-async function readMemoryRefWindowText(env, refId) {
+async function readMemoryRefRawText(env, refId) {
   if (!refId) return null;
   const refRow = await env.CAIRNSTONE_DB.prepare("SELECT * FROM refs WHERE ref_id = ?").bind(refId).first();
   if (!refRow) return null;
   const raw = await env.CAIRNSTONE_RAW.get(refRow.raw_key);
   if (!raw) return null;
-  const text = await raw.text();
-  const lines = text.split(/\r?\n/);
-  const start = Number(refRow.line_start);
-  const end = Number(refRow.line_end);
-  return lines.slice(start - 1, end).join("\n");
+  // Every ref for a stone points at the same immutable raw object. The
+  // authority-context tie-breaker must inspect the complete canonical HEAD,
+  // not only whichever ~80-line ref happened to match the task terms. A
+  // multi-ref orientation can name accepted PATH_HEAD authority in one ref
+  // while "next/roadmap" terms match a later ref.
+  return raw.text();
 }
 
 async function findStructuralAuthorityRow(env, { chain, stoneHash, path, matchExpr }) {
@@ -1005,7 +1006,7 @@ async function compileMemory(env, chain, task, resume, limits) {
     let chainHeadContextText = "";
     if (chainHeadRow) {
       structuralRows.push(chainHeadRow);
-      chainHeadContextText = await readMemoryRefWindowText(env, chainHeadRow.ref_id) || "";
+      chainHeadContextText = await readMemoryRefRawText(env, chainHeadRow.ref_id) || "";
       if (currentStateQuery && !chainHeadContextText) {
         return { ok: false, error: "authority_memory_unavailable", detail: "chain_head_ref_raw_missing", chain, stone_hash: chainHeadHash };
       }
