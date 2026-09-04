@@ -864,25 +864,50 @@ const PATH_MATCH_IGNORED_TERMS = new Set([
   "status", "upcoming", "remaining", "active"
 ]);
 
-function selectTaskRelevantPathHeads(resume, task, maxCount = STRUCTURAL_PATH_HEAD_LIMIT) {
+function selectTaskRelevantPathHeads(resume, task, maxCount = STRUCTURAL_PATH_HEAD_LIMIT, authorityContextText = "") {
   if (maxCount <= 0) return [];
   const terms = tokenizeTask(task).filter(term => !PATH_MATCH_IGNORED_TERMS.has(term));
   if (!terms.length) return [];
   const chainHeadHash = resume && resume.canonical_head ? resume.canonical_head.hash : null;
+  const authorityContext = String(authorityContextText || "").toLowerCase();
   return (resume.path_heads || [])
     .filter(item => item && typeof item.path === "string" && item.stone_hash && item.stone_hash !== chainHeadHash)
     .map(item => {
       // Match normalized path tokens, not arbitrary substrings. This prevents
       // short task words such as "in" from matching the letters inside
       // unrelated path tokens such as "operating" and outranking ROADMAP.
-      const pathTerms = new Set(String(item.path).toLowerCase().match(/[a-z0-9]{2,}/g) || []);
+      const normalizedPath = String(item.path).toLowerCase();
+      const pathTerms = new Set(normalizedPath.match(/[a-z0-9]{2,}/g) || []);
       const score = terms.reduce((sum, term) => sum + (pathTerms.has(term) ? 1 : 0), 0);
-      return { item, score };
+      // The current canonical chain HEAD is the strongest deterministic
+      // orientation signal when multiple accepted paths tie on task/path
+      // tokens. Prefer an accepted path it explicitly names; never use
+      // timestamps to decide currentness. Lexical path order is only the
+      // final stable fallback when current orientation is silent.
+      const referencedByChainHead = Boolean(authorityContext && authorityContext.includes(normalizedPath));
+      return { item, score, referencedByChainHead };
     })
     .filter(entry => entry.score > 0)
-    .sort((a, b) => b.score - a.score || a.item.path.localeCompare(b.item.path))
+    .sort((a, b) =>
+      Number(b.referencedByChainHead) - Number(a.referencedByChainHead) ||
+      b.score - a.score ||
+      a.item.path.localeCompare(b.item.path)
+    )
     .slice(0, maxCount)
     .map(entry => entry.item);
+}
+
+async function readMemoryRefWindowText(env, refId) {
+  if (!refId) return null;
+  const refRow = await env.CAIRNSTONE_DB.prepare("SELECT * FROM refs WHERE ref_id = ?").bind(refId).first();
+  if (!refRow) return null;
+  const raw = await env.CAIRNSTONE_RAW.get(refRow.raw_key);
+  if (!raw) return null;
+  const text = await raw.text();
+  const lines = text.split(/\r?\n/);
+  const start = Number(refRow.line_start);
+  const end = Number(refRow.line_end);
+  return lines.slice(start - 1, end).join("\n");
 }
 
 async function findStructuralAuthorityRow(env, { chain, stoneHash, path, matchExpr }) {
@@ -948,13 +973,24 @@ async function compileMemory(env, chain, task, resume, limits) {
       path: resume.canonical_head.path,
       matchExpr
     });
-    if (chainHeadRow) structuralRows.push(chainHeadRow);
-    else if (currentStateQuery) {
+    let chainHeadContextText = "";
+    if (chainHeadRow) {
+      structuralRows.push(chainHeadRow);
+      chainHeadContextText = await readMemoryRefWindowText(env, chainHeadRow.ref_id) || "";
+      if (currentStateQuery && !chainHeadContextText) {
+        return { ok: false, error: "authority_memory_unavailable", detail: "chain_head_ref_raw_missing", chain, stone_hash: chainHeadHash };
+      }
+    } else if (currentStateQuery) {
       return { ok: false, error: "authority_memory_unavailable", detail: "chain_head_ref_missing", chain, stone_hash: chainHeadHash };
     }
 
     const pathSlots = Math.max(0, limits.max_memory_hits - structuralRows.length);
-    const relevantPathHeads = selectTaskRelevantPathHeads(resume, task, Math.min(STRUCTURAL_PATH_HEAD_LIMIT, pathSlots));
+    const relevantPathHeads = selectTaskRelevantPathHeads(
+      resume,
+      task,
+      Math.min(STRUCTURAL_PATH_HEAD_LIMIT, pathSlots),
+      chainHeadContextText
+    );
     for (const pathHead of relevantPathHeads) {
       const pathHeadRow = await findStructuralAuthorityRow(env, {
         chain,
