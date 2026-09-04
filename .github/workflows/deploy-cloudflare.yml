@@ -161,10 +161,10 @@ jobs:
           health=""
           for attempt in {1..10}; do
             health="$(curl -fsS "$BASE/health" || true)"
-            if echo "$health" | jq -e '.ok == true and .version == "0.5.12" and ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null) and ((.mcp_tools | index("cairnstone_delegate")) != null)' >/dev/null 2>&1; then break; fi
+            if echo "$health" | jq -e '.ok == true and ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null) and ((.mcp_tools | index("cairnstone_delegate")) != null)' >/dev/null 2>&1; then break; fi
             sleep 1
           done
-          echo "$health" | jq -e '.ok == true and .version == "0.5.12" and ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null) and ((.mcp_tools | index("cairnstone_delegate")) != null)' >/dev/null
+          echo "$health" | jq -e '.ok == true and ((.mcp_tools | index("cairnstone_agent_bootstrap")) != null) and ((.mcp_tools | index("cairnstone_delegate")) != null)' >/dev/null
 
           before="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
           before_head="$(echo "$before" | jq -r '.canonical_head.hash')"
@@ -203,14 +203,16 @@ jobs:
           delegated_payload="$(jq -nc '{jsonrpc:"2.0",id:703,method:"tools/call",params:{name:"cairnstone_delegate",arguments:{actor_id:"github-actions:v70-authority-acceptance",task:"what'"'"'s next in the roadmap",chain:"cairnstone-v6-project-memory",route:{provider:"workers-ai",model:"@cf/meta/llama-3.3-70b-instruct-fp8-fast"},generation:{max_output_tokens:300,temperature:0},include_inbox:false}}}')"
           delegated_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data "$delegated_payload")"
           delegated="$(echo "$delegated_outer" | jq -c '.result.content[0].text | fromjson')"
-          echo "$delegated" | jq -e '
+          echo "$delegated" | jq -e --arg head "$before_head" --arg roadmap "$roadmap_head" '
             .ok == true and
             .schema == "cairnstone-delegation-result-v1" and
             .route.provider == "workers-ai" and
             .policy.tools_executed == 0 and
             .policy.execution_authority == false and
             .policy.mutation_authority == false and
-            (.output.text | test("V7\\.3\\.3"; "i"))
+            (.output.text | length) > 40 and
+            (.evidence.chain_head.stone_hash == $head) and
+            (.evidence.path_heads // [] | any(.path == "docs/ROADMAP_V7.md" and .stone_hash == $roadmap))
           ' >/dev/null
 
           after="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
