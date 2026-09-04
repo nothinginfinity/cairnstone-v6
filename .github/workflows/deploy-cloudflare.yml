@@ -1133,8 +1133,21 @@ jobs:
           ' >/dev/null
 
           echo "$sparse" | jq -c --argjson legacy "$legacy" '{checkpoint:"semantic_parity",instructions_equal:(.instructions==$legacy.instructions),skills_equal:(.skills==$legacy.skills),memory_equal:(.memory==$legacy.memory),legacy_memory_items:($legacy.memory.items|length),sparse_memory_items:(.memory.items|length),legacy_memory_truncated:$legacy.memory.truncated,sparse_memory_truncated:.memory.truncated,capabilities_equal:(.capabilities==$legacy.capabilities),policy_equal:(.policy==$legacy.policy),chain_head_equal:(.authority.chain_head==$legacy.authority.chain_head)}'
-          CHECKPOINT="parity_instructions"
-          echo "$sparse" | jq -e --argjson legacy "$legacy" '.instructions == $legacy.instructions' >/dev/null
+          # V7.6.4 intentionally allows optimized_sparse to transmit the
+          # accepted runtime brief while legacy_full transmits the full guide.
+          # V7.6.1 parity therefore means identical canonical instruction
+          # authority identity, not identical transmitted representation.
+          CHECKPOINT="parity_instruction_authority"
+          echo "$sparse" | jq -e --argjson legacy "$legacy" '
+            .instructions.path == $legacy.instructions.path and
+            .instructions.stone_hash == $legacy.instructions.stone_hash and
+            .instructions.repo == $legacy.instructions.repo and
+            .instructions.commit_sha == $legacy.instructions.commit_sha and
+            .instructions.content_identity == $legacy.instructions.content_identity and
+            .instructions.truncated == $legacy.instructions.truncated and
+            .instructions.selection.requested_mode == "optimized_sparse" and
+            $legacy.instructions.selection.requested_mode == "legacy_full"
+          ' >/dev/null
           CHECKPOINT="parity_skills"
           echo "$sparse" | jq -e --argjson legacy "$legacy" '.skills == $legacy.skills' >/dev/null
           # Size discipline may trim memory from the larger legacy envelope while
