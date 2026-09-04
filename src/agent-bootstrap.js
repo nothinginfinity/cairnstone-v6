@@ -230,6 +230,7 @@ export async function agentBootstrapFromBody(body, env, deps) {
 
     // ---- Bounded, deterministic memory/evidence retrieval ----
     const memory = await compileMemory(env, chain, task, resume, limits);
+    if (!memory.ok) return memory;
 
     // ---- V7.6.1 authority transmission envelope ----
     // The snapshot/race fingerprint above and below ALWAYS covers the full
@@ -856,16 +857,64 @@ function tokenizeTask(text) {
   return terms;
 }
 
+const STRUCTURAL_PATH_HEAD_LIMIT = 1;
+const PATH_MATCH_IGNORED_TERMS = new Set([
+  ...STOP_WORDS,
+  "what", "current", "currently", "latest", "newest", "now", "next",
+  "status", "upcoming", "remaining", "active"
+]);
+
+function selectTaskRelevantPathHeads(resume, task, maxCount = STRUCTURAL_PATH_HEAD_LIMIT) {
+  if (maxCount <= 0) return [];
+  const terms = tokenizeTask(task).filter(term => !PATH_MATCH_IGNORED_TERMS.has(term));
+  if (!terms.length) return [];
+  const chainHeadHash = resume && resume.canonical_head ? resume.canonical_head.hash : null;
+  return (resume.path_heads || [])
+    .filter(item => item && typeof item.path === "string" && item.stone_hash && item.stone_hash !== chainHeadHash)
+    .map(item => {
+      const path = item.path.toLowerCase();
+      const score = terms.reduce((sum, term) => sum + (path.includes(term) ? 1 : 0), 0);
+      return { item, score };
+    })
+    .filter(entry => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.item.path.localeCompare(b.item.path))
+    .slice(0, maxCount)
+    .map(entry => entry.item);
+}
+
+async function findStructuralAuthorityRow(env, { chain, stoneHash, path, matchExpr }) {
+  if (!stoneHash) return null;
+  if (matchExpr) {
+    try {
+      const sql = `SELECT ref_id, stone_hash, chain, path, preview, bm25(refs_fts, ${FTS_BM25_WEIGHTS}) AS score
+                   FROM refs_fts WHERE refs_fts MATCH ? AND chain = ? AND stone_hash = ?
+                   ORDER BY bm25(refs_fts, ${FTS_BM25_WEIGHTS}) ASC, ref_id ASC LIMIT 1`;
+      const matched = await env.CAIRNSTONE_DB.prepare(sql).bind(matchExpr, chain, stoneHash).first();
+      if (matched) return { ...matched, path: matched.path || path || null, structural_authority_seed: true };
+    } catch {
+      // Fall through to a direct structural ref lookup. BM25 is supplemental,
+      // never the authority-existence gate.
+    }
+  }
+
+  const fallbackSql = `SELECT r.ref_id, r.stone_hash, s.chain_hash AS chain, r.path, r.preview, 0 AS score
+                       FROM refs r JOIN stones s ON s.hash = r.stone_hash
+                       WHERE r.stone_hash = ? AND s.chain_hash = ?
+                       ORDER BY r.line_start ASC, r.ref_id ASC LIMIT 1`;
+  const fallback = await env.CAIRNSTONE_DB.prepare(fallbackSql).bind(stoneHash, chain).first();
+  return fallback ? { ...fallback, path: fallback.path || path || null, structural_authority_seed: true } : null;
+}
+
 async function compileMemory(env, chain, task, resume, limits) {
-  const query = tokenizeTask(task).join(" ");
+  const terms = tokenizeTask(task);
+  const query = terms.join(" ");
+  const matchExpr = terms.map(term => `"${term.replaceAll('"', '""')}"`).join(" OR ");
   const chainHeadHash = resume.canonical_head.hash;
   const pathHeadSet = new Set((resume.path_heads || []).map(item => `${item.path}|${item.stone_hash}`));
   const currentStateQuery = isCurrentStateQuery(task);
 
   let rows = [];
   if (query) {
-    const terms = tokenizeTask(task);
-    const matchExpr = terms.map(term => `"${term.replaceAll('"', '""')}"`).join(" OR ");
     try {
       const sql = `SELECT ref_id, stone_hash, chain, path, preview, bm25(refs_fts, ${FTS_BM25_WEIGHTS}) AS score
                    FROM refs_fts WHERE refs_fts MATCH ? AND chain = ?
@@ -881,7 +930,59 @@ async function compileMemory(env, chain, task, resume, limits) {
     }
   }
 
-  const classifiedRows = rows.map((row, index) => ({
+  // V7.6.5: BM25 may rank supplemental evidence, but it may not decide
+  // whether current accepted authority exists in model-visible memory. When
+  // memory is enabled, seed the accepted chain HEAD and one deterministic,
+  // task-relevant accepted path HEAD directly from their immutable stone refs
+  // before merging the bounded BM25 candidate window. Current-state queries
+  // fail closed if either required structural seed cannot be read.
+  const structuralEnabled = Boolean(query && limits.max_memory_hits > 0 && limits.max_memory_bytes > 0);
+  const structuralRows = [];
+  if (structuralEnabled) {
+    const chainHeadRow = await findStructuralAuthorityRow(env, {
+      chain,
+      stoneHash: chainHeadHash,
+      path: resume.canonical_head.path,
+      matchExpr
+    });
+    if (chainHeadRow) structuralRows.push(chainHeadRow);
+    else if (currentStateQuery) {
+      return { ok: false, error: "authority_memory_unavailable", detail: "chain_head_ref_missing", chain, stone_hash: chainHeadHash };
+    }
+
+    const pathSlots = Math.max(0, limits.max_memory_hits - structuralRows.length);
+    const relevantPathHeads = selectTaskRelevantPathHeads(resume, task, Math.min(STRUCTURAL_PATH_HEAD_LIMIT, pathSlots));
+    for (const pathHead of relevantPathHeads) {
+      const pathHeadRow = await findStructuralAuthorityRow(env, {
+        chain,
+        stoneHash: pathHead.stone_hash,
+        path: pathHead.path,
+        matchExpr
+      });
+      if (pathHeadRow) structuralRows.push(pathHeadRow);
+      else if (currentStateQuery) {
+        return {
+          ok: false,
+          error: "authority_memory_unavailable",
+          detail: "task_path_head_ref_missing",
+          chain,
+          path: pathHead.path,
+          stone_hash: pathHead.stone_hash
+        };
+      }
+    }
+  }
+
+  const mergedRows = [];
+  const mergedSeen = new Set();
+  for (const row of [...structuralRows, ...rows]) {
+    const key = `${row.stone_hash}|${row.ref_id}`;
+    if (mergedSeen.has(key)) continue;
+    mergedSeen.add(key);
+    mergedRows.push(row);
+  }
+
+  const classifiedRows = mergedRows.map((row, index) => ({
     ...row,
     authority_class: row.stone_hash === chainHeadHash
       ? "CHAIN_HEAD"
@@ -892,6 +993,7 @@ async function compileMemory(env, chain, task, resume, limits) {
   }));
   classifiedRows.sort((a, b) =>
     authorityRank(a.authority_class) - authorityRank(b.authority_class) ||
+    Number(Boolean(b.structural_authority_seed)) - Number(Boolean(a.structural_authority_seed)) ||
     a.retrieval_order - b.retrieval_order
   );
 
@@ -921,9 +1023,19 @@ async function compileMemory(env, chain, task, resume, limits) {
     seen.add(key);
 
     const refRow = await env.CAIRNSTONE_DB.prepare("SELECT * FROM refs WHERE ref_id = ?").bind(row.ref_id).first();
-    if (!refRow) continue;
+    if (!refRow) {
+      if (currentStateQuery && row.structural_authority_seed) {
+        return { ok: false, error: "authority_memory_unavailable", detail: "structural_ref_metadata_missing", ref_id: row.ref_id };
+      }
+      continue;
+    }
     const raw = await env.CAIRNSTONE_RAW.get(refRow.raw_key);
-    if (!raw) continue;
+    if (!raw) {
+      if (currentStateQuery && row.structural_authority_seed) {
+        return { ok: false, error: "authority_memory_unavailable", detail: "structural_ref_raw_missing", ref_id: row.ref_id };
+      }
+      continue;
+    }
     const text = await raw.text();
     const lines = text.split(/\r?\n/);
     const start = Number(refRow.line_start);
@@ -931,7 +1043,17 @@ async function compileMemory(env, chain, task, resume, limits) {
     const windowText = lines.slice(start - 1, end).join("\n");
 
     const bytes = utf8Bytes(windowText);
-    if (usedBytes + bytes > limits.max_memory_bytes && items.length > 0) break;
+    if (usedBytes + bytes > limits.max_memory_bytes && items.length > 0) {
+      if (currentStateQuery && row.structural_authority_seed) {
+        return {
+          ok: false,
+          error: "authority_memory_limit_exceeded",
+          detail: "structural_authority_floor_exceeds_memory_budget",
+          effective_max_memory_bytes: limits.max_memory_bytes
+        };
+      }
+      break;
+    }
     usedBytes += bytes;
 
     items.push({
@@ -955,7 +1077,15 @@ async function compileMemory(env, chain, task, resume, limits) {
         ordering: ["CHAIN_HEAD", "PATH_HEAD", "HISTORICAL"],
         current_state_query: currentStateQuery,
         same_path_historical_suppression: currentStateQuery,
-        historical_same_path_suppressed: historicalSamePathSuppressed
+        historical_same_path_suppressed: historicalSamePathSuppressed,
+        structural_authority_guarantee: {
+          enabled: structuralEnabled,
+          chain_head_seeded: structuralRows.some(row => row.stone_hash === chainHeadHash),
+          task_path_heads_seeded: structuralRows
+            .filter(row => row.stone_hash !== chainHeadHash && pathHeadSet.has(`${row.path}|${row.stone_hash}`))
+            .map(row => row.path),
+          bm25_supplemental_only: structuralEnabled
+        }
       },
       items,
       truncated: rankedRows.length > items.length
