@@ -864,12 +864,40 @@ const PATH_MATCH_IGNORED_TERMS = new Set([
   "status", "upcoming", "remaining", "active"
 ]);
 
+function scoreAuthorityContextPathReference(path, authorityContextText) {
+  const normalizedPath = String(path || "").toLowerCase();
+  const context = String(authorityContextText || "").toLowerCase();
+  if (!normalizedPath || !context) return 0;
+
+  let best = 0;
+  let from = 0;
+  while (from < context.length) {
+    const index = context.indexOf(normalizedPath, from);
+    if (index < 0) break;
+    const before = context.slice(Math.max(0, index - 180), index);
+    const after = context.slice(index + normalizedPath.length, Math.min(context.length, index + normalizedPath.length + 180));
+    const window = `${before} ${normalizedPath} ${after}`;
+    let score = 1;
+    // Current orientation stones commonly identify accepted file authority as
+    // "<path> path HEAD". Reward that structural marker much more strongly
+    // than a bare mention elsewhere in the same HEAD.
+    if (/^\s*path\s+head\b/.test(after)) score += 6;
+    if (/accepted\s+authority|accepted\s+path|current\s+accepted/.test(window)) score += 3;
+    if (/\bcurrent\b|\bnext\b|\bcomplete\b|\blive-verified\b/.test(window)) score += 1;
+    // A current chain HEAD can also mention stale or out-of-scope files while
+    // explaining drift. Those references must not tie a real authority entry.
+    if (/\bhistorical\b|\bunrelated\b|\bdrift\b|\bstale\b|\bsuperseded\b/.test(window)) score -= 4;
+    best = Math.max(best, score);
+    from = index + normalizedPath.length;
+  }
+  return best;
+}
+
 function selectTaskRelevantPathHeads(resume, task, maxCount = STRUCTURAL_PATH_HEAD_LIMIT, authorityContextText = "") {
   if (maxCount <= 0) return [];
   const terms = tokenizeTask(task).filter(term => !PATH_MATCH_IGNORED_TERMS.has(term));
   if (!terms.length) return [];
   const chainHeadHash = resume && resume.canonical_head ? resume.canonical_head.hash : null;
-  const authorityContext = String(authorityContextText || "").toLowerCase();
   return (resume.path_heads || [])
     .filter(item => item && typeof item.path === "string" && item.stone_hash && item.stone_hash !== chainHeadHash)
     .map(item => {
@@ -881,15 +909,16 @@ function selectTaskRelevantPathHeads(resume, task, maxCount = STRUCTURAL_PATH_HE
       const score = terms.reduce((sum, term) => sum + (pathTerms.has(term) ? 1 : 0), 0);
       // The current canonical chain HEAD is the strongest deterministic
       // orientation signal when multiple accepted paths tie on task/path
-      // tokens. Prefer an accepted path it explicitly names; never use
+      // tokens. Distinguish accepted "path HEAD" references from incidental
+      // historical/drift mentions in that same orientation stone. Never use
       // timestamps to decide currentness. Lexical path order is only the
       // final stable fallback when current orientation is silent.
-      const referencedByChainHead = Boolean(authorityContext && authorityContext.includes(normalizedPath));
-      return { item, score, referencedByChainHead };
+      const authorityReferenceScore = scoreAuthorityContextPathReference(item.path, authorityContextText);
+      return { item, score, authorityReferenceScore };
     })
     .filter(entry => entry.score > 0)
     .sort((a, b) =>
-      Number(b.referencedByChainHead) - Number(a.referencedByChainHead) ||
+      b.authorityReferenceScore - a.authorityReferenceScore ||
       b.score - a.score ||
       a.item.path.localeCompare(b.item.path)
     )
