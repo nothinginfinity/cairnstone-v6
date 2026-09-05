@@ -77,8 +77,14 @@ import {
   validateNativeHydrationSelection,
   LOAD_TOOLS_TOOL_DEFINITION
 } from "./mcp-session.js";
+import {
+  vaultCatalogFromBody,
+  resolveScopeFromBody,
+  VAULT_CATALOG_TOOL_DEFINITION,
+  SCOPE_RESOLVE_TOOL_DEFINITION
+} from "./vault-catalog.js";
 
-const VERSION = "0.5.24";
+const VERSION = "0.5.25";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -845,6 +851,8 @@ async function callMcpTool(name, args, env) {
   });
   if (name === "cairnstone_tool_search") return toolSearchFromBody(args, env, { mcpToolDefinitions: mcpTools() });
   if (name === "cairnstone_get_tool_contract") return toolContractFromBody(args, env, { mcpToolDefinitions: mcpTools() });
+  if (name === "cairnstone_vault_catalog") return vaultCatalogFromBody(args, env);
+  if (name === "cairnstone_resolve_scope") return resolveScopeFromBody(args, env);
   return { ok: false, error: "unknown_tool", name };
 }
 
@@ -1311,7 +1319,9 @@ function mcpTools() {
     PAID_AGENT_X402_QUOTE_PREVIEW_TOOL_DEFINITION,
     TOOL_SEARCH_TOOL_DEFINITION,
     TOOL_CONTRACT_TOOL_DEFINITION,
-    LOAD_TOOLS_TOOL_DEFINITION
+    LOAD_TOOLS_TOOL_DEFINITION,
+    VAULT_CATALOG_TOOL_DEFINITION,
+    SCOPE_RESOLVE_TOOL_DEFINITION
   ];
 }
 
