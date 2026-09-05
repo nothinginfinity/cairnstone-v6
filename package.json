@@ -12,7 +12,7 @@
     "test": "node --test",
     "check:v733": "node --test test/tool-authorization.test.js",
     "lint:skills": "node scripts/lint-skills.mjs",
-    "check": "node --check src/index.js && node --check src/v5-import.js && node --check src/correspondence.js && node --check src/ask.js && node --check src/skills.js && node --check src/skill-agent.js && node --check src/agent-bootstrap.js && node --check src/model-router.js && node --check src/tool-authorization.js && node --check scripts/lint-skills.mjs && npm run lint:skills && npm run check:v733 && node --test"
+    "check": "node --check src/index.js && node --check src/v5-import.js && node --check src/correspondence.js && node --check src/ask.js && node --check src/skills.js && node --check src/skill-agent.js && node --check src/agent-bootstrap.js && node --check src/model-router.js && node --check src/tool-authorization.js && node --check src/vault-catalog.js && node --check scripts/lint-skills.mjs && npm run lint:skills && npm run check:v733 && node --test"
   },
   "dependencies": {
     "@babel/parser": "^8.0.0"
