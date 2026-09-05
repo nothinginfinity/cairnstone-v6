@@ -390,26 +390,39 @@ function roundScopeScore(value) {
     : null;
 }
 
-async function queryScopeChainCandidates(env, { chain, query, matchExpr, limit }) {
+async function queryScopeChainCandidates(env, { chain, query, matchExpr, limit, repos = [] }) {
+  const repoFilters = dedupSortStrings(repos);
   try {
-    const sql = `SELECT refs_fts.ref_id AS ref_id, refs_fts.stone_hash AS stone_hash, refs_fts.chain AS chain,
+    let sql = `SELECT refs_fts.ref_id AS ref_id, refs_fts.stone_hash AS stone_hash, refs_fts.chain AS chain,
       refs_fts.path AS path, refs_fts.preview AS preview,
       bm25(refs_fts, ${SCOPE_FTS_BM25_WEIGHTS}) AS score,
       s.repo AS repo, s.commit_sha AS commit_sha
       FROM refs_fts LEFT JOIN stones s ON s.hash = refs_fts.stone_hash
-      WHERE refs_fts MATCH ? AND refs_fts.chain = ?
-      ORDER BY bm25(refs_fts, ${SCOPE_FTS_BM25_WEIGHTS}) ASC, refs_fts.ref_id ASC LIMIT ?`;
-    const rows = await env.CAIRNSTONE_DB.prepare(sql).bind(matchExpr, chain, limit).all();
+      WHERE refs_fts MATCH ? AND refs_fts.chain = ?`;
+    const binds = [matchExpr, chain];
+    if (repoFilters.length) {
+      sql += ` AND s.repo IN (${repoFilters.map(() => "?").join(",")})`;
+      binds.push(...repoFilters);
+    }
+    sql += ` ORDER BY bm25(refs_fts, ${SCOPE_FTS_BM25_WEIGHTS}) ASC, refs_fts.ref_id ASC LIMIT ?`;
+    binds.push(limit);
+    const rows = await env.CAIRNSTONE_DB.prepare(sql).bind(...binds).all();
     return { mode: "fts", rows: rows.results || [] };
   } catch {
     const like = `%${String(query).toLowerCase().replaceAll("%", "").replaceAll("_", "")}%`;
-    const sql = `SELECT r.ref_id AS ref_id, r.stone_hash AS stone_hash, s.chain_hash AS chain,
+    let sql = `SELECT r.ref_id AS ref_id, r.stone_hash AS stone_hash, s.chain_hash AS chain,
       r.path AS path, r.preview AS preview, 0 AS score,
       s.repo AS repo, s.commit_sha AS commit_sha
       FROM refs r LEFT JOIN stones s ON s.hash = r.stone_hash
-      WHERE (LOWER(r.keywords) LIKE ? OR LOWER(r.preview) LIKE ?) AND s.chain_hash = ?
-      ORDER BY r.ref_id ASC LIMIT ?`;
-    const rows = await env.CAIRNSTONE_DB.prepare(sql).bind(like, like, chain, limit).all();
+      WHERE (LOWER(r.keywords) LIKE ? OR LOWER(r.preview) LIKE ?) AND s.chain_hash = ?`;
+    const binds = [like, like, chain];
+    if (repoFilters.length) {
+      sql += ` AND s.repo IN (${repoFilters.map(() => "?").join(",")})`;
+      binds.push(...repoFilters);
+    }
+    sql += " ORDER BY r.ref_id ASC LIMIT ?";
+    binds.push(limit);
+    const rows = await env.CAIRNSTONE_DB.prepare(sql).bind(...binds).all();
     return { mode: "like_fallback", rows: rows.results || [] };
   }
 }
@@ -482,8 +495,17 @@ export async function findScopeFromBody(body, env) {
   const built = buildScopeMatchExpr(query, matchMode);
   if (!built.ok) return built;
 
-  const scopeSnapshot = await resolveScopeFromBody(args.scope, env);
+  const normalizedScope = normalizeScopeRequest(args.scope);
+  if (!normalizedScope.ok) return { ...normalizedScope, stage: "scope_resolution" };
+  const scopeSnapshot = await resolveScopeFromBody(normalizedScope, env);
   if (!scopeSnapshot.ok) return { ...scopeSnapshot, stage: "scope_resolution" };
+
+  const explicitChains = new Set(normalizedScope.chains);
+  const repoFiltersForChain = chain => {
+    if (normalizedScope.mode === "repo") return normalizedScope.repos;
+    if (normalizedScope.mode === "multi" && !explicitChains.has(chain)) return normalizedScope.repos;
+    return [];
+  };
 
   const topK = clampScopeInteger(args.top_k, DEFAULT_SCOPE_TOP_K, 1, MAX_SCOPE_TOP_K);
   const requestedPerChain = clampScopeInteger(args.per_chain_k, DEFAULT_PER_CHAIN_CANDIDATES, 1, MAX_PER_CHAIN_CANDIDATES);
@@ -503,7 +525,8 @@ export async function findScopeFromBody(body, env) {
       chain,
       query,
       matchExpr: built.match_expr,
-      limit: effectivePerChain
+      limit: effectivePerChain,
+      repos: repoFiltersForChain(chain)
     })));
     for (let index = 0; index < batch.length; index += 1) {
       const chain = batch[index];
@@ -511,6 +534,7 @@ export async function findScopeFromBody(body, env) {
       chainDiagnostics.push({
         chain,
         search_mode: result.mode,
+        repo_filter: repoFiltersForChain(chain),
         candidates: result.rows.length,
         candidate_limit_reached: result.rows.length >= effectivePerChain
       });
