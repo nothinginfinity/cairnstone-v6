@@ -472,6 +472,89 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       additionalProperties: false
     }
   }),
+  // V7.7.0/V7.7.1 Scope primitives. These are accepted-state read surfaces:
+  // catalog/scope/search may observe chain_heads/path_heads/stones but never
+  // move them. Registering them read+automatic makes the same runtime
+  // capability reachable through the portable /mcp/core Tool Vault path;
+  // schema copies below are cross-checked against live mcpTools() definitions
+  // by cairnstone_get_tool_contract and fail closed on any disagreement.
+  Object.freeze({
+    tool_id: "cairnstone_vault_catalog",
+    connector: "cairnstone",
+    handler: "cairnstone_vault_catalog",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Discover the bounded CairnStone chain catalog from durable accepted-state provenance.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 200 },
+        after_chain: { type: "string" },
+        q: { type: "string" },
+        repo: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_resolve_scope",
+    connector: "cairnstone",
+    handler: "cairnstone_resolve_scope",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Resolve cairnstone-scope-v1 selectors to an exact accepted chain-HEAD snapshot.",
+    input_schema: {
+      type: "object",
+      properties: {
+        schema: { type: "string" },
+        mode: { type: "string", enum: ["single_chain", "repo", "multi", "vault"] },
+        repos: { type: "array", items: { type: "string" } },
+        chains: { type: "array", items: { type: "string" } },
+        max_chains: { type: "integer", minimum: 1, maximum: 500 }
+      },
+      required: ["mode"],
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_find_scope",
+    connector: "cairnstone",
+    handler: "cairnstone_find_scope",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Search one resolved CairnStone Scope with bounded fair multi-chain retrieval and authority-race checks.",
+    input_schema: {
+      type: "object",
+      required: ["query", "scope"],
+      properties: {
+        query: { type: "string" },
+        scope: {
+          type: "object",
+          required: ["mode"],
+          properties: {
+            schema: { type: "string" },
+            mode: { type: "string", enum: ["single_chain", "repo", "multi", "vault"] },
+            repos: { type: "array", items: { type: "string" } },
+            chains: { type: "array", items: { type: "string" } },
+            max_chains: { type: "integer", minimum: 1, maximum: 500 }
+          },
+          additionalProperties: false
+        },
+        top_k: { type: "integer", minimum: 1, maximum: 50 },
+        per_chain_k: { type: "integer", minimum: 1, maximum: 25 },
+        max_total_candidates: { type: "integer", minimum: 1, maximum: 500 },
+        match_mode: { type: "string", enum: ["any", "all", "phrase"] },
+        expand: { type: "boolean" },
+        max_expansions: { type: "integer", minimum: 0, maximum: 10 },
+        max_expanded_bytes: { type: "integer", minimum: 1, maximum: 100000 },
+        context_lines: { type: "integer", minimum: 0, maximum: 200 }
+      },
+      additionalProperties: false
+    }
+  }),
   // V7.6.2a Tool Vault discovery/hydration primitives (decision stone
   // 3383c36b93aeb8b5f2a6fb03261d7290bc39bcb84b8950da3de276bf32fa1e5f).
   // Pure discovery/hydration operations over the live mcpTools() catalog;
