@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { vaultCatalogFromBody, resolveScopeFromBody } from "../src/vault-catalog.js";
+import { vaultCatalogFromBody, resolveScopeFromBody, findScopeFromBody } from "../src/vault-catalog.js";
 
 // In-memory fixture: mirrors chain_heads / stones / path_heads schema.
 function makeEnv(fixture) {
@@ -72,6 +72,104 @@ function makeEnv(fixture) {
             return null;
           }
         };
+      }
+    }
+  };
+}
+
+function makeSearchEnv(fixture) {
+  const chainHeads = fixture.chainHeads || [];
+  const stones = fixture.stones || [];
+  const pathHeads = fixture.pathHeads || [];
+  const refs = fixture.refs || [];
+  const rawByKey = fixture.rawByKey || {};
+  const headMutationSchedule = fixture.headMutationSchedule || null;
+  const headReadCounts = new Map();
+
+  function stoneFor(hash) {
+    return stones.find(stone => stone.hash === hash) || null;
+  }
+
+  return {
+    CAIRNSTONE_DB: {
+      prepare(sql) {
+        let bound = [];
+        return {
+          bind(...args) { bound = args; return this; },
+          async all() {
+            if (sql.includes("SELECT chain, head_hash, updated_at FROM chain_heads")) {
+              return { results: chainHeads.map(row => ({ ...row })) };
+            }
+            if (sql.includes("SELECT DISTINCT chain_hash AS chain FROM stones WHERE chain_hash IS NOT NULL")) {
+              return { results: [...new Set(stones.map(s => s.chain_hash).filter(Boolean))].sort().map(chain => ({ chain })) };
+            }
+            if (sql.includes("SELECT DISTINCT chain_hash AS chain FROM stones WHERE repo = ?")) {
+              const repo = bound[0];
+              return {
+                results: [...new Set(stones.filter(s => s.repo === repo).map(s => s.chain_hash).filter(Boolean))]
+                  .sort()
+                  .map(chain => ({ chain }))
+              };
+            }
+            if (sql.includes("FROM refs_fts LEFT JOIN stones s")) {
+              const chain = bound[1];
+              const limit = Number(bound[2]);
+              const rows = refs
+                .filter(ref => ref.chain === chain)
+                .sort((a, b) => a.score - b.score || a.ref_id.localeCompare(b.ref_id))
+                .slice(0, limit)
+                .map(ref => {
+                  const stone = stoneFor(ref.stone_hash);
+                  return {
+                    ref_id: ref.ref_id,
+                    stone_hash: ref.stone_hash,
+                    chain: ref.chain,
+                    path: ref.path,
+                    preview: ref.preview,
+                    score: ref.score,
+                    repo: stone?.repo || null,
+                    commit_sha: stone?.commit_sha || null
+                  };
+                });
+              return { results: rows };
+            }
+            return { results: [] };
+          },
+          async first() {
+            if (sql.includes("SELECT head_hash FROM chain_heads WHERE chain = ?")) {
+              const chain = bound[0];
+              if (headMutationSchedule && headMutationSchedule.chain === chain) {
+                const count = headReadCounts.get(chain) || 0;
+                headReadCounts.set(chain, count + 1);
+                const sequence = headMutationSchedule.sequence;
+                return { head_hash: sequence[Math.min(count, sequence.length - 1)] };
+              }
+              const row = chainHeads.find(item => item.chain === chain);
+              return row ? { head_hash: row.head_hash } : null;
+            }
+            if (sql.includes("SELECT hash FROM stones WHERE chain_hash = ? LIMIT 1")) {
+              const chain = bound[0];
+              const row = stones.find(item => item.chain_hash === chain);
+              return row ? { hash: row.hash } : null;
+            }
+            if (sql.includes("SELECT head_hash FROM path_heads WHERE chain = ? AND path = ?")) {
+              const [chain, path] = bound;
+              const row = pathHeads.find(item => item.chain === chain && item.path === path);
+              return row ? { head_hash: row.head_hash } : null;
+            }
+            if (sql.includes("SELECT raw_key,line_start,line_end FROM refs WHERE ref_id = ?")) {
+              const ref = refs.find(item => item.ref_id === bound[0]);
+              return ref ? { raw_key: ref.raw_key, line_start: ref.line_start, line_end: ref.line_end } : null;
+            }
+            return null;
+          }
+        };
+      }
+    },
+    CAIRNSTONE_RAW: {
+      async get(key) {
+        if (!Object.prototype.hasOwnProperty.call(rawByKey, key)) return null;
+        return { async text() { return rawByKey[key]; } };
       }
     }
   };
@@ -245,4 +343,164 @@ test("resolve_scope: no read-only operation mutates chain_heads/path_heads/stone
   // throw here, since no mutation method exists on the mock at all.
   await resolveScopeFromBody({ mode: "vault" }, env);
   await vaultCatalogFromBody({}, env);
+});
+
+const SEARCH_FIXTURE = {
+  chainHeads: [
+    { chain: "alpha", head_hash: "a-head", updated_at: "2026-09-05T00:00:00Z" },
+    { chain: "beta", head_hash: "b-head", updated_at: "2026-09-05T00:00:00Z" },
+    { chain: "gamma", head_hash: "g-head", updated_at: "2026-09-05T00:00:00Z" }
+  ],
+  stones: [
+    { hash: "a-head", chain_hash: "alpha", repo: "org/a", commit_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { hash: "a-path", chain_hash: "alpha", repo: "org/a", commit_sha: "abababababababababababababababababababab" },
+    { hash: "a-hist", chain_hash: "alpha", repo: "org/a", commit_sha: "acacacacacacacacacacacacacacacacacacacac" },
+    { hash: "b-head", chain_hash: "beta", repo: "org/b", commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+    { hash: "g-head", chain_hash: "gamma", repo: "org/g", commit_sha: "cccccccccccccccccccccccccccccccccccccccc" }
+  ],
+  pathHeads: [
+    { chain: "alpha", path: "src/current.js", head_hash: "a-path" }
+  ],
+  refs: [
+    { ref_id: "ref-a-head", stone_hash: "a-head", chain: "alpha", path: "README.md", preview: "shared alpha head", score: -9, raw_key: "raw-a-head", line_start: 1, line_end: 2 },
+    { ref_id: "ref-a-path", stone_hash: "a-path", chain: "alpha", path: "src/current.js", preview: "shared alpha path", score: -8, raw_key: "raw-a-path", line_start: 1, line_end: 1 },
+    { ref_id: "ref-a-hist", stone_hash: "a-hist", chain: "alpha", path: "src/old.js", preview: "shared alpha historical", score: -7, raw_key: "raw-a-hist", line_start: 1, line_end: 1 },
+    { ref_id: "ref-b-head", stone_hash: "b-head", chain: "beta", path: "README.md", preview: "shared beta head", score: -5, raw_key: "raw-b-head", line_start: 1, line_end: 1 },
+    { ref_id: "ref-g-head", stone_hash: "g-head", chain: "gamma", path: "README.md", preview: "shared gamma head", score: -4, raw_key: "raw-g-head", line_start: 1, line_end: 1 }
+  ],
+  rawByKey: {
+    "raw-a-head": "alpha first line\nalpha second line with enough bytes for clipping behavior",
+    "raw-a-path": "alpha path accepted content",
+    "raw-a-hist": "alpha historical content",
+    "raw-b-head": "beta head content",
+    "raw-g-head": "gamma head content"
+  }
+};
+
+test("V7.7.1 find_scope: single-chain search preserves authority/provenance and historical evidence", async () => {
+  const env = makeSearchEnv(SEARCH_FIXTURE);
+  const result = await findScopeFromBody({
+    query: "shared",
+    scope: { mode: "single_chain", chains: ["alpha"] },
+    top_k: 3,
+    per_chain_k: 3
+  }, env);
+  assert.equal(result.ok, true);
+  assert.equal(result.schema, "cairnstone-scope-search-v1");
+  assert.deepEqual(result.matches.map(item => item.chain), ["alpha", "alpha", "alpha"]);
+  assert.deepEqual(result.matches.map(item => item.authority_class), ["CHAIN_HEAD", "PATH_HEAD", "HISTORICAL"]);
+  assert.equal(result.matches[0].repo, "org/a");
+  assert.equal(result.matches[0].commit_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  assert.equal(result.scope_snapshot.chains[0].head_hash, "a-head");
+  assert.equal(result.read_only.chain_heads_written, false);
+  assert.equal(result.read_only.path_heads_written, false);
+});
+
+test("V7.7.1 find_scope: repo scope does not leak another repository", async () => {
+  const env = makeSearchEnv(SEARCH_FIXTURE);
+  const result = await findScopeFromBody({
+    query: "shared",
+    scope: { mode: "repo", repos: ["org/a"] },
+    top_k: 10,
+    per_chain_k: 5
+  }, env);
+  assert.equal(result.ok, true);
+  assert.ok(result.matches.length > 0);
+  assert.ok(result.matches.every(item => item.repo === "org/a"));
+  assert.ok(!result.matches.some(item => item.chain === "beta"));
+});
+
+test("V7.7.1 find_scope: multi-chain fair merge returns a smaller chain before a large chain's second candidate", async () => {
+  const env = makeSearchEnv(SEARCH_FIXTURE);
+  const result = await findScopeFromBody({
+    query: "shared",
+    scope: { mode: "multi", chains: ["alpha", "beta"] },
+    top_k: 2,
+    per_chain_k: 3
+  }, env);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.matches.map(item => item.chain), ["alpha", "beta"]);
+  assert.deepEqual(result.matches.map(item => item.ranking.chain_rank), [1, 1]);
+  assert.equal(result.coverage.matched_chain_count, 2);
+});
+
+test("V7.7.1 find_scope: identical selectors and heads produce deterministic merged matches", async () => {
+  const env = makeSearchEnv(SEARCH_FIXTURE);
+  const request = {
+    query: "shared",
+    scope: { mode: "multi", chains: ["beta", "alpha"] },
+    top_k: 4,
+    per_chain_k: 3
+  };
+  const first = await findScopeFromBody(request, env);
+  const second = await findScopeFromBody(request, env);
+  assert.equal(first.scope_snapshot.scope_id, second.scope_snapshot.scope_id);
+  assert.equal(first.scope_snapshot.authority_digest, second.scope_snapshot.authority_digest);
+  assert.deepEqual(first.matches, second.matches);
+});
+
+test("V7.7.1 find_scope: vault candidate budget reports skipped coverage instead of implying exhaustive results", async () => {
+  const env = makeSearchEnv(SEARCH_FIXTURE);
+  const result = await findScopeFromBody({
+    query: "shared",
+    scope: { mode: "vault", max_chains: 3 },
+    top_k: 5,
+    per_chain_k: 5,
+    max_total_candidates: 2
+  }, env);
+  assert.equal(result.ok, true);
+  assert.equal(result.coverage.resolved_chain_count, 3);
+  assert.equal(result.coverage.queried_chain_count, 2);
+  assert.deepEqual(result.coverage.skipped_chains, ["gamma"]);
+  assert.equal(result.coverage.complete, false);
+});
+
+test("V7.7.1 find_scope: expanded bytes are strictly capped", async () => {
+  const env = makeSearchEnv(SEARCH_FIXTURE);
+  const result = await findScopeFromBody({
+    query: "shared",
+    scope: { mode: "single_chain", chains: ["alpha"] },
+    top_k: 1,
+    per_chain_k: 1,
+    expand: true,
+    max_expansions: 1,
+    max_expanded_bytes: 20,
+    context_lines: 0
+  }, env);
+  assert.equal(result.ok, true);
+  assert.equal(result.expanded.length, 1);
+  assert.ok(result.expanded[0].bytes <= 20);
+  assert.ok(result.coverage.expansion_bytes <= 20);
+  assert.equal(result.coverage.expansion_truncated, true);
+});
+
+test("V7.7.1 find_scope: authority change after retrieval fails closed", async () => {
+  const env = makeSearchEnv({
+    ...SEARCH_FIXTURE,
+    headMutationSchedule: {
+      chain: "alpha",
+      sequence: ["a-head", "a-head", "a-head", "a-head-changed"]
+    }
+  });
+  const result = await findScopeFromBody({
+    query: "shared",
+    scope: { mode: "single_chain", chains: ["alpha"] },
+    top_k: 1,
+    per_chain_k: 1
+  }, env);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "scope_compile_race");
+  assert.equal(result.phase, "post_search");
+  assert.equal(result.first_head_hash, "a-head");
+  assert.equal(result.second_head_hash, "a-head-changed");
+});
+
+test("V7.7.1 find_scope: read-only fixture has no write methods and still completes", async () => {
+  const env = makeSearchEnv(SEARCH_FIXTURE);
+  const result = await findScopeFromBody({
+    query: "shared",
+    scope: { mode: "multi", chains: ["alpha", "beta"] },
+    top_k: 2
+  }, env);
+  assert.equal(result.ok, true);
 });
