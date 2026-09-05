@@ -1,0 +1,54 @@
+{
+  "worker": "afo-gitzip",
+  "version": "0.2.2-unified",
+  "action": "apply_repo_text_patch",
+  "target": {
+    "owner": "nothinginfinity",
+    "repo": "cairnstone-v6",
+    "branch": "main",
+    "path": ".github/workflows/deploy-cloudflare.yml"
+  },
+  "source_sha": "b7cc1ac8e321ddd9d8bc09d45b7001bbd64d122d",
+  "result_sha": "f9ab1e48880f9f92f1d2deebe803039f51ca5edd",
+  "commit_sha": "508c077cf6f60eaa94a75f37c9e1f432e7391f82",
+  "diff": {
+    "before_length": 117655,
+    "after_length": 117723,
+    "delta": 68,
+    "common_prefix": 53964,
+    "common_suffix": 59561,
+    "before_fingerprint": "3830f2a4",
+    "after_fingerprint": "f42f2c5c"
+  },
+  "applied": [
+    {
+      "label": "op_0",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    },
+    {
+      "label": "op_1",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    }
+  ],
+  "verification": {
+    "ok": true,
+    "results": [
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      }
+    ],
+    "failed": []
+  },
+  "timestamp": "2026-09-05T00:29:20.520Z"
+}
