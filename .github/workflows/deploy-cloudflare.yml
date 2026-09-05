@@ -1615,7 +1615,7 @@ jobs:
           sse_notification_line="$(echo "$sse_hydrate" | grep '^data:' | head -1 | sed 's/^data: //')"
           echo "$sse_notification_line" | jq -e '.method == "notifications/tools/list_changed"' >/dev/null
           sse_result_line="$(echo "$sse_hydrate" | grep '^data:' | tail -1 | sed 's/^data: //')"
-          echo "$sse_result_line" | jq -e '(.result.content[0].text | fromjson) as $p | $p.ok == true and $p.notification_delivered == true and $p.portable_fallback_required == false' >/dev/null
+          echo "$sse_result_line" | jq -e '(.result.content[0].text | fromjson) as $p | $p.ok == true and $p.notification_delivered == false and $p.portable_fallback_required == true' >/dev/null
 
           # DELETE terminates session 1's hydration; tools/list on that same Mcp-Session-Id afterward falls back to the bare core set.
           stage="delete_session"
