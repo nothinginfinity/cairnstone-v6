@@ -428,7 +428,7 @@ Acceptance should prove at least one real paid subagent call end-to-end: x402 pa
 
 ## V7.6 — Context Efficiency & MCP Surface Optimization
 
-Status: **IN PROGRESS — V7.6.0 profiler, V7.6.2a portable Tool Vault, V7.6.2b native-hydration implementation, V7.6.1 sparse authority, V7.6.3 compact orientation/manifest reads, and V7.6.4 canonical instruction runtime brief are COMPLETE/live-verified. V7.6.5 canary/default flip is NEXT.** Optimize the existing canonical CairnStone V7 codebase in-place behind additive compatibility boundaries; do not fork a competing optimized repo. `legacy_full` remains the production/default bootstrap and rollback path; `optimized_sparse` remains explicit opt-in until the V7.6 canary/default gate closes. Native hydration remains optional/experimental until the separate cross-client interop recommendation gate is proven.
+Status: **COMPLETE + LIVE-ACCEPTED through V7.6.5 on runtime `0.5.24`.** The canary/default flip is closed: `optimized_sparse` is the production default, while `legacy_full` remains an explicit caller/config rollback path through `CAIRNSTONE_BOOTSTRAP_DEFAULT_MODE`; missing or invalid config fails safely to `legacy_full`. Final full acceptance run `33934342560` at deployed behavior SHA `e48380c21f8f4c35f8e0ca218dcdf54665dcc7a4` passed the V7.0/V7.2/V7.3/V7.4/V7.6 regression matrix plus full syntax/regression checks. Real rollback run `33934232845` at rollback SHA `973090a51b5cc32b9354b7253d4bb459fca917d6` proved omitted-mode `legacy_full` behavior at about 63,261 / 64,000 bytes before the deliberate flip back to sparse. The production bootstrap ceiling remains **64K**. Sparse mode still cryptographically commits the complete accepted path-head vector; BM25/search remains supplemental only; `docs/AI_OPERATING_GUIDE.md` remains canonical instruction authority and the runtime brief remains only its identity-bound compiled representation; no provider credentials enter model-visible packages; models gain no mutation/execution authority; human-confirmed mutation boundaries remain intact; V7.5 real settlement remains separately gated. Native hydration remains optional; portable Tool Vault behavior remains the correctness path for clients that do not dynamically rebind.
 
 Primary goals:
 
@@ -524,7 +524,7 @@ Acceptance for V7.6.2 must prove:
 - native dynamic hydration, if enabled, falls back cleanly to portable deferred execution when a client cannot refresh/rebind schemas;
 - growing the Tool Vault does not materially increase core startup schema bytes except for explicitly added core primitives.
 
-Execution priority inside V7.6 is now: **V7.6.0 exact profiler COMPLETE -> V7.6.2a portable Deferred Tool Hydration COMPLETE -> V7.6.2b native hydration implementation COMPLETE (cross-client recommendation gate still open) -> V7.6.1 sparse authority COMPLETE -> V7.6.3 compact reads COMPLETE -> V7.6.4 canonical instruction runtime brief COMPLETE -> V7.6.5 canary/default flip NEXT.**
+Execution priority inside V7.6 is now closed: **V7.6.0 exact profiler COMPLETE -> V7.6.2a portable Deferred Tool Hydration COMPLETE -> V7.6.2b native hydration implementation COMPLETE (cross-client recommendation gate remains separate) -> V7.6.1 sparse authority COMPLETE -> V7.6.3 compact reads COMPLETE -> V7.6.4 canonical instruction runtime brief COMPLETE -> V7.6.5 canary/default flip COMPLETE + final-live-accepted.**
 
 ### V7.6.3 — Compact orientation/manifest reads
 
@@ -549,11 +549,11 @@ Measured live reduction from run `33780053649`: full guide instructions 24,674 B
 
 All V7.6.4 changed repo paths are re-stoned/accepted at final immutable commit `3bc60af184f664431eeb1980a3b59b0d6d75f8c7` with zero drift: `docs/AI_RUNTIME_BRIEF.json`, `src/agent-bootstrap.js`, `test/agent-bootstrap.test.js`, `src/index.js`, `docs/V7_0_CONTEXT_COMPILER_CONTRACT.md`, and `.github/workflows/deploy-cloudflare.yml`. All three supported JS/test stones (`src/agent-bootstrap.js`, `src/index.js`, `test/agent-bootstrap.test.js`) AST-lint with 0 errors. JSON/Markdown/YAML changes were validated through the two live acceptance runs rather than AST lint.
 
-Invariants preserved: `docs/AI_OPERATING_GUIDE.md` remains sole canonical instruction authority; the runtime brief never expands authority; `legacy_full` remains default/rollback until V7.6.5 closes.
+Invariants preserved: `docs/AI_OPERATING_GUIDE.md` remains sole canonical instruction authority; the runtime brief never expands authority; after V7.6.5, `optimized_sparse` is the production default and `legacy_full` remains an explicit/config rollback path.
 
 ### V7.6.5 — Canary/default flip
 
-Status: **NEXT.** All V7.6.0-.4 parity gates are closed. Run the full V7.0-V7.5 regression matrix, cross-provider identity checks, deliberate authority-race tests, tool-policy/human-confirmed mutation tests, secret-isolation tests, and live canary. Keep one-step rollback to legacy behavior (including `legacy_full` for the V7.6.4 runtime brief) before making optimized mode recommended/default.
+Status: **COMPLETE + FINAL-LIVE-ACCEPTED.** The production default is now `optimized_sparse`. Final full acceptance run `33934342560` at behavior SHA `e48380c21f8f4c35f8e0ca218dcdf54665dcc7a4` passed the selected V7.0-V7.6 gates together, including authority-first retrieval, bounded read-only delegation, tool-broker policy, mutation stop boundary, cross-provider/profile grounding, sparse authority, compact orientation, canonical runtime brief, native hydration/transport semantics, and the full syntax/regression suite. A post-run omitted-mode live bootstrap returned runtime `0.5.24`, `optimized_sparse`, `runtime_brief`, 129 total accepted path heads with 24 represented / 105 omitted, full authority digest/vector commitment, a bounded 16,821 / 64,000 byte package, no provider credentials, and zero execution/mutation authority. The real config-only rollback was exercised at SHA `973090a51b5cc32b9354b7253d4bb459fca917d6`, run `33934232845` (SUCCESS), where omitted mode returned `legacy_full` at about 63,261 / 64,000 bytes; production was then deliberately flipped back to `optimized_sparse`. Explicit caller mode still overrides config, and invalid/missing config fails safely to `legacy_full`. Do not raise the 64K production ceiling.
 
 Initial quantitative targets: >=50% reduction in mature-chain bootstrap bytes; >=50% reduction in tool-schema bytes for the recommended core profile; approximately 8k-15k combined startup tokens where task complexity permits; zero authority/policy regression and no extra model calls merely to reconstruct deterministic CairnStone state.
 
@@ -563,7 +563,7 @@ Canonical detailed plan: `project-memory/v76-context-efficiency-optimization-pla
 
 ## V7.7 — Vault / Workspace Navigation + Multi-Chain Intelligence
 
-Status: **PLANNED / READ-FIRST.** Begin after the active V7.6 optimization/interop work reaches its own acceptance gate. V7.7 must work through the portable CairnStone runtime and cannot make correctness depend on experimental V7.6.2b native tool hydration.
+Status: **PLANNED / READ-FIRST; NEXT AFTER V7.6.5 CLOSURE.** The V7.6.5 optimization/default-flip acceptance gate is closed. V7.7 must work through the portable CairnStone runtime and cannot make correctness depend on experimental V7.6.2b native tool hydration.
 
 ### Goal
 
@@ -640,7 +640,7 @@ V7.4 Cross-project agent profiles (COMPLETE — V7.4.0 + generalized profile sys
         ↓
 V7.5 x402 paid sub-agent runtime (IN PROGRESS — V7.5.0 contract/quote boundary started; settlement gated)
         ↓
-V7.6 Context Efficiency & MCP Surface Optimization (IN PROGRESS — profiler + Tool Vault + sparse authority + compact reads + canonical instruction runtime brief complete/live; canary/default flip next)
+V7.6 Context Efficiency & MCP Surface Optimization (COMPLETE + LIVE-ACCEPTED — profiler + Tool Vault + sparse authority + compact reads + canonical instruction runtime brief + optimized_sparse default flip closed; legacy_full rollback proven)
         ↓
 V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (PLANNED / READ-FIRST — catalog + scope contract → multi-chain search → grounded Q&A → Console Scope → saved workspaces → live scale/citation gate)
 ```
