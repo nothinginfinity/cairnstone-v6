@@ -115,6 +115,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v771_acceptance:
+        description: "Run V7.7.1 scope-aware deterministic multi-chain search live acceptance after deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   deploy:
@@ -1632,6 +1640,171 @@ jobs:
           echo "$post_delete_payload" | jq -e '.ok == false and .portable_fallback_required == true' >/dev/null
 
           echo "V7.6.2b live acceptance passed: full /mcp stayed on legacy capabilities and no longer advertised the core-only cairnstone_load_tools control primitive, manual full-profile hydration calls failed with an explicit /mcp/core diagnostic instead of unknown_tool, /mcp/core sessions established real D1-backed state, ineligible mutation-class hydration was rejected, eligible hydration was session-isolated and directly callable only after hydration, SSE-capable callers received a genuine notifications/tools/list_changed event before the result while JSON-only callers got an honest portable_fallback_required signal, DELETE terminated hydration state, and a deleted/unknown session failed closed."
+
+      - name: V7.7.1 scope-aware deterministic multi-chain search live acceptance
+        if: github.event.inputs.run_v771_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="setup"
+          trap 'echo "::error title=V7.7.1 live acceptance failure::stage=${stage} line=${LINENO}"' ERR
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+          FULL="$BASE/mcp"
+          CORE="$BASE/mcp/core"
+          REPO_A="nothinginfinity/cairnstone-v6"
+          REPO_B="nothinginfinity/infinite-radio"
+          CHAIN="cairnstone-v6-project-memory"
+
+          stage="propagation"
+          health=""
+          for attempt in {1..30}; do
+            health="$(curl -fsS "$BASE/health" || true)"
+            if echo "$health" | jq -e '
+              .ok == true and
+              .version == "0.5.26" and
+              ((.mcp_tools | index("cairnstone_find_scope")) != null) and
+              ((.mcp_core_tools | index("cairnstone_tool_execute")) != null) and
+              ((.endpoints | index("POST /v2/find-scope")) != null)
+            ' >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          echo "$health" | jq -e '
+            .ok == true and
+            .version == "0.5.26" and
+            ((.mcp_tools | index("cairnstone_find_scope")) != null) and
+            ((.mcp_core_tools | index("cairnstone_tool_execute")) != null) and
+            ((.endpoints | index("POST /v2/find-scope")) != null)
+          ' >/dev/null
+
+          stage="resolve_multi_scope"
+          scope_payload="$(jq -nc --arg a "$REPO_A" --arg b "$REPO_B" '{jsonrpc:"2.0",id:7710,method:"tools/call",params:{name:"cairnstone_resolve_scope",arguments:{mode:"multi",repos:[$a,$b]}}}')"
+          scope_outer="$(curl -fsS -X POST "$FULL" -H 'content-type: application/json' -H 'accept: application/json' --data "$scope_payload")"
+          scope="$(echo "$scope_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$scope" | jq -e '.ok == true and .schema == "cairnstone-scope-snapshot-v1" and .mode == "multi" and (.chains | length) >= 2' >/dev/null
+          chains_json="$(echo "$scope" | jq -c '[.chains[].chain]')"
+
+          snapshot_vector() {
+            local chain_list="$1"
+            echo "$chain_list" | jq -r '.[]' | while IFS= read -r chain; do
+              encoded="$(jq -rn --arg value "$chain" '$value|@uri')"
+              curl -fsS "$BASE/v2/chains/$encoded/resume" | jq -c --arg chain "$chain" '{chain:$chain,head:.canonical_head.hash,paths:(.path_heads | map({path,stone_hash}) | sort_by(.path))}'
+            done | jq -sc 'sort_by(.chain)'
+          }
+
+          stage="capture_before"
+          before_vector="$(snapshot_vector "$chains_json")"
+          test "$(echo "$before_vector" | jq 'length')" -ge 2
+
+          stage="single_chain_search"
+          single_body="$(jq -nc --arg chain "$CHAIN" '{query:"authorization",scope:{mode:"single_chain",chains:[$chain]},top_k:5,per_chain_k:5}')"
+          single="$(curl -fsS -X POST "$BASE/v2/find-scope" -H 'content-type: application/json' --data "$single_body")"
+          echo "$single" | jq -e --arg chain "$CHAIN" '
+            .ok == true and
+            .schema == "cairnstone-scope-search-v1" and
+            .scope_snapshot.mode == "single_chain" and
+            (.scope_snapshot.chains | length) == 1 and
+            .scope_snapshot.chains[0].chain == $chain and
+            (.matches | length) >= 1 and
+            all(.matches[]; .chain == $chain) and
+            all(.matches[]; (.authority_class == "CHAIN_HEAD" or .authority_class == "PATH_HEAD" or .authority_class == "HISTORICAL")) and
+            .read_only.chain_heads_written == false and
+            .read_only.path_heads_written == false and
+            .read_only.stones_written == false
+          ' >/dev/null
+
+          stage="repo_isolation"
+          repo_body="$(jq -nc --arg repo "$REPO_A" '{query:"authorization",scope:{mode:"repo",repos:[$repo]},top_k:12,per_chain_k:6}')"
+          repo_result="$(curl -fsS -X POST "$BASE/v2/find-scope" -H 'content-type: application/json' --data "$repo_body")"
+          echo "$repo_result" | jq -e --arg repo "$REPO_A" '
+            .ok == true and
+            .scope_snapshot.mode == "repo" and
+            (.matches | length) >= 1 and
+            all(.matches[]; .repo == $repo) and
+            all(.coverage.per_chain[]; .repo_filter == [$repo])
+          ' >/dev/null
+
+          stage="multi_repo_fairness"
+          multi_body="$(jq -nc --arg a "$REPO_A" --arg b "$REPO_B" '{query:"live",scope:{mode:"multi",repos:[$a,$b]},top_k:16,per_chain_k:4,max_total_candidates:100}')"
+          multi="$(curl -fsS -X POST "$BASE/v2/find-scope" -H 'content-type: application/json' --data "$multi_body")"
+          echo "$multi" | jq -e --arg a "$REPO_A" --arg b "$REPO_B" '
+            .ok == true and
+            .scope_snapshot.mode == "multi" and
+            (.matches | length) >= 2 and
+            any(.matches[]; .repo == $a) and
+            any(.matches[]; .repo == $b) and
+            .coverage.matched_chain_count >= 2 and
+            .ranking_policy.candidate_pool == "bounded_per_chain" and
+            .ranking_policy.fairness == "merge_by_per_chain_rank_before_next_rank"
+          ' >/dev/null
+          multi_scope_id="$(echo "$multi" | jq -r '.scope_snapshot.scope_id')"
+          multi_authority="$(echo "$multi" | jq -r '.scope_snapshot.authority_digest')"
+
+          stage="full_mcp_surface"
+          full_payload="$(jq -nc --argjson args "$multi_body" '{jsonrpc:"2.0",id:7711,method:"tools/call",params:{name:"cairnstone_find_scope",arguments:$args}}')"
+          full_outer="$(curl -fsS -X POST "$FULL" -H 'content-type: application/json' -H 'accept: application/json' --data "$full_payload")"
+          full_result="$(echo "$full_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$full_result" | jq -e --arg scope "$multi_scope_id" --arg authority "$multi_authority" '
+            .ok == true and
+            .schema == "cairnstone-scope-search-v1" and
+            .scope_snapshot.scope_id == $scope and
+            .scope_snapshot.authority_digest == $authority
+          ' >/dev/null
+
+          stage="portable_context"
+          bootstrap_payload="$(jq -nc --arg chain "$CHAIN" '{jsonrpc:"2.0",id:7712,method:"tools/call",params:{name:"cairnstone_agent_bootstrap",arguments:{actor_id:"github-actions:v771-acceptance",task:"Execute the accepted V7.7.1 read-only scoped-search tool through the portable Tool Vault.",chain:$chain,capabilities:{tools:[{id:"cairnstone_find_scope",available:true,class:"read"}],supports_tool_calls:true},limits:{max_memory_hits:0,max_memory_bytes:0,max_inbox_items:0,max_package_bytes:180000},include_inbox:false}}}')"
+          bootstrap_outer="$(curl -fsS -X POST "$FULL" -H 'content-type: application/json' -H 'accept: application/json' --data "$bootstrap_payload")"
+          context="$(echo "$bootstrap_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$context" | jq -e '.ok == true and ((.capabilities.available_tools | index("cairnstone_find_scope")) != null)' >/dev/null
+
+          stage="portable_core_execute"
+          core_payload="$(jq -nc --argjson ctx "$context" --argjson search "$multi_body" '{jsonrpc:"2.0",id:7713,method:"tools/call",params:{name:"cairnstone_tool_execute",arguments:{context_package:$ctx,tool_intent:{tool_id:"cairnstone_find_scope",arguments:$search,executed:false},budgets:{max_output_bytes:100000,max_tool_calls_per_turn:2,turn_tool_calls_so_far:0}}}}')"
+          core_outer="$(curl -fsS -X POST "$CORE" -H 'content-type: application/json' -H 'accept: application/json' --data "$core_payload")"
+          core_result="$(echo "$core_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$core_result" | jq -e --arg scope "$multi_scope_id" --arg authority "$multi_authority" '
+            .ok == true and
+            .executed == true and
+            .decision == "allow" and
+            .authorization_required == false and
+            .registry.risk_class == "read" and
+            .registry.authorization == "automatic" and
+            .output_truncated == false and
+            .result.ok == true and
+            .result.schema == "cairnstone-scope-search-v1" and
+            .result.scope_snapshot.scope_id == $scope and
+            .result.scope_snapshot.authority_digest == $authority and
+            .execution.tools_executed == 1 and
+            .execution.mutation_authority == false
+          ' >/dev/null
+
+          stage="vault_coverage_limits"
+          vault_body='{"query":"live","scope":{"mode":"vault","max_chains":10},"top_k":3,"per_chain_k":2,"max_total_candidates":3}'
+          vault="$(curl -fsS -X POST "$BASE/v2/find-scope" -H 'content-type: application/json' --data "$vault_body")"
+          echo "$vault" | jq -e '
+            .ok == true and
+            .scope_snapshot.mode == "vault" and
+            .scope_snapshot.truncated == true and
+            .coverage.scope_truncated == true and
+            .coverage.resolved_chain_count == 10 and
+            .coverage.queried_chain_count == 3 and
+            (.coverage.skipped_chains | length) == 7 and
+            .coverage.complete == false
+          ' >/dev/null
+
+          stage="accepted_state_unchanged"
+          after_vector="$(snapshot_vector "$chains_json")"
+          test "$before_vector" = "$after_vector"
+
+          jq -nc \
+            --arg sha "$GITHUB_SHA" \
+            --arg scope "$multi_scope_id" \
+            --arg authority "$multi_authority" \
+            --argjson repo "$repo_result" \
+            --argjson multi "$multi" \
+            --argjson vault "$vault" \
+            --argjson core "$core_result" \
+            '{acceptance:"V7.7.1",commit_sha:$sha,scope_id:$scope,authority_digest:$authority,repo_isolation:{matches:$repo.total,coverage:$repo.coverage},multi_repo:{matches:$multi.total,matched_chains:$multi.coverage.matched_chain_count,repos:[$multi.matches[].repo]|unique},vault_coverage:$vault.coverage,portable_core:{executed:$core.executed,decision:$core.decision,receipt:$core.receipt}}'
+
+          echo "V7.7.1 live acceptance passed: single-chain search, strict repo isolation even on multi-repo chains, fair multi-repo retrieval, full /mcp dispatch, portable /mcp/core Tool Vault execution, bounded vault coverage diagnostics, exact scope/authority identity, and zero participating accepted chain/path HEAD mutation were all verified live."
 
   v741_diagnostic:
     needs: deploy
