@@ -1,0 +1,53 @@
+{
+  "worker": "afo-gitzip",
+  "version": "0.2.2-unified",
+  "action": "apply_repo_text_patch",
+  "target": {
+    "owner": "nothinginfinity",
+    "repo": "cairnstone-v6",
+    "branch": "main",
+    "path": "test/agent-bootstrap.test.js"
+  },
+  "source_sha": "02b96e11f4fc9763e265290e2a24ee483b72e336",
+  "result_sha": "3426742876f455a44013546b7abfc8c6e1b05b2a",
+  "commit_sha": "f63916ca218b05824a1955edeceba957ec0e4acd",
+  "diff": {
+    "before_length": 51838,
+    "after_length": 54612,
+    "delta": 2774,
+    "common_prefix": 30706,
+    "common_suffix": 19803,
+    "before_fingerprint": "5d0a2edd",
+    "after_fingerprint": "1fb1305d"
+  },
+  "applied": [
+    {
+      "label": "op_0",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    }
+  ],
+  "verification": {
+    "ok": true,
+    "results": [
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      }
+    ],
+    "failed": []
+  },
+  "timestamp": "2026-09-05T00:44:40.191Z"
+}
