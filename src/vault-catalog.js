@@ -17,6 +17,24 @@ const MAX_CATALOG_LIMIT = 200;
 const DEFAULT_VAULT_MAX_CHAINS = 100;
 const MAX_VAULT_MAX_CHAINS = 500;
 
+// V7.7.1 bounded multi-chain search limits. These are deliberately explicit
+// so vault/repo/multi searches cannot turn Scope into an unbounded context
+// dump. Candidate fairness is enforced per participating chain below.
+const DEFAULT_SCOPE_TOP_K = 10;
+const MAX_SCOPE_TOP_K = 50;
+const DEFAULT_PER_CHAIN_CANDIDATES = 5;
+const MAX_PER_CHAIN_CANDIDATES = 25;
+const DEFAULT_MAX_SCOPE_CANDIDATES = 200;
+const MAX_SCOPE_CANDIDATES = 500;
+const DEFAULT_MAX_SCOPE_EXPANSIONS = 3;
+const MAX_SCOPE_EXPANSIONS = 10;
+const DEFAULT_MAX_EXPANDED_BYTES = 20000;
+const MAX_EXPANDED_BYTES = 100000;
+const DEFAULT_SCOPE_CONTEXT_LINES = 20;
+const MAX_SCOPE_CONTEXT_LINES = 200;
+const SCOPE_MATCH_MODES = ["any", "all", "phrase"];
+const SCOPE_FTS_BM25_WEIGHTS = "0, 0, 0, 2.0, 4.0, 1.0";
+
 export const VAULT_CATALOG_TOOL_DEFINITION = {
   name: "cairnstone_vault_catalog",
   description:
@@ -47,6 +65,40 @@ export const SCOPE_RESOLVE_TOOL_DEFINITION = {
       max_chains: { type: "integer", minimum: 1, maximum: MAX_VAULT_MAX_CHAINS }
     },
     required: ["mode"],
+    additionalProperties: false
+  }
+};
+
+export const SCOPE_FIND_TOOL_DEFINITION = {
+  name: "cairnstone_find_scope",
+  description:
+    "V7.7.1: server-side scope-aware deterministic search across a cairnstone-scope-v1 selection. Resolves the exact participating chain HEAD snapshot, retrieves a bounded candidate pool per chain, merges fairly by per-chain textual rank with explicit authority classification, preserves repo/chain/stone/ref/path/immutable-commit provenance, optionally expands only bounded winners, and re-checks every participating chain HEAD before returning. Fails closed with scope_compile_race on authority movement. Vault/multi limits return coverage diagnostics instead of implying exhaustive search. Read-only with respect to accepted CairnStone state.",
+  inputSchema: {
+    type: "object",
+    required: ["query", "scope"],
+    properties: {
+      query: { type: "string" },
+      scope: {
+        type: "object",
+        required: ["mode"],
+        properties: {
+          schema: { type: "string" },
+          mode: { type: "string", enum: SCOPE_MODES },
+          repos: { type: "array", items: { type: "string" } },
+          chains: { type: "array", items: { type: "string" } },
+          max_chains: { type: "integer", minimum: 1, maximum: MAX_VAULT_MAX_CHAINS }
+        },
+        additionalProperties: false
+      },
+      top_k: { type: "integer", minimum: 1, maximum: MAX_SCOPE_TOP_K },
+      per_chain_k: { type: "integer", minimum: 1, maximum: MAX_PER_CHAIN_CANDIDATES },
+      max_total_candidates: { type: "integer", minimum: 1, maximum: MAX_SCOPE_CANDIDATES },
+      match_mode: { type: "string", enum: SCOPE_MATCH_MODES },
+      expand: { type: "boolean" },
+      max_expansions: { type: "integer", minimum: 0, maximum: MAX_SCOPE_EXPANSIONS },
+      max_expanded_bytes: { type: "integer", minimum: 1, maximum: MAX_EXPANDED_BYTES },
+      context_lines: { type: "integer", minimum: 0, maximum: MAX_SCOPE_CONTEXT_LINES }
+    },
     additionalProperties: false
   }
 };
@@ -289,4 +341,296 @@ export async function resolveScopeFromBody(body, env) {
   }
 
   return response;
+}
+
+// -- V7.7.1 scope-aware deterministic search -------------------------------
+
+const SCOPE_SEARCH_STOP_WORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "from", "are", "was", "were",
+  "have", "has", "not", "you", "your", "but", "can", "will", "all", "into",
+  "our", "out", "use", "using", "true", "false", "null"
+]);
+
+function clampScopeInteger(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(number)));
+}
+
+function tokenizeScopeQuery(query) {
+  const terms = [];
+  const seen = new Set();
+  for (const match of String(query || "").toLowerCase().matchAll(/[a-z0-9_]{2,}/g)) {
+    const term = match[0];
+    if (SCOPE_SEARCH_STOP_WORDS.has(term) || seen.has(term)) continue;
+    seen.add(term);
+    terms.push(term);
+  }
+  return terms;
+}
+
+function buildScopeMatchExpr(query, matchMode) {
+  const trimmed = String(query || "").trim();
+  const isFullyQuoted = trimmed.length > 2 && trimmed.startsWith('"') && trimmed.endsWith('"');
+  if (isFullyQuoted || matchMode === "phrase") {
+    const phraseText = (isFullyQuoted ? trimmed.slice(1, -1) : trimmed).trim();
+    if (!phraseText) return { ok: false, error: "empty_query_terms" };
+    return { ok: true, match_expr: `"${phraseText.replaceAll('"', '""')}"`, mode: "phrase" };
+  }
+  const terms = tokenizeScopeQuery(trimmed);
+  if (!terms.length) return { ok: false, error: "empty_query_terms" };
+  const quoted = terms.map(term => `"${String(term).replaceAll('"', '""')}"`);
+  if (matchMode === "all") return { ok: true, match_expr: quoted.join(" AND "), mode: "all" };
+  return { ok: true, match_expr: quoted.join(" OR "), mode: "any" };
+}
+
+function roundScopeScore(value) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.round(value * 1000000) / 1000000
+    : null;
+}
+
+async function queryScopeChainCandidates(env, { chain, query, matchExpr, limit }) {
+  try {
+    const sql = `SELECT refs_fts.ref_id AS ref_id, refs_fts.stone_hash AS stone_hash, refs_fts.chain AS chain,
+      refs_fts.path AS path, refs_fts.preview AS preview,
+      bm25(refs_fts, ${SCOPE_FTS_BM25_WEIGHTS}) AS score,
+      s.repo AS repo, s.commit_sha AS commit_sha
+      FROM refs_fts LEFT JOIN stones s ON s.hash = refs_fts.stone_hash
+      WHERE refs_fts MATCH ? AND refs_fts.chain = ?
+      ORDER BY bm25(refs_fts, ${SCOPE_FTS_BM25_WEIGHTS}) ASC, refs_fts.ref_id ASC LIMIT ?`;
+    const rows = await env.CAIRNSTONE_DB.prepare(sql).bind(matchExpr, chain, limit).all();
+    return { mode: "fts", rows: rows.results || [] };
+  } catch {
+    const like = `%${String(query).toLowerCase().replaceAll("%", "").replaceAll("_", "")}%`;
+    const sql = `SELECT r.ref_id AS ref_id, r.stone_hash AS stone_hash, s.chain_hash AS chain,
+      r.path AS path, r.preview AS preview, 0 AS score,
+      s.repo AS repo, s.commit_sha AS commit_sha
+      FROM refs r LEFT JOIN stones s ON s.hash = r.stone_hash
+      WHERE (LOWER(r.keywords) LIKE ? OR LOWER(r.preview) LIKE ?) AND s.chain_hash = ?
+      ORDER BY r.ref_id ASC LIMIT ?`;
+    const rows = await env.CAIRNSTONE_DB.prepare(sql).bind(like, like, chain, limit).all();
+    return { mode: "like_fallback", rows: rows.results || [] };
+  }
+}
+
+async function scopeAuthorityClass(env, row, chainHeadHash) {
+  if (chainHeadHash && row.stone_hash === chainHeadHash) return { authority_class: "CHAIN_HEAD", authority_rank: 0 };
+  const pathHead = await env.CAIRNSTONE_DB.prepare(
+    "SELECT head_hash FROM path_heads WHERE chain = ? AND path = ?"
+  ).bind(row.chain, row.path).first();
+  if (pathHead && pathHead.head_hash === row.stone_hash) return { authority_class: "PATH_HEAD", authority_rank: 1 };
+  return { authority_class: "HISTORICAL", authority_rank: 2 };
+}
+
+function scopeCandidateCompare(a, b) {
+  if (a.ranking.chain_rank !== b.ranking.chain_rank) return a.ranking.chain_rank - b.ranking.chain_rank;
+  if (a.ranking.authority_rank !== b.ranking.authority_rank) return a.ranking.authority_rank - b.ranking.authority_rank;
+  const aScore = a.ranking.textual_score === null ? 0 : a.ranking.textual_score;
+  const bScore = b.ranking.textual_score === null ? 0 : b.ranking.textual_score;
+  if (aScore !== bScore) return aScore - bScore;
+  const chainCmp = a.chain.localeCompare(b.chain);
+  if (chainCmp) return chainCmp;
+  const stoneCmp = a.stone_hash.localeCompare(b.stone_hash);
+  if (stoneCmp) return stoneCmp;
+  return a.ref_id.localeCompare(b.ref_id);
+}
+
+async function expandScopeCandidate(env, candidate, contextLines, maxBytes) {
+  const refRow = await env.CAIRNSTONE_DB.prepare(
+    "SELECT raw_key,line_start,line_end FROM refs WHERE ref_id = ?"
+  ).bind(candidate.ref_id).first();
+  if (!refRow) return { ok: false, error: "ref_not_found", ref_id: candidate.ref_id };
+  if (!env.CAIRNSTONE_RAW) return { ok: false, error: "missing_cairnstone_raw_binding", ref_id: candidate.ref_id };
+  const raw = await env.CAIRNSTONE_RAW.get(refRow.raw_key);
+  if (!raw) return { ok: false, error: "raw_not_found", ref_id: candidate.ref_id };
+  const source = await raw.text();
+  const lines = source.split(/\r?\n/);
+  const start = Math.max(1, Number(refRow.line_start) - contextLines);
+  const end = Math.min(lines.length, Number(refRow.line_end) + contextLines);
+  const fullText = lines.slice(start - 1, end).join("\n");
+  const encoded = new TextEncoder().encode(fullText);
+  const clipped = encoded.length > maxBytes ? encoded.slice(0, maxBytes) : encoded;
+  const text = new TextDecoder().decode(clipped);
+  return {
+    ok: true,
+    ref_id: candidate.ref_id,
+    stone_hash: candidate.stone_hash,
+    chain: candidate.chain,
+    repo: candidate.repo,
+    path: candidate.path,
+    commit_sha: candidate.commit_sha,
+    authority_class: candidate.authority_class,
+    line_start: start,
+    line_end: end,
+    bytes: clipped.length,
+    truncated: clipped.length < encoded.length,
+    text
+  };
+}
+
+export async function findScopeFromBody(body, env) {
+  requireBindings(env);
+  const args = body && typeof body === "object" ? body : {};
+  const query = typeof args.query === "string" ? args.query.trim() : "";
+  if (!query) return { ok: false, error: "missing_query" };
+  if (!args.scope || typeof args.scope !== "object" || Array.isArray(args.scope)) {
+    return { ok: false, error: "missing_scope" };
+  }
+
+  const matchMode = SCOPE_MATCH_MODES.includes(args.match_mode) ? args.match_mode : "any";
+  const built = buildScopeMatchExpr(query, matchMode);
+  if (!built.ok) return built;
+
+  const scopeSnapshot = await resolveScopeFromBody(args.scope, env);
+  if (!scopeSnapshot.ok) return { ...scopeSnapshot, stage: "scope_resolution" };
+
+  const topK = clampScopeInteger(args.top_k, DEFAULT_SCOPE_TOP_K, 1, MAX_SCOPE_TOP_K);
+  const requestedPerChain = clampScopeInteger(args.per_chain_k, DEFAULT_PER_CHAIN_CANDIDATES, 1, MAX_PER_CHAIN_CANDIDATES);
+  const maxTotalCandidates = clampScopeInteger(args.max_total_candidates, DEFAULT_MAX_SCOPE_CANDIDATES, 1, MAX_SCOPE_CANDIDATES);
+  const allChains = scopeSnapshot.chains.map(item => item.chain);
+  const maxQueriedChains = Math.min(allChains.length, maxTotalCandidates);
+  const queriedChains = allChains.slice(0, maxQueriedChains);
+  const skippedChains = allChains.slice(maxQueriedChains);
+  const effectivePerChain = Math.max(1, Math.min(requestedPerChain, Math.floor(maxTotalCandidates / Math.max(1, queriedChains.length))));
+  const headByChain = new Map(scopeSnapshot.chains.map(item => [item.chain, item.head_hash || null]));
+
+  const candidates = [];
+  const chainDiagnostics = [];
+  for (let offset = 0; offset < queriedChains.length; offset += 10) {
+    const batch = queriedChains.slice(offset, offset + 10);
+    const batchResults = await Promise.all(batch.map(chain => queryScopeChainCandidates(env, {
+      chain,
+      query,
+      matchExpr: built.match_expr,
+      limit: effectivePerChain
+    })));
+    for (let index = 0; index < batch.length; index += 1) {
+      const chain = batch[index];
+      const result = batchResults[index];
+      chainDiagnostics.push({
+        chain,
+        search_mode: result.mode,
+        candidates: result.rows.length,
+        candidate_limit_reached: result.rows.length >= effectivePerChain
+      });
+      for (let rowIndex = 0; rowIndex < result.rows.length; rowIndex += 1) {
+        const row = result.rows[rowIndex];
+        const authority = await scopeAuthorityClass(env, row, headByChain.get(chain));
+        candidates.push({
+          chain,
+          repo: row.repo || null,
+          repos: row.repo ? [row.repo] : [],
+          stone_hash: row.stone_hash,
+          stone: String(row.stone_hash || "").slice(0, 12),
+          ref_id: row.ref_id,
+          ref: row.ref_id,
+          path: row.path || null,
+          commit_sha: row.commit_sha || null,
+          authority_class: authority.authority_class,
+          ranking: {
+            chain_rank: rowIndex + 1,
+            textual_score: roundScopeScore(row.score),
+            authority_rank: authority.authority_rank
+          },
+          preview: String(row.preview || "").slice(0, 160)
+        });
+      }
+    }
+  }
+
+  candidates.sort(scopeCandidateCompare);
+  const matches = candidates.slice(0, topK);
+
+  const maxExpansions = clampScopeInteger(args.max_expansions, DEFAULT_MAX_SCOPE_EXPANSIONS, 0, MAX_SCOPE_EXPANSIONS);
+  const maxExpandedBytes = clampScopeInteger(args.max_expanded_bytes, DEFAULT_MAX_EXPANDED_BYTES, 1, MAX_EXPANDED_BYTES);
+  const contextLines = clampScopeInteger(args.context_lines, DEFAULT_SCOPE_CONTEXT_LINES, 0, MAX_SCOPE_CONTEXT_LINES);
+  const expanded = [];
+  let expansionBytes = 0;
+  let expansionTruncated = false;
+  if (args.expand === true && matches.length && maxExpansions > 0) {
+    for (const match of matches.slice(0, maxExpansions)) {
+      const remaining = maxExpandedBytes - expansionBytes;
+      if (remaining <= 0) {
+        expansionTruncated = true;
+        break;
+      }
+      const item = await expandScopeCandidate(env, match, contextLines, remaining);
+      if (!item.ok) return item;
+      expanded.push(item);
+      expansionBytes += item.bytes;
+      if (item.truncated) {
+        expansionTruncated = true;
+        break;
+      }
+    }
+    if (matches.length > expanded.length && expanded.length >= maxExpansions) expansionTruncated = true;
+  }
+
+  const finalHeads = await readHeadsSnapshot(env, allChains);
+  for (const item of scopeSnapshot.chains) {
+    const observed = finalHeads.get(item.chain) || null;
+    const expected = item.head_hash || null;
+    if (observed !== expected) {
+      return {
+        ok: false,
+        error: "scope_compile_race",
+        phase: "post_search",
+        chain: item.chain,
+        first_head_hash: expected,
+        second_head_hash: observed,
+        scope_id: scopeSnapshot.scope_id,
+        authority_digest: scopeSnapshot.authority_digest
+      };
+    }
+  }
+
+  const candidateLimitReached = chainDiagnostics.some(item => item.candidate_limit_reached);
+  const scopeTruncated = scopeSnapshot.truncated === true;
+  const coverageComplete = !scopeTruncated && skippedChains.length === 0 && !candidateLimitReached && !expansionTruncated;
+  const coverage = {
+    resolved_chain_count: allChains.length,
+    queried_chain_count: queriedChains.length,
+    skipped_chains: skippedChains,
+    requested_per_chain_k: requestedPerChain,
+    effective_per_chain_k: effectivePerChain,
+    max_total_candidates: maxTotalCandidates,
+    candidates_considered: candidates.length,
+    matched_chain_count: new Set(matches.map(item => item.chain)).size,
+    matches_returned: matches.length,
+    scope_truncated: scopeTruncated,
+    candidate_limit_reached: candidateLimitReached,
+    expansion_requested: args.expand === true,
+    expansions_returned: expanded.length,
+    expansion_bytes: expansionBytes,
+    max_expanded_bytes: maxExpandedBytes,
+    expansion_truncated: expansionTruncated,
+    complete: coverageComplete,
+    per_chain: chainDiagnostics
+  };
+
+  return {
+    ok: true,
+    schema: "cairnstone-scope-search-v1",
+    query,
+    match_mode: built.mode,
+    scope_snapshot: scopeSnapshot,
+    ranking_policy: {
+      candidate_pool: "bounded_per_chain",
+      textual_evidence: "fts5_bm25_with_find_v2_weights",
+      fairness: "merge_by_per_chain_rank_before_next_rank",
+      authority_preference: "CHAIN_HEAD_then_PATH_HEAD_then_HISTORICAL_within_equal_chain_rank",
+      deterministic_tiebreak: ["chain_rank", "authority_rank", "textual_score", "chain", "stone_hash", "ref_id"]
+    },
+    total: matches.length,
+    matches,
+    ...(args.expand === true ? { expanded } : {}),
+    coverage,
+    read_only: {
+      chain_heads_written: false,
+      path_heads_written: false,
+      stones_written: false,
+      edges_written: false
+    }
+  };
 }
