@@ -1,0 +1,43 @@
+{
+  "worker": "afo-gitzip",
+  "version": "0.2.2-unified",
+  "action": "apply_repo_text_patch",
+  "target": {
+    "owner": "nothinginfinity",
+    "repo": "cairnstone-v6",
+    "branch": "main",
+    "path": "wrangler.toml"
+  },
+  "source_sha": "14633ceb7cddfe8410ed177dc6e1b313a9a21a9c",
+  "result_sha": "47d485037e3724440b4f19c270d918a6e59be31d",
+  "commit_sha": "72f38c86a8874b796c8c1d863c7e52c22587d47f",
+  "diff": {
+    "before_length": 355,
+    "after_length": 413,
+    "delta": 58,
+    "common_prefix": 98,
+    "common_suffix": 257,
+    "before_fingerprint": "f80a4ace",
+    "after_fingerprint": "901a1361"
+  },
+  "applied": [
+    {
+      "label": "op_0",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    }
+  ],
+  "verification": {
+    "ok": true,
+    "results": [
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      }
+    ],
+    "failed": []
+  },
+  "timestamp": "2026-09-05T00:44:47.768Z"
+}
