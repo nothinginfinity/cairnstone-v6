@@ -94,11 +94,11 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   assert.equal(result.provider_credentials_in_registry, false);
   assert.equal(result.external_model_calls, 0);
   assert.equal(result.tools_executed, 0);
-  // V7.6.2a added cairnstone_tool_search and cairnstone_get_tool_contract as
-  // classified read+automatic broker entries (decision stone
-  // 3383c36b93aeb8b5f2a6fb03261d7290bc39bcb84b8950da3de276bf32fa1e5f),
-  // growing the reviewed registry from 14 to 16.
-  assert.equal(result.total, 16);
+  // V7.6.2a added the two Tool Vault discovery primitives (14 -> 16).
+  // V7.7.1 adds three accepted-state read-only Scope primitives -- vault
+  // catalog, scope resolver, and scope-aware search -- so the reviewed
+  // broker registry now contains 19 explicitly classified tools.
+  assert.equal(result.total, 19);
 
   const health = result.tools.find(item => item.tool_id === "cairnstone_health");
   assert.equal(health.risk_class, "read");
