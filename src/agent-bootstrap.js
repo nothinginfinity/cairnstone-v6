@@ -122,7 +122,7 @@ export const AGENT_BOOTSTRAP_TOOL_DEFINITION = {
       mode: {
         type: "string",
         enum: ["legacy_full", "optimized_sparse"],
-        description: "V7.6 bootstrap transmission mode. Defaults to legacy_full. legacy_full transmits the complete accepted canonical operating guide. optimized_sparse preserves the complete accepted path-head authority cryptographically and may use the identity-bound accepted canonical runtime brief; any missing/stale/invalid brief falls back explicitly to the full accepted guide."
+        description: "V7.6 bootstrap transmission mode. An explicit caller mode always wins; when omitted, the operational CAIRNSTONE_BOOTSTRAP_DEFAULT_MODE selects legacy_full or optimized_sparse, with missing/invalid configuration failing safely to legacy_full. legacy_full transmits the complete accepted canonical operating guide. optimized_sparse preserves the complete accepted path-head authority cryptographically and may use the identity-bound accepted canonical runtime brief; any missing/stale/invalid brief falls back explicitly to the full accepted guide."
       },
       include_inbox: { type: "boolean", description: "Defaults to true. Non-mutating inbox listing only." },
       include_profile: {
@@ -165,7 +165,7 @@ export async function agentBootstrapFromBody(body, env, deps) {
       instructionsChain = body && typeof body.instructions_chain === "string" && body.instructions_chain.trim()
         ? requiredText(body.instructions_chain, "instructions_chain", 300)
         : chain;
-      bootstrapMode = normalizeBootstrapMode(body && body.mode);
+      bootstrapMode = normalizeBootstrapMode(body && body.mode, env.CAIRNSTONE_BOOTSTRAP_DEFAULT_MODE);
     } catch (error) {
       return { ok: false, error: mapValidationError(error) };
     }
@@ -1374,10 +1374,13 @@ function mapValidationError(error) {
   return message;
 }
 
-function normalizeBootstrapMode(value) {
-  if (value === undefined || value === null || value === "") return "legacy_full";
-  if (typeof value !== "string" || !BOOTSTRAP_MODES.has(value.trim())) throw new Error("invalid_bootstrap_mode");
-  return value.trim();
+function normalizeBootstrapMode(value, configuredDefault) {
+  if (value !== undefined && value !== null && value !== "") {
+    if (typeof value !== "string" || !BOOTSTRAP_MODES.has(value.trim())) throw new Error("invalid_bootstrap_mode");
+    return value.trim();
+  }
+  const configured = typeof configuredDefault === "string" ? configuredDefault.trim() : "";
+  return BOOTSTRAP_MODES.has(configured) ? configured : "legacy_full";
 }
 
 function normalizeCapabilities(value) {
