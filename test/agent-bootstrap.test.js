@@ -714,7 +714,7 @@ test("V7.6.5 package-pressure regression: size discipline fails closed rather th
   }
 });
 
-test("V7.6.1 legacy_full remains the default and explicit legacy mode preserves package identity", async () => {
+test("V7.6.1 missing operational default fails safe to legacy_full and explicit legacy mode preserves package identity", async () => {
   const restore = mockGithubFetchOnce();
   try {
     const extraPathHeads = [
@@ -738,6 +738,54 @@ test("V7.6.1 legacy_full remains the default and explicit legacy mode preserves 
     assert.deepEqual(implicit.authority, explicit.authority);
     assert.equal(Object.prototype.hasOwnProperty.call(implicit.authority, "sparse"), false);
     assert.equal(implicit.authority.path_heads.length, 3);
+  } finally {
+    restore();
+  }
+});
+
+test("V7.6.5 operational default is reversible, explicit caller mode wins, and invalid config fails safe to legacy_full", async () => {
+  const restore = mockGithubFetchOnce();
+  try {
+    const extraPathHeads = [
+      { path: "docs/ROADMAP_V7.md", stone_hash: "roadmap-head", repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A },
+      { path: "src/index.js", stone_hash: "index-head", repo: "nothinginfinity/cairnstone-v6", commit_sha: VALID_COMMIT_A }
+    ];
+    const deps = makeDeps({ resumeChainFromBody: async () => resumeStateWithHead("chain-head-stable", extraPathHeads) });
+    const base = {
+      actor_id: "test:v765-default",
+      task: "roadmap status",
+      chain: "cairnstone-v6-project-memory",
+      include_inbox: false,
+      limits: { max_memory_hits: 0, max_memory_bytes: 0, max_inbox_items: 0 }
+    };
+    const envLegacy = makeEnv();
+    envLegacy.CAIRNSTONE_BOOTSTRAP_DEFAULT_MODE = "legacy_full";
+    const envSparse = makeEnv();
+    envSparse.CAIRNSTONE_BOOTSTRAP_DEFAULT_MODE = "optimized_sparse";
+    const envInvalid = makeEnv();
+    envInvalid.CAIRNSTONE_BOOTSTRAP_DEFAULT_MODE = "unexpected_mode";
+
+    const configuredLegacy = await agentBootstrapFromBody(base, envLegacy, deps);
+    const configuredSparse = await agentBootstrapFromBody(base, envSparse, deps);
+    const explicitLegacyOverSparse = await agentBootstrapFromBody({ ...base, mode: "legacy_full" }, envSparse, deps);
+    const explicitSparseOverLegacy = await agentBootstrapFromBody({ ...base, mode: "optimized_sparse" }, envLegacy, deps);
+    const invalidConfig = await agentBootstrapFromBody(base, envInvalid, deps);
+
+    assert.equal(configuredLegacy.ok, true);
+    assert.equal(configuredSparse.ok, true);
+    assert.equal(explicitLegacyOverSparse.ok, true);
+    assert.equal(explicitSparseOverLegacy.ok, true);
+    assert.equal(invalidConfig.ok, true);
+    assert.equal(Object.prototype.hasOwnProperty.call(configuredLegacy.authority, "sparse"), false);
+    assert.equal(configuredSparse.authority.sparse.mode, "optimized_sparse");
+    assert.equal(configuredSparse.instructions.selection.requested_mode, "optimized_sparse");
+    assert.equal(configuredLegacy.package_id, explicitLegacyOverSparse.package_id);
+    assert.deepEqual(configuredLegacy.authority, explicitLegacyOverSparse.authority);
+    assert.equal(configuredSparse.package_id, explicitSparseOverLegacy.package_id);
+    assert.deepEqual(configuredSparse.authority, explicitSparseOverLegacy.authority);
+    assert.equal(invalidConfig.package_id, configuredLegacy.package_id);
+    assert.deepEqual(invalidConfig.authority, configuredLegacy.authority);
+    assert.notEqual(configuredSparse.package_id, configuredLegacy.package_id);
   } finally {
     restore();
   }
