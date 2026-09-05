@@ -861,6 +861,8 @@ jobs:
           workers="$(echo "$workers_outer" | jq -c '.result.content[0].text | fromjson')"
           echo "$workers" | jq -c '{phase:"v740-workers",ok,error,detail,actor_id,caller_actor_id,package_id,request_ir_id,profile,grounding,route,policy,diagnostics,output:{text:.output.text,finish_reason:.output.finish_reason}}'
           STAGE="workers_assert"
+          workers_diag="$(echo "$workers" | jq -c '{ok,error,detail,schema,actor_id,caller_actor_id,profile_id:(.profile.profile_id//null),profile_version:(.profile.version//null),grounding_schema:(.grounding.schema//null),grounding_class:(.grounding.classification.grounding_class//null),grounding_intent:(.grounding.classification.intent//null),current_claim_source:(.grounding.current_claim_source//null),degraded:(.grounding.degraded//null),live_reads_executed:(.grounding.live_reads_executed//null),live_read_tool:(.grounding.live_reads[0].tool_id//null),live_read_decision:(.grounding.live_reads[0].filters.decision//null),read_receipt_count:((.grounding.read_receipts//[])|length),route_provider:(.route.provider//null),tools_executed:(.policy.tools_executed//null),profile_live_reads_executed:(.diagnostics.profile_live_reads_executed//null),bootstrap_error:(.bootstrap_error//null)}')"
+          echo "::notice title=V7.4.0 workers diagnostic::${workers_diag}"
           echo "$workers" | jq -e --argjson ids "$live_ids" '
             .ok == true and
             .schema == "cairnstone-delegation-result-v1" and
