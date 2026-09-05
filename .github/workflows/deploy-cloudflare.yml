@@ -1600,6 +1600,17 @@ jobs:
           # SSE-capable hydration on session 2: notification event precedes the result event, and delivery is honestly reported true.
           stage="sse_hydrate"
           sse_hydrate="$(curl -fsS -X POST "$CORE" -H 'content-type: application/json' -H 'accept: text/event-stream' -H "Mcp-Session-Id: $SESSION_ID2" --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cairnstone_load_tools","arguments":{"tool_ids":["cairnstone_get_source_freshness"]}}}')"
+          sse_event_count="$(printf '%s\n' "$sse_hydrate" | grep -c '^event: message$' || true)"
+          sse_data_count="$(printf '%s\n' "$sse_hydrate" | grep -c '^data:' || true)"
+          sse_first_data="$(printf '%s\n' "$sse_hydrate" | grep '^data:' | head -1 | sed 's/^data: //' || true)"
+          sse_last_data="$(printf '%s\n' "$sse_hydrate" | grep '^data:' | tail -1 | sed 's/^data: //' || true)"
+          sse_first_method="$(printf '%s' "$sse_first_data" | jq -r 'try (.method // "") catch "parse_error"' 2>/dev/null || true)"
+          sse_last_id="$(printf '%s' "$sse_last_data" | jq -r 'try (.id // "") catch "parse_error"' 2>/dev/null || true)"
+          sse_last_ok="$(printf '%s' "$sse_last_data" | jq -r 'try (.result.content[0].text | fromjson | .ok) catch "parse_error"' 2>/dev/null || true)"
+          sse_last_notified="$(printf '%s' "$sse_last_data" | jq -r 'try (.result.content[0].text | fromjson | .notification_delivered) catch "parse_error"' 2>/dev/null || true)"
+          sse_last_fallback="$(printf '%s' "$sse_last_data" | jq -r 'try (.result.content[0].text | fromjson | .portable_fallback_required) catch "parse_error"' 2>/dev/null || true)"
+          sse_raw_b64="$(printf '%s' "$sse_hydrate" | base64 -w0 | cut -c1-1200)"
+          echo "::notice title=V7.6.2b SSE hydration diagnostic::events=${sse_event_count} data=${sse_data_count} first_method=${sse_first_method} last_id=${sse_last_id} last_ok=${sse_last_ok} notified=${sse_last_notified} fallback=${sse_last_fallback} raw_b64_prefix=${sse_raw_b64}"
           echo "$sse_hydrate" | grep -c '^event: message$' | grep -qx 2
           sse_notification_line="$(echo "$sse_hydrate" | grep '^data:' | head -1 | sed 's/^data: //')"
           echo "$sse_notification_line" | jq -e '.method == "notifications/tools/list_changed"' >/dev/null
