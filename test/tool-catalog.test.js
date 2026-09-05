@@ -9,6 +9,11 @@ import {
   toolContractFromBody
 } from "../src/tool-catalog.js";
 import { DEFAULT_TOOL_BROKER_REGISTRY } from "../src/model-router.js";
+import {
+  VAULT_CATALOG_TOOL_DEFINITION,
+  SCOPE_RESOLVE_TOOL_DEFINITION,
+  SCOPE_FIND_TOOL_DEFINITION
+} from "../src/vault-catalog.js";
 
 const CLASSIFIED_TOOL = {
   name: "cairnstone_health",
@@ -189,4 +194,26 @@ test("V7.6.2a self-consistency: real registry copies of the two tools' input_sch
   assert.equal(contractResult.ok, true);
   assert.equal(contractResult.classification_status, "classified", "real registry copy must byte-match the live tool-catalog.js schema");
   assert.equal(contractResult.schema_hash, contractResult.registry_schema_hash);
+});
+
+test("V7.7.1 Tool Vault: catalog, scope resolver, and scoped search are read+automatic with exact live schema parity", async () => {
+  const definitions = [VAULT_CATALOG_TOOL_DEFINITION, SCOPE_RESOLVE_TOOL_DEFINITION, SCOPE_FIND_TOOL_DEFINITION];
+  for (const definition of definitions) {
+    const registryEntry = DEFAULT_TOOL_BROKER_REGISTRY.find(entry => entry.tool_id === definition.name);
+    assert.ok(registryEntry, `${definition.name} must be classified in the broker registry`);
+    assert.equal(registryEntry.risk_class, "read");
+    assert.equal(registryEntry.authorization, "automatic");
+
+    const contract = await toolContractFromBody(
+      { name: definition.name },
+      null,
+      { mcpToolDefinitions: definitions }
+    );
+    assert.equal(contract.ok, true);
+    assert.equal(contract.classification_status, "classified", `${definition.name} live/registry schema must agree`);
+    assert.equal(contract.risk_class, "read");
+    assert.equal(contract.authorization, "automatic");
+    assert.equal(contract.broker_eligible, true);
+    assert.equal(contract.schema_hash, contract.registry_schema_hash);
+  }
 });
