@@ -113,9 +113,14 @@ function makeSearchEnv(fixture) {
             }
             if (sql.includes("FROM refs_fts LEFT JOIN stones s")) {
               const chain = bound[1];
-              const limit = Number(bound[2]);
+              const limit = Number(bound[bound.length - 1]);
+              const repoFilters = bound.slice(2, -1);
               const rows = refs
-                .filter(ref => ref.chain === chain)
+                .filter(ref => {
+                  if (ref.chain !== chain) return false;
+                  if (!repoFilters.length) return true;
+                  return repoFilters.includes(stoneFor(ref.stone_hash)?.repo || null);
+                })
                 .sort((a, b) => a.score - b.score || a.ref_id.localeCompare(b.ref_id))
                 .slice(0, limit)
                 .map(ref => {
@@ -355,6 +360,7 @@ const SEARCH_FIXTURE = {
     { hash: "a-head", chain_hash: "alpha", repo: "org/a", commit_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
     { hash: "a-path", chain_hash: "alpha", repo: "org/a", commit_sha: "abababababababababababababababababababab" },
     { hash: "a-hist", chain_hash: "alpha", repo: "org/a", commit_sha: "acacacacacacacacacacacacacacacacacacacac" },
+    { hash: "a-other", chain_hash: "alpha", repo: "org/other", commit_sha: "adadadadadadadadadadadadadadadadadadadad" },
     { hash: "b-head", chain_hash: "beta", repo: "org/b", commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
     { hash: "g-head", chain_hash: "gamma", repo: "org/g", commit_sha: "cccccccccccccccccccccccccccccccccccccccc" }
   ],
@@ -365,6 +371,7 @@ const SEARCH_FIXTURE = {
     { ref_id: "ref-a-head", stone_hash: "a-head", chain: "alpha", path: "README.md", preview: "shared alpha head", score: -9, raw_key: "raw-a-head", line_start: 1, line_end: 2 },
     { ref_id: "ref-a-path", stone_hash: "a-path", chain: "alpha", path: "src/current.js", preview: "shared alpha path", score: -8, raw_key: "raw-a-path", line_start: 1, line_end: 1 },
     { ref_id: "ref-a-hist", stone_hash: "a-hist", chain: "alpha", path: "src/old.js", preview: "shared alpha historical", score: -7, raw_key: "raw-a-hist", line_start: 1, line_end: 1 },
+    { ref_id: "ref-a-other", stone_hash: "a-other", chain: "alpha", path: "foreign.md", preview: "shared alpha foreign repo", score: -6, raw_key: "raw-a-other", line_start: 1, line_end: 1 },
     { ref_id: "ref-b-head", stone_hash: "b-head", chain: "beta", path: "README.md", preview: "shared beta head", score: -5, raw_key: "raw-b-head", line_start: 1, line_end: 1 },
     { ref_id: "ref-g-head", stone_hash: "g-head", chain: "gamma", path: "README.md", preview: "shared gamma head", score: -4, raw_key: "raw-g-head", line_start: 1, line_end: 1 }
   ],
@@ -372,6 +379,7 @@ const SEARCH_FIXTURE = {
     "raw-a-head": "alpha first line\nalpha second line with enough bytes for clipping behavior",
     "raw-a-path": "alpha path accepted content",
     "raw-a-hist": "alpha historical content",
+    "raw-a-other": "alpha foreign repository content",
     "raw-b-head": "beta head content",
     "raw-g-head": "gamma head content"
   }
@@ -407,7 +415,9 @@ test("V7.7.1 find_scope: repo scope does not leak another repository", async () 
   assert.equal(result.ok, true);
   assert.ok(result.matches.length > 0);
   assert.ok(result.matches.every(item => item.repo === "org/a"));
+  assert.ok(!result.matches.some(item => item.stone_hash === "a-other"), "same-chain stone from org/other must not leak through an org/a repo scope");
   assert.ok(!result.matches.some(item => item.chain === "beta"));
+  assert.deepEqual(result.coverage.per_chain[0].repo_filter, ["org/a"]);
 });
 
 test("V7.7.1 find_scope: multi-chain fair merge returns a smaller chain before a large chain's second candidate", async () => {
