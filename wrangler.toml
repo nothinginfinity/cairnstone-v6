@@ -4,7 +4,7 @@ compatibility_date = "2026-06-21"
 keep_vars = true
 
 [vars]
-CAIRNSTONE_BOOTSTRAP_DEFAULT_MODE = "optimized_sparse"
+CAIRNSTONE_BOOTSTRAP_DEFAULT_MODE = "legacy_full"
 
 [observability]
 enabled = true
