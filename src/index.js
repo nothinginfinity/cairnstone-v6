@@ -81,12 +81,14 @@ import {
   vaultCatalogFromBody,
   resolveScopeFromBody,
   findScopeFromBody,
+  askScopeFromBody,
   VAULT_CATALOG_TOOL_DEFINITION,
   SCOPE_RESOLVE_TOOL_DEFINITION,
-  SCOPE_FIND_TOOL_DEFINITION
+  SCOPE_FIND_TOOL_DEFINITION,
+  SCOPE_ASK_TOOL_DEFINITION
 } from "./vault-catalog.js";
 
-const VERSION = "0.5.27";
+const VERSION = "0.5.28";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -185,6 +187,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/v2/commit") return json(await commitV2FromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v2/find") return json(await findV2FromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v2/find-scope") return json(await findScopeFromBody(await request.json(), env));
+      if (request.method === "POST" && url.pathname === "/v2/ask-scope") return json(await askScopeFromBody(await request.json(), env));
       const manifestV2Match = url.pathname.match(/^\/v2\/chains\/([^/]+)\/manifest$/);
       if (request.method === "GET" && manifestV2Match) {
         const chain = decodeURIComponent(manifestV2Match[1]);
@@ -315,7 +318,8 @@ function routes() {
     "POST /v2/commit",
     "POST /v2/find",
     "POST /v2/find-scope",
-    "GET /v2/chains/:chain/manifest?detail=summary|compact|orientation|full&since=ISO&path=...", 
+    "POST /v2/ask-scope",
+    "GET /v2/chains/:chain/manifest?detail=summary|compact|orientation|full&since=ISO&path=...",  
     "GET /v2/stones/:hash?level=lod1-5",
     "GET /v2/chains/:chain/resume?detail=full|compact|start_here&since=ISO&path=..."
   ];
@@ -858,6 +862,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_vault_catalog") return vaultCatalogFromBody(args, env);
   if (name === "cairnstone_resolve_scope") return resolveScopeFromBody(args, env);
   if (name === "cairnstone_find_scope") return findScopeFromBody(args, env);
+  if (name === "cairnstone_ask_scope") return askScopeFromBody(args, env);
   return { ok: false, error: "unknown_tool", name };
 }
 
@@ -1327,7 +1332,8 @@ function mcpTools() {
     LOAD_TOOLS_TOOL_DEFINITION,
     VAULT_CATALOG_TOOL_DEFINITION,
     SCOPE_RESOLVE_TOOL_DEFINITION,
-    SCOPE_FIND_TOOL_DEFINITION
+    SCOPE_FIND_TOOL_DEFINITION,
+    SCOPE_ASK_TOOL_DEFINITION
   ];
 }
 
