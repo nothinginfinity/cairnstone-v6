@@ -117,6 +117,13 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   const authStatus = result.tools.find(item => item.tool_id === "cairnstone_tool_authorization_status");
   assert.equal(authStatus.risk_class, "read");
   assert.equal(authStatus.authorization, "automatic");
+
+  const askScope = result.tools.find(item => item.tool_id === "cairnstone_ask_scope");
+  assert.ok(askScope);
+  assert.equal(askScope.risk_class, "read");
+  assert.equal(askScope.authorization, "automatic");
+  assert.equal(askScope.available, true);
+  assert.deepEqual(askScope.input_schema.required, ["question", "scope"]);
 });
 
 test("V7.3.0 automatic read policy can allow an intent but remains preview-only and unexecuted", async () => {
