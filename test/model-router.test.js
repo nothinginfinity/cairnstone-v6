@@ -96,9 +96,10 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   assert.equal(result.tools_executed, 0);
   // V7.6.2a added the two Tool Vault discovery primitives (14 -> 16).
   // V7.7.1 adds three accepted-state read-only Scope primitives -- vault
-  // catalog, scope resolver, and scope-aware search -- so the reviewed
-  // broker registry now contains 19 explicitly classified tools.
-  assert.equal(result.total, 19);
+  // catalog, scope resolver, and scope-aware search -- (16 -> 19).
+  // V7.7.2 registers cairnstone_ask_scope on the same reviewed broker
+  // surface (19 -> 20).
+  assert.equal(result.total, 20);
 
   const health = result.tools.find(item => item.tool_id === "cairnstone_health");
   assert.equal(health.risk_class, "read");
