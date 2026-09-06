@@ -555,6 +555,44 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       additionalProperties: false
     }
   }),
+  Object.freeze({
+    tool_id: "cairnstone_ask_scope",
+    connector: "cairnstone",
+    handler: "cairnstone_ask_scope",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Run bounded citation-validated grounded Q&A across one exact CairnStone Scope without accepted-state mutation.",
+    input_schema: {
+      type: "object",
+      required: ["question", "scope"],
+      properties: {
+        question: { type: "string", maxLength: 4000 },
+        scope: {
+          type: "object",
+          required: ["mode"],
+          properties: {
+            schema: { type: "string" },
+            mode: { type: "string", enum: ["single_chain", "repo", "multi", "vault"] },
+            repos: { type: "array", items: { type: "string" } },
+            chains: { type: "array", items: { type: "string" } },
+            max_chains: { type: "integer", minimum: 1, maximum: 500 }
+          },
+          additionalProperties: false
+        },
+        top_k: { type: "integer", minimum: 1, maximum: 20 },
+        per_chain_k: { type: "integer", minimum: 1, maximum: 10 },
+        max_total_candidates: { type: "integer", minimum: 1, maximum: 250 },
+        match_mode: { type: "string", enum: ["any", "all", "phrase"] },
+        max_expansions: { type: "integer", minimum: 1, maximum: 10 },
+        max_expanded_bytes: { type: "integer", minimum: 1, maximum: 60000 },
+        context_lines: { type: "integer", minimum: 0, maximum: 100 },
+        model: { type: "string", enum: ["@cf/meta/llama-3.3-70b-instruct-fp8-fast"] },
+        max_tokens: { type: "number", minimum: 128, maximum: 2000 }
+      },
+      additionalProperties: false
+    }
+  }),
   // V7.6.2a Tool Vault discovery/hydration primitives (decision stone
   // 3383c36b93aeb8b5f2a6fb03261d7290bc39bcb84b8950da3de276bf32fa1e5f).
   // Pure discovery/hydration operations over the live mcpTools() catalog;
