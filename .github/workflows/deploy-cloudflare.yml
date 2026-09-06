@@ -131,6 +131,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v772_acceptance:
+        description: "Run V7.7.2 cross-chain grounded Q&A live acceptance after deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   deploy:
@@ -165,6 +173,69 @@ jobs:
 
       - name: Deploy Worker
         run: npx wrangler deploy --config wrangler.toml
+
+      - name: V7.7.2 cross-chain grounded Q&A live acceptance
+        if: github.event.inputs.run_v772_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+          RPC="$BASE/mcp"
+
+          health=""
+          for attempt in {1..30}; do
+            health="$(curl -fsS "$BASE/health" || true)"
+            if echo "$health" | jq -e '.ok == true and .version == "0.5.28" and ((.mcp_tools | index("cairnstone_ask_scope")) != null)' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          echo "$health" | jq -e '.ok == true and .version == "0.5.28" and ((.mcp_tools | index("cairnstone_ask_scope")) != null)' >/dev/null
+
+          tools="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data '{"jsonrpc":"2.0","id":7721,"method":"tools/list","params":{}}')"
+          echo "$tools" | jq -e '.result.tools | any(.name == "cairnstone_ask_scope")' >/dev/null
+
+          registry_outer="$(curl -fsS -X POST "$RPC" -H 'content-type: application/json' -H 'accept: application/json' --data '{"jsonrpc":"2.0","id":7722,"method":"tools/call","params":{"name":"cairnstone_tool_registry","arguments":{"tool_id":"cairnstone_ask_scope"}}}')"
+          registry="$(echo "$registry_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$registry" | jq -e '.ok == true and .total == 1 and .tools[0].tool_id == "cairnstone_ask_scope" and .tools[0].risk_class == "read" and .tools[0].authorization == "automatic" and .tools[0].available == true' >/dev/null
+
+          before_a="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
+          before_b="$(curl -fsS "$BASE/v2/chains/infinite-radio/resume")"
+          head_a="$(echo "$before_a" | jq -r '.canonical_head.hash')"
+          head_b="$(echo "$before_b" | jq -r '.canonical_head.hash')"
+          test "$head_a" != "null"
+          test "$head_b" != "null"
+          test -n "$head_a"
+          test -n "$head_b"
+
+          ask_body="$(jq -nc '{question:"Compare the current canonical orientations of the CairnStone project-memory chain and Infinite Radio. State the role of each project and use at least one valid citation from each participating chain.",scope:{mode:"multi",chains:["cairnstone-v6-project-memory","infinite-radio"]},top_k:12,per_chain_k:4,max_total_candidates:80,match_mode:"any",max_expansions:8,max_expanded_bytes:30000,context_lines:12,max_tokens:900}')"
+          answer="$(curl -fsS -X POST "$BASE/v2/ask-scope" -H 'content-type: application/json' --data "$ask_body")"
+          echo "$answer" | jq .
+          echo "$answer" | jq -e --arg ha "$head_a" --arg hb "$head_b" '
+            .ok == true and
+            .schema == "cairnstone-scope-answer-v1" and
+            .citation_validation.ok == true and
+            .persistence == null and
+            .read_only.chain_heads_written == false and
+            .read_only.path_heads_written == false and
+            .read_only.stones_written == false and
+            .read_only.edges_written == false and
+            (.scope_snapshot.chains | length) == 2 and
+            any(.scope_snapshot.chains[]; .chain == "cairnstone-v6-project-memory" and .head_hash == $ha) and
+            any(.scope_snapshot.chains[]; .chain == "infinite-radio" and .head_hash == $hb) and
+            any(.evidence[]; .chain == "cairnstone-v6-project-memory" and .authority_class == "CHAIN_HEAD") and
+            any(.evidence[]; .chain == "infinite-radio" and .authority_class == "CHAIN_HEAD") and
+            (.cited_stones | length) >= 2 and
+            (.cited_stones as $cited | any(.evidence[]; .chain == "cairnstone-v6-project-memory" and (.stone_hash as $h | ($cited | index($h)) != null))) and
+            (.cited_stones as $cited | any(.evidence[]; .chain == "infinite-radio" and (.stone_hash as $h | ($cited | index($h)) != null)))
+          ' >/dev/null
+
+          after_a="$(curl -fsS "$BASE/v2/chains/cairnstone-v6-project-memory/resume")"
+          after_b="$(curl -fsS "$BASE/v2/chains/infinite-radio/resume")"
+          test "$head_a" = "$(echo "$after_a" | jq -r '.canonical_head.hash')"
+          test "$head_b" = "$(echo "$after_b" | jq -r '.canonical_head.hash')"
+
+          echo "V7.7.2 live acceptance passed: full MCP exposes ask_scope, broker classifies it read/automatic, two real repository chains produced citation-valid grounded synthesis, and both canonical chain HEADs remained unchanged."
 
       - name: V7.0 authority-first retrieval correctness acceptance
         if: github.event.inputs.run_v70_authority_acceptance == 'true'
