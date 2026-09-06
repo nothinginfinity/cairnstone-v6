@@ -299,7 +299,7 @@ export const CONVERSATION_SEALER_CLASSIFICATION_RULES = Object.freeze([
       { any_of: ["current", "currently", "now", "latest", "today", "still"] }
     ],
     reads_template: [
-      { tool_id: "cairnstone_resume_chain", arguments: { chain: "$CHAIN", detail: "start_here" } }
+      { tool_id: "cairnstone_resume_chain", arguments: { chain: "$CHAIN" } }
     ]
   }),
   Object.freeze({
