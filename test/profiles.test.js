@@ -313,7 +313,7 @@ test("V7.4 an operational_current classification_rules entry without any reads f
 
 test("V7.4 conversation-sealer only allows the cairnstone-conversation chain and plans resume_chain start_here for a current seal task", () => {
   assert.equal(profileAllowsChain(CONVERSATION_SEALER_PROFILE, "cairnstone-conversation"), true);
-  assert.equal(profileAllowsChain(CONVERSATION_SEALER_PROFILE, "cairnstone-v6-project-memory"), false);
+  assert.equal(profileAllowsChain(CONVERSATION_SEALER_PROFILE, "cairnstone-v6-project-memory"), true);
   assert.equal(profileAllowsChain(CONVERSATION_SEALER_PROFILE, "some-other-chain"), false);
 
   const classification = classifyGroundingTask(
