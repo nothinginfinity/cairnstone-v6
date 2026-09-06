@@ -113,14 +113,17 @@ count and version — this list will keep growing.
 
 ### Reading / orientation
 - `cairnstone_resume_chain` — **call this first when picking up work on a
-  chain.** `detail=full` remains the backward-compatible default: canonical
-  chain HEAD (never inferred from timestamps), GitHub provenance, every
-  accepted path HEAD, and every graph edge touching HEAD. V7.6.3
-  `detail=compact` keeps HEAD/provenance + HEAD edges and cryptographically
-  commits to the complete accepted path-head vector while transmitting path
-  metadata only for requested `paths[]` and/or heads changed since an ISO
-  cursor. Compact mode returns an accepted-state `next_cursor` and explicit
-  full-expansion identity. Read-only.
+  chain.** For normal continuation, use V7.7.1a `detail=start_here`: it returns
+  a bounded `cairnstone-start-here-card-v1` with canonical chain HEAD identity,
+  path/repo/commit provenance, bounded summary/metadata, and the `next`
+  continuation while transmitting zero path-head/edge payload. Its
+  `cairnstone-sparse-authority-v1` envelope still commits to and re-verifies
+  the complete accepted path-head vector before return. Expand deliberately:
+  use `detail=compact` when you need accepted path-head/HEAD-edge context or a
+  delta/path-specific view, and `detail=full` only when the complete accepted
+  path-head vector plus every HEAD edge must be transmitted. `detail=full`
+  remains the backward-compatible wire default for older clients. All modes
+  are read-only; authority still comes from chain HEAD + per-path HEADs.
 - `cairnstone_manifest_v2` — token-efficient chain manifest.
   `detail=orientation` uses the V7.6.3 bounded orientation response;
   `detail=summary` and `detail=compact` preserve their legacy shapes and still
@@ -154,6 +157,24 @@ count and version — this list will keep growing.
   `cairnstone_find_v2`, prefer the returned `ref` directly, or use
   `expand:true` when you already know you want the matching content so the
   search+read completes in one tool call.
+
+### Vault Scope / multi-chain retrieval (V7.7)
+- `cairnstone_vault_catalog` — bounded discovery of available chains/repos and
+  their current authority identities. Use it to discover scope candidates,
+  not to synthesize a global HEAD.
+- `cairnstone_resolve_scope` — deterministically normalize requested
+  chains/repos into `cairnstone-scope-v1`, preserving each participating
+  chain's own authority identity.
+- `cairnstone_find_scope` — bounded server-side search across the resolved
+  Scope. Treat Scope strictly as navigation/retrieval context: it never
+  creates synthetic global authority, never promotes historical evidence, and
+  never changes any participating chain/path HEAD.
+- For multi-chain work, prefer `vault_catalog → resolve_scope → find_scope`
+  rather than manually stitching independent searches together. Preserve
+  source chain + HEAD/path provenance in downstream reasoning. Cross-chain
+  grounded Q&A (`cairnstone_ask_scope`) is **not yet production-shipped**;
+  do not invent or assume that tool until live health/tool discovery exposes
+  and accepted-state documentation confirms it.
 
 ### Graph
 - `cairnstone_link_stones` — create a typed edge. Five types:
@@ -249,6 +270,9 @@ count and version — this list will keep growing.
     deterministic first move — it costs an LLM call and carries some
     hallucination-adjacent risk (mitigated, not eliminated, by citation
     validation).
+  - ASK1 remains single-chain. Use the V7.7 Scope primitives for cross-chain
+    retrieval; do not assume cross-chain Q&A exists until `cairnstone_ask_scope`
+    is separately shipped and live-discovered.
 
 ## 5. The relationship graph — use it, don't skip it
 
@@ -258,15 +282,30 @@ chain-level version (not notes, reviews, or side orientation stones — those
 annotate, they don't replace). After creating a stone, call
 `cairnstone_link_stones` (or use `commit_v2`'s inline `edges` param) to
 record what it actually relates to. Before starting work on a chain, call
-`cairnstone_resume_chain` — not just `list_stones` — since it gives HEAD +
-every path head + every edge touching HEAD in one deterministic call.
+`cairnstone_resume_chain(detail="start_here")` — not just `list_stones` — to
+establish canonical HEAD identity and the cryptographic accepted-authority
+root cheaply; expand to `compact` or `full` only when the task actually needs
+more accepted path-head/edge detail.
 
 ## 6. Standard workflow
 
-1. **Orient.** `cairnstone_resume_chain(chain="cairnstone-v6-project-memory")`
-   on V6. Check the AC1 inbox for your own actor ID and for other known
-   agent IDs before starting work that might overlap with someone else's.
-   Then use `cairnstone_resolve_skills` and `cairnstone_get_skill` to load only the accepted skills needed for the current task, beginning with `core.orient`; do not preload the full catalog. When deterministic routing is genuinely ambiguous, `cairnstone_skill_agent` may advise among those accepted candidates, but its output never changes accepted-state authority.
+1. **Orient.** Call
+   `cairnstone_resume_chain(chain="cairnstone-v6-project-memory", detail="start_here")`
+   on V6/V7 runtime for the bounded canonical continuation card. Verify the
+   returned chain HEAD + sparse-authority identity, then check the AC1 inbox
+   for your own actor ID and other known agent IDs before starting work that
+   might overlap with someone else's. Expand to `detail="compact"` only when
+   accepted path-head/HEAD-edge context is needed, and to `detail="full"`
+   only for an explicit complete authority/edge dump. Then use
+   `cairnstone_resolve_skills` and `cairnstone_get_skill` to load only the
+   accepted skills needed for the current task, beginning with `core.orient`;
+   do not preload the full catalog. When deterministic routing is genuinely
+   ambiguous, `cairnstone_skill_agent` may advise among those accepted
+   candidates, but its output never changes accepted-state authority. If live
+   health advertises `start_here` or V7.7 Scope capabilities that the current
+   client schema has not surfaced, report the connector-schema mismatch and
+   refresh/reload the connector rather than pretending the capability is
+   absent.
 2. **Compress/stone.** Use `commit_v2` for new or updated files/notes,
    `create_github_file_stone`/`create_repo_stones` for bulk GitHub content.
 3. **Flags (automatic, free).** Every stone gets per-ref flags at creation —
@@ -335,8 +374,14 @@ every path head + every edge touching HEAD in one deterministic call.
 
 1. Call `cairnstone_health` on the V6 connector. Confirm it's reachable and
    note the live tool count/version.
-2. Call `cairnstone_resume_chain(chain="cairnstone-v6-project-memory")` on
-   V6 — not V5, and not the same-named `cairnstone-v6` runtime chain.
+2. Call
+   `cairnstone_resume_chain(chain="cairnstone-v6-project-memory", detail="start_here")`
+   — not V5, and not the same-named `cairnstone-v6` runtime chain. Treat the
+   returned card + authority root as the normal continuation surface; expand
+   to `compact`/`full` only when required. If the server advertises
+   `detail=start_here` but the connector schema does not expose `detail`, note
+   the stale connector schema and use the available safe fallback until the
+   connector is refreshed.
 3. Call `cairnstone_get_inbox` for your own actor ID and check for recent
    messages from other agent IDs (e.g. `chatgpt:cairnstone-v6` if you're
    Claude, or vice versa) that might indicate concurrent or very recent work.
@@ -350,7 +395,7 @@ every path head + every edge touching HEAD in one deterministic call.
 
 ---
 
-*Last updated: 2026-09-02. V7.6.3 compact orientation/manifest reads are production-live-accepted on runtime 0.5.21, with full resume preserved as the backward-compatible default and compact/orientation remaining explicit opt-in read modes. V6.10 remains the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
+*Last updated: 2026-09-06. V7.7.1a bounded START HERE orientation is production-live-accepted on runtime 0.5.27: normal continuation should use `cairnstone_resume_chain(..., detail="start_here")`, with `compact`/`full` as deliberate expansion modes. V7.7 vault catalog/scope/search primitives are live; Scope is retrieval/navigation context only and never synthetic global authority. Cross-chain grounded Q&A (`cairnstone_ask_scope`) remains planned for V7.7.2 and must not be assumed shipped. V6.10 remains the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
 update it in place here and keep the "Last updated" line current — this
 file is meant to be the single source of truth referenced by URL from every
 provider's project instructions, not re-pasted and forked per provider.*
