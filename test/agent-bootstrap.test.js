@@ -7,7 +7,7 @@ import {
   sha256Text,
   validateRuntimeBriefDocument
 } from "../src/agent-bootstrap.js";
-import { latestAcceptedStateCursor, selectOrientationPathHeads } from "../src/index.js";
+import { buildStartHereCard, latestAcceptedStateCursor, selectOrientationPathHeads } from "../src/index.js";
 
 const INSTRUCTIONS_PATH = "docs/AI_OPERATING_GUIDE.md";
 const RUNTIME_BRIEF_PATH = "docs/AI_RUNTIME_BRIEF.json";
@@ -967,6 +967,38 @@ test("V7.6.3 compact orientation selects only requested/recent accepted heads an
     latestAcceptedStateCursor("2026-09-02T12:30:00.000Z", pathHeads),
     "2026-09-02T13:00:00.000Z"
   );
+});
+
+test("V7.7.1a START HERE card is bounded, provenance-preserving, and excludes nested/unbounded metadata", () => {
+  const canonicalHead = {
+    hash: "a".repeat(64),
+    title: "START HERE — current accepted state",
+    path: "project-memory/current-start.md",
+    repo: "nothinginfinity/cairnstone-v6",
+    commit_sha: VALID_COMMIT_A
+  };
+  const stoneJson = {
+    layers: { lod5: "S".repeat(2000) },
+    metadata: {
+      milestone: "V7.7.1a",
+      status: "complete",
+      runtime: "0.5.27",
+      next: "V7.7.2 cross-chain grounded Q&A",
+      nested: { must_not: "escape into the card" },
+      huge: "H".repeat(2000)
+    }
+  };
+  const provenance = { repo: canonicalHead.repo, path: canonicalHead.path, commit_sha: canonicalHead.commit_sha, source_type: "github_file" };
+  const card = buildStartHereCard(canonicalHead, stoneJson, provenance);
+
+  assert.equal(card.schema, "cairnstone-start-here-card-v1");
+  assert.equal(card.stone_hash, canonicalHead.hash);
+  assert.equal(card.next, "V7.7.2 cross-chain grounded Q&A");
+  assert.equal(card.summary.length, 1200);
+  assert.ok(card.metadata.huge.length <= 256);
+  assert.equal(Object.prototype.hasOwnProperty.call(card.metadata, "nested"), false);
+  assert.deepEqual(card.provenance, provenance);
+  assert.ok(Object.keys(card.metadata).length <= 12);
 });
 
 async function makeRuntimeBriefDocument({
