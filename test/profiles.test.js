@@ -4,6 +4,7 @@ import {
   AGENT_PROFILE_REGISTRY,
   AGENT_PROFILE_SCHEMA_V1,
   CAIRNSTONE_MAINTAINER_PROFILE,
+  CONVERSATION_SEALER_PROFILE,
   GROUNDING_CLASSES,
   RELEASE_REVIEWER_PROFILE,
   REPO_DEBUGGER_PROFILE,
@@ -197,8 +198,11 @@ test("V7.4.0 profile budgets must be positive integers", () => {
 // and the declarative classification-rule engine for non-maintainer domains.
 // ---------------------------------------------------------------------------
 
-test("V7.4 the profile registry resolves all three accepted profiles", () => {
-  assert.deepEqual(Object.keys(AGENT_PROFILE_REGISTRY).sort(), ["cairnstone-maintainer", "release-reviewer", "repo-debugger"]);
+test("V7.4 the profile registry resolves all accepted profiles", () => {
+  assert.deepEqual(
+    Object.keys(AGENT_PROFILE_REGISTRY).sort(),
+    ["cairnstone-maintainer", "conversation-sealer", "release-reviewer", "repo-debugger"]
+  );
   for (const profileId of Object.keys(AGENT_PROFILE_REGISTRY)) {
     const resolved = getAgentProfile(profileId);
     assert.equal(resolved.ok, true, profileId);
@@ -305,6 +309,26 @@ test("V7.4 an operational_current classification_rules entry without any reads f
   const result = validateAgentProfile(profile);
   assert.equal(result.ok, false);
   assert.ok(result.errors.some(e => e.includes("must declare at least one read")));
+});
+
+test("V7.4 conversation-sealer only allows the cairnstone-conversation chain and plans resume_chain start_here for a current seal task", () => {
+  assert.equal(profileAllowsChain(CONVERSATION_SEALER_PROFILE, "cairnstone-conversation"), true);
+  assert.equal(profileAllowsChain(CONVERSATION_SEALER_PROFILE, "cairnstone-v6-project-memory"), false);
+  assert.equal(profileAllowsChain(CONVERSATION_SEALER_PROFILE, "some-other-chain"), false);
+
+  const classification = classifyGroundingTask(
+    CONVERSATION_SEALER_PROFILE,
+    "Is there a conversation to seal right now?",
+    { chain: "cairnstone-conversation" }
+  );
+  assert.equal(classification.grounding_class, "operational_current");
+  assert.equal(classification.domain, "conversation_state");
+  assert.equal(classification.matched_rule, "seal_or_pickup_current");
+  const plan = planProfileGroundingReads(CONVERSATION_SEALER_PROFILE, classification);
+  assert.equal(plan.ok, true);
+  assert.deepEqual(plan.reads, [
+    { tool_id: "cairnstone_resume_chain", arguments: { chain: "cairnstone-conversation", detail: "start_here" } }
+  ]);
 });
 
 test("V7.4 an unknown extractor name in a classification rule fails validation", () => {
