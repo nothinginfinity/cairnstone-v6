@@ -621,6 +621,168 @@ Canonical detailed plan: `project-memory/v77-vault-workspace-multi-chain-intelli
 
 ---
 
+## V7.8 — CairnStone Federation / StoneLink
+
+Status: **PLANNED / AFTER V7.7 ACCEPTANCE.** V7.8 is a federation layer over the V7.7 Scope model, not a replacement for current V7.7 work. The working protocol name is **StoneLink**. Initial federation is discovery-first and read-only-first; public discovery never implies public mutation.
+
+### Goal
+
+Extend CairnStone from one bounded vault/workspace into a federation of independently owned CairnStone nodes that can discover one another by domain, exchange provenance-preserving knowledge, search/query across selected external vaults, and route AC1 correspondence without collapsing their independent authority models.
+
+The core separation is:
+
+> **DNS / `.well-known` provides discovery and node identity hints; MCP/HTTPS carries manifests, Stones, search/Q&A, and correspondence. DNS is not the Stone/message transport and is never accepted-state authority.**
+
+MCP and ordinary HTTP APIs should be supported as complementary interfaces over one capability/authority model rather than competing protocols.
+
+### Federation invariants
+
+- every vault/node keeps its own chain HEADs, path HEADs, signatures, policy, and mutation authority;
+- external evidence is never silently promoted into local accepted state;
+- public/authless access is read-only unless a later explicit local authorization policy says otherwise;
+- V7.3 guarded mutation/authorization boundaries remain authoritative for consequential actions;
+- external scope resolution is bounded, provenance-preserving, race-aware, and fail-closed;
+- provider/model choice never changes node/Stone/Scope authority identity;
+- discovery metadata may be cached, but cache state is never authority;
+- cross-vault reasoning must retain issuer/domain/node/chain/stone/path/commit/signature provenance where available.
+
+### V7.8.0 — Public node manifest
+
+Define a versioned public node descriptor, working name `cairnstone-node-manifest-v1`, retrievable from a deterministic public endpoint such as `/.well-known/cairnstone`.
+
+The manifest should expose only intentionally public machine metadata, including:
+
+- canonical node/domain identity;
+- supported CairnStone federation protocol versions;
+- MCP and/or HTTPS API endpoints;
+- supported discovery/query/correspondence capabilities;
+- public/semi-public/private capability classes without leaking private tool schemas;
+- public signing key or stable key fingerprint/rotation metadata;
+- explicit size/rate/cache limits;
+- optional public authority/head digest summaries suitable for change detection but not as a replacement for signed manifests or local acceptance.
+
+The manifest itself must be canonicalized, content-identifiable, cacheable under bounded TTL, and verifiable against the domain/node identity.
+
+### V7.8.1 — DNS + `.well-known` discovery
+
+Use DNS as a lightweight discovery/control plane, not as the data plane. A domain may advertise that it participates in StoneLink and where its canonical node manifest lives. Prefer standards-aligned service discovery where practical (for example HTTPS/SVCB-style service hints) with a bounded TXT fallback if needed.
+
+Discovery must specify:
+
+- deterministic mapping from domain -> node manifest endpoint;
+- domain/origin verification and redirect policy;
+- TTL/cache semantics and stale-manifest handling;
+- downgrade/version negotiation behavior;
+- duplicate/conflicting record handling;
+- fail-closed behavior for malformed, spoofed, or unverifiable discovery data;
+- no requirement to place Stone bodies or AC1 messages in DNS records.
+
+### V7.8.2 — External read-only Scope
+
+Extend the V7.7 Scope model to represent explicitly selected external nodes/vaults without merging them into one synthetic authority graph. A caller should be able to select local chains/repos plus one or more external node scopes under explicit bounds.
+
+External scope snapshots must preserve:
+
+- node/domain identity;
+- remote scope selectors and exact remote authority snapshot identity;
+- local vs external authority classification;
+- transport/protocol identity;
+- freshness/verification state;
+- deterministic per-node and aggregate byte/candidate/time budgets.
+
+The first slice is strictly read-only. Resolving or querying an external Scope must never move local or remote accepted-state pointers.
+
+### V7.8.3 — Signed external Stone envelopes
+
+Define a signed transport envelope, working name `cairnstone-external-stone-envelope-v1`, that carries an immutable Stone identity plus the minimum issuer/provenance needed to verify where it came from and what authority claim the sender is making.
+
+The envelope should bind at minimum:
+
+- immutable Stone/content hash;
+- issuer node/domain identity;
+- source chain/path/commit provenance when available;
+- claimed authority class and remote snapshot/head identity;
+- signature algorithm/key identity;
+- canonical serialization/version;
+- issuance/expiry or freshness metadata where applicable;
+- replay/idempotency identity.
+
+Verification success means "this node signed this exact envelope"; it does **not** mean the recipient locally accepts the content as canonical truth. Imported, cached, trusted, and locally accepted states must remain distinguishable.
+
+### V7.8.4 — Cross-vault grounded search/Q&A
+
+Generalize V7.7 scoped retrieval/Q&A across explicitly selected external nodes. Retrieval remains progressive and bounded: discover -> resolve manifests/scopes -> search compact metadata -> expand only winners -> synthesize -> validate citations -> recheck participating authority snapshots.
+
+Requirements include:
+
+- per-node fairness so one large external vault cannot starve smaller selected nodes;
+- explicit coverage diagnostics when bounds prevent exhaustive search;
+- citation validation against evidence actually supplied to the model;
+- preserved node/domain/chain/stone/path/commit/signature provenance;
+- historical/external evidence visibly separated from local accepted authority;
+- fail-closed or bounded deterministic restart if participating remote authority changes mid-request;
+- no unbounded cross-vault prompt dump.
+
+### V7.8.5 — Federated AC1 routing
+
+Extend AC1 so an actor can route immutable correspondence to an actor/mailbox on another CairnStone node after DNS/manifest discovery. DNS discovers the mailbox/node endpoint; the actual AC1 message travels over MCP/HTTPS, not DNS.
+
+Federated AC1 should preserve:
+
+- globally unambiguous sender/recipient node + actor identity;
+- immutable message identity and sender signature;
+- thread/intent/priority semantics;
+- delivery/read/ack receipts without mutating the immutable message body;
+- replay/idempotency protection across nodes;
+- explicit trust/policy checks before accepting inbound correspondence;
+- bounded attachment/Stone references rather than arbitrary unbounded payload transfer;
+- no execution authority conveyed merely by receiving a message.
+
+### V7.8.6 — Public / semi-public / private capabilities
+
+Define one capability model usable through both MCP and HTTPS APIs:
+
+- **public** — intentionally authless, rate-limited, read-only discovery/search/documentation/product-style capabilities;
+- **semi-public / capability-scoped** — signed capability/token or explicitly shared Scope grants narrowly bounded access;
+- **private/authenticated** — organization/user-authenticated data and tools;
+- **mutation/execution** — always subject to the owning node's explicit policy and existing CairnStone authorization boundaries; public discovery or payment must never imply mutation authority.
+
+Capability metadata must be machine-discoverable without exposing credentials or private schemas, and a node must be able to publish a useful authless hook while keeping consequential operations gated.
+
+### V7.8.7 — Federation acceptance + security gate
+
+V7.8 is not complete until live acceptance proves federation across at least two independently addressed nodes/domains plus negative/adversarial cases.
+
+Acceptance must cover at minimum:
+
+- correct DNS / `.well-known` discovery and deterministic node identity;
+- manifest tamper detection and signing-key verification/rotation behavior;
+- forged/spoofed domain or node rejection;
+- signed Stone envelope verification, replay handling, and local-vs-external authority separation;
+- stale manifest/snapshot handling and mid-request remote authority races;
+- bounded cross-vault search/Q&A with valid cross-node citations;
+- federated AC1 delivery + replay/idempotency + receipt semantics;
+- public/semi-public/private capability enforcement;
+- zero unauthorized mutation from discovery, public APIs, external Scope reads, paid access, or inbound correspondence;
+- SSRF/redirect abuse, confused-deputy, credential exfiltration, data-poisoning, rate-limit/DoS, oversized payload, and trust-downgrade tests;
+- deterministic behavior through both full MCP and portable Tool Vault paths where applicable;
+- clear operator-visible trust/provenance state for every external node/evidence item.
+
+Initial implementation order:
+
+```text
+V7.8.0 public node manifest
+  -> V7.8.1 DNS + .well-known discovery
+  -> V7.8.2 external read-only Scope
+  -> V7.8.3 signed external Stone envelopes
+  -> V7.8.4 cross-vault grounded search/Q&A
+  -> V7.8.5 federated AC1 routing
+  -> V7.8.6 public/semi-public/private capabilities
+  -> V7.8.7 federation acceptance/security
+```
+
+---
+
 ## Phase ordering
 
 ```text
@@ -643,6 +805,8 @@ V7.5 x402 paid sub-agent runtime (IN PROGRESS — V7.5.0 contract/quote boundary
 V7.6 Context Efficiency & MCP Surface Optimization (COMPLETE + LIVE-ACCEPTED — profiler + Tool Vault + sparse authority + compact reads + canonical instruction runtime brief + optimized_sparse default flip closed; legacy_full rollback proven)
         ↓
 V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (PLANNED / READ-FIRST — catalog + scope contract → multi-chain search → grounded Q&A → Console Scope → saved workspaces → live scale/citation gate)
+        ↓
+V7.8 CairnStone Federation / StoneLink (PLANNED / AFTER V7.7 ACCEPTANCE — public node manifest → DNS/.well-known discovery → external read-only Scope → signed external Stone envelopes → cross-vault grounded search/Q&A → federated AC1 → capability tiers → federation security gate)
 ```
 
 Do not skip V7.0.
