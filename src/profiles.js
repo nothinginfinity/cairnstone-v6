@@ -767,7 +767,7 @@ export const CONVERSATION_SEALER_PROFILE = Object.freeze({
   schema: AGENT_PROFILE_SCHEMA_V1,
   profile_id: "conversation-sealer",
   version: "0.1.0",
-  scope: { chain: "cairnstone-conversation", allowed_chains: [] },
+  scope: { chain: "cairnstone-v6-project-memory", allowed_chains: ["cairnstone-conversation"] },
   ac1_identity: { actor_id: "cairnstone:conversation-sealer" },
   grounding_policy: {
     grounding_classes_enabled: [...GROUNDING_CLASSES],
