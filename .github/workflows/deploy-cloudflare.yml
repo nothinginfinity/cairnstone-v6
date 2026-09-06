@@ -123,6 +123,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v771a_acceptance:
+        description: "Run V7.7.1a bounded START HERE orientation-card live acceptance after deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   deploy:
@@ -1805,6 +1813,99 @@ jobs:
             '{acceptance:"V7.7.1",commit_sha:$sha,scope_id:$scope,authority_digest:$authority,repo_isolation:{matches:$repo.total,coverage:$repo.coverage},multi_repo:{matches:$multi.total,matched_chains:$multi.coverage.matched_chain_count,repos:[$multi.matches[].repo]|unique},vault_coverage:$vault.coverage,portable_core:{executed:$core.executed,decision:$core.decision,receipt:$core.receipt}}'
 
           echo "V7.7.1 live acceptance passed: single-chain search, strict repo isolation even on multi-repo chains, fair multi-repo retrieval, full /mcp dispatch, portable /mcp/core Tool Vault execution, bounded vault coverage diagnostics, exact scope/authority identity, and zero participating accepted chain/path HEAD mutation were all verified live."
+
+      - name: V7.7.1a bounded START HERE orientation-card live acceptance
+        if: github.event.inputs.run_v771a_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="setup"
+          trap 'echo "::error title=V7.7.1a live acceptance failure::stage=${stage} line=${LINENO}"' ERR
+          BASE="https://cairnstone-v6.jaredtechfit.workers.dev"
+          FULL="$BASE/mcp"
+          CHAIN="cairnstone-v6-project-memory"
+
+          stage="propagation"
+          health=""
+          for attempt in {1..30}; do
+            health="$(curl -fsS "$BASE/health" || true)"
+            if echo "$health" | jq -e '.ok == true and .version == "0.5.27" and ((.mcp_tools | index("cairnstone_resume_chain")) != null)' >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          echo "$health" | jq -e '.ok == true and .version == "0.5.27" and ((.mcp_tools | index("cairnstone_resume_chain")) != null)' >/dev/null
+
+          stage="capture_before"
+          before="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume")"
+          before_head="$(echo "$before" | jq -r '.canonical_head.hash')"
+          before_paths="$(echo "$before" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          path_count="$(echo "$before" | jq -r '.path_heads | length')"
+          test -n "$before_head"
+          test "$path_count" -gt 0
+
+          stage="start_here_rest"
+          card="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume?detail=start_here")"
+          echo "$card" | jq -e --arg head "$before_head" --argjson count "$path_count" '
+            .ok == true and
+            .detail == "start_here" and
+            .start_here.schema == "cairnstone-start-here-card-v1" and
+            .start_here.stone_hash == $head and
+            (.start_here.title | length) > 0 and
+            (.start_here.summary | length) > 0 and
+            .authority.schema == "cairnstone-sparse-authority-v1" and
+            .authority.mode == "start_here_orientation" and
+            .authority.full_path_head_count == $count and
+            .authority.represented_path_head_count == 0 and
+            .authority.omitted_path_head_count == $count and
+            .authority.full_vector_verified == true and
+            (.authority.authority_manifest_id | test("^sha256:[0-9a-f]{64}$")) and
+            (.authority.path_heads_digest | test("^sha256:[0-9a-f]{64}$")) and
+            (.path_heads | length) == 0 and
+            .path_heads_complete == false and
+            .resume.canonical_source == "chain_head" and
+            .resume.timestamp_ordering_used == false and
+            .resume.full_authority_vector_verified == true and
+            .expansion.tool == "cairnstone_resume_chain" and
+            .expansion.arguments.detail == "compact" and
+            .expansion.expected_authority_manifest_id == .authority.authority_manifest_id and
+            .expansion.expected_path_heads_digest == .authority.path_heads_digest and
+            (has("edges") | not)
+          ' >/dev/null
+
+          stage="root_parity"
+          compact="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume?detail=compact")"
+          echo "$card" | jq -e --arg root "$(echo "$compact" | jq -r '.authority.authority_manifest_id')" --arg digest "$(echo "$compact" | jq -r '.authority.path_heads_digest')" '
+            .authority.authority_manifest_id == $root and
+            .authority.path_heads_digest == $digest
+          ' >/dev/null
+
+          stage="mcp_surface"
+          mcp_payload="$(jq -nc --arg chain "$CHAIN" '{jsonrpc:"2.0",id:77101,method:"tools/call",params:{name:"cairnstone_resume_chain",arguments:{chain:$chain,detail:"start_here"}}}')"
+          mcp_outer="$(curl -fsS -X POST "$FULL" -H 'content-type: application/json' -H 'accept: application/json' --data "$mcp_payload")"
+          mcp_card="$(echo "$mcp_outer" | jq -c '.result.content[0].text | fromjson')"
+          echo "$mcp_card" | jq -e --arg head "$before_head" --arg root "$(echo "$card" | jq -r '.authority.authority_manifest_id')" '
+            .ok == true and
+            .detail == "start_here" and
+            .start_here.stone_hash == $head and
+            .authority.authority_manifest_id == $root and
+            .authority.full_vector_verified == true
+          ' >/dev/null
+
+          stage="size_telemetry"
+          full_bytes="$(printf '%s' "$before" | wc -c | tr -d ' ')"
+          compact_bytes="$(printf '%s' "$compact" | wc -c | tr -d ' ')"
+          card_bytes="$(printf '%s' "$card" | wc -c | tr -d ' ')"
+          test "$card_bytes" -lt "$full_bytes"
+          test "$card_bytes" -lt "$compact_bytes"
+
+          stage="accepted_state_unchanged"
+          after="$(curl -fsS "$BASE/v2/chains/$CHAIN/resume")"
+          after_head="$(echo "$after" | jq -r '.canonical_head.hash')"
+          after_paths="$(echo "$after" | jq -c '.path_heads | map({path,stone_hash}) | sort_by(.path)')"
+          test "$before_head" = "$after_head"
+          test "$before_paths" = "$after_paths"
+
+          echo "::notice title=V7.7.1a START HERE metrics::full_resume=${full_bytes}B compact_zero=${compact_bytes}B start_here=${card_bytes}B accepted_paths=${path_count}"
+          echo "V7.7.1a live acceptance passed: START HERE preserved canonical HEAD identity and the exact complete accepted-authority root, reverified the full path-head vector before return, transmitted zero path-head/edge payload, matched REST and MCP surfaces, reduced serialized pickup bytes below compact/full resume, and left accepted state unchanged."
 
   v741_diagnostic:
     needs: deploy
