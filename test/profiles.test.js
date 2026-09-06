@@ -327,7 +327,7 @@ test("V7.4 conversation-sealer only allows the cairnstone-conversation chain and
   const plan = planProfileGroundingReads(CONVERSATION_SEALER_PROFILE, classification);
   assert.equal(plan.ok, true);
   assert.deepEqual(plan.reads, [
-    { tool_id: "cairnstone_resume_chain", arguments: { chain: "cairnstone-conversation", detail: "start_here" } }
+    { tool_id: "cairnstone_resume_chain", arguments: { chain: "cairnstone-conversation" } }
   ]);
 });
 
