@@ -32,15 +32,15 @@
     {
       "id": "core.orient",
       "title": "Canonical orientation",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "status": "stable",
-      "description": "Establish exact accepted project state before specialized work.",
+      "description": "Establish bounded exact accepted project state before specialized work, with START HERE expansion and multi-chain Scope rules.",
       "path": "skills/core/orient/SKILL.md",
-      "tags": ["orientation", "resume", "head", "project-memory", "correspondence"],
+      "tags": ["orientation", "resume", "start-here", "scope", "head", "project-memory", "correspondence"],
       "triggers": ["catch me up", "get oriented", "continue work", "resume project"],
       "requires_tools": ["cairnstone_health", "cairnstone_resume_chain"],
       "dependencies": [],
-      "estimated_tokens": 500,
+      "estimated_tokens": 700,
       "enabled": true
     },
     {
