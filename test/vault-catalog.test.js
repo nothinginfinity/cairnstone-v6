@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { vaultCatalogFromBody, resolveScopeFromBody, findScopeFromBody } from "../src/vault-catalog.js";
+import { vaultCatalogFromBody, resolveScopeFromBody, findScopeFromBody, askScopeFromBody } from "../src/vault-catalog.js";
 
 // In-memory fixture: mirrors chain_heads / stones / path_heads schema.
 function makeEnv(fixture) {
@@ -157,6 +157,17 @@ function makeSearchEnv(fixture) {
               const row = stones.find(item => item.chain_hash === chain);
               return row ? { hash: row.hash } : null;
             }
+            if (sql.includes("SELECT hash,title,path,repo,commit_sha,stone_json FROM stones WHERE hash = ?")) {
+              const row = stones.find(item => item.hash === bound[0]);
+              return row ? {
+                hash: row.hash,
+                title: row.title || row.path || row.hash,
+                path: row.path || null,
+                repo: row.repo || null,
+                commit_sha: row.commit_sha || null,
+                stone_json: row.stone_json || JSON.stringify({ layers: { lod4: row.lod4 || row.title || row.hash } })
+              } : null;
+            }
             if (sql.includes("SELECT head_hash FROM path_heads WHERE chain = ? AND path = ?")) {
               const [chain, path] = bound;
               const row = pathHeads.find(item => item.chain === chain && item.path === path);
@@ -176,7 +187,13 @@ function makeSearchEnv(fixture) {
         if (!Object.prototype.hasOwnProperty.call(rawByKey, key)) return null;
         return { async text() { return rawByKey[key]; } };
       }
-    }
+    },
+    AI: fixture.aiRun || fixture.aiResponse ? {
+      async run(model, input) {
+        if (typeof fixture.aiRun === "function") return fixture.aiRun(model, input);
+        return { response: fixture.aiResponse };
+      }
+    } : undefined
   };
 }
 
@@ -513,4 +530,155 @@ test("V7.7.1 find_scope: read-only fixture has no write methods and still comple
     top_k: 2
   }, env);
   assert.equal(result.ok, true);
+});
+
+const ASK_ALPHA_HEAD = "a".repeat(64);
+const ASK_BETA_HEAD = "b".repeat(64);
+const ASK_ALPHA_PATH = "c".repeat(64);
+const ASK_BETA_PATH = "d".repeat(64);
+
+function makeAskFixture(overrides = {}) {
+  const fixture = {
+    chainHeads: [
+      { chain: "alpha", head_hash: ASK_ALPHA_HEAD, updated_at: "2026-09-06T00:00:00Z" },
+      { chain: "beta", head_hash: ASK_BETA_HEAD, updated_at: "2026-09-06T00:00:00Z" }
+    ],
+    stones: [
+      {
+        hash: ASK_ALPHA_HEAD,
+        chain_hash: "alpha",
+        repo: "org/a",
+        path: "project-memory/start.md",
+        commit_sha: "1".repeat(40),
+        title: "Alpha accepted orientation",
+        stone_json: JSON.stringify({ layers: { lod4: "Alpha is the accepted orientation for repository A." } })
+      },
+      {
+        hash: ASK_BETA_HEAD,
+        chain_hash: "beta",
+        repo: "org/b",
+        path: "project-memory/start.md",
+        commit_sha: "2".repeat(40),
+        title: "Beta accepted orientation",
+        stone_json: JSON.stringify({ layers: { lod4: "Beta is the accepted orientation for repository B." } })
+      },
+      { hash: ASK_ALPHA_PATH, chain_hash: "alpha", repo: "org/a", path: "src/current.js", commit_sha: "3".repeat(40) },
+      { hash: ASK_BETA_PATH, chain_hash: "beta", repo: "org/b", path: "src/current.js", commit_sha: "4".repeat(40) }
+    ],
+    pathHeads: [
+      { chain: "alpha", path: "src/current.js", head_hash: ASK_ALPHA_PATH },
+      { chain: "beta", path: "src/current.js", head_hash: ASK_BETA_PATH }
+    ],
+    refs: [
+      { ref_id: "ref-alpha", stone_hash: ASK_ALPHA_PATH, chain: "alpha", path: "src/current.js", preview: "shared scope alpha accepted behavior", score: -10, raw_key: "raw-alpha", line_start: 1, line_end: 1 },
+      { ref_id: "ref-beta", stone_hash: ASK_BETA_PATH, chain: "beta", path: "src/current.js", preview: "shared scope beta accepted behavior", score: -9, raw_key: "raw-beta", line_start: 1, line_end: 1 }
+    ],
+    rawByKey: {
+      "raw-alpha": "Alpha current accepted source says shared scope behavior is enabled.",
+      "raw-beta": "Beta current accepted source says shared scope behavior is integrated."
+    },
+    aiResponse: `Alpha and Beta both expose current accepted scope behavior [stone:${ASK_ALPHA_PATH} ref:ref-alpha] [stone:${ASK_BETA_PATH} ref:ref-beta]`
+  };
+  return { ...fixture, ...overrides };
+}
+
+test("V7.7.2 ask_scope: multi-chain answer is citation-valid across two real repository identities", async () => {
+  const env = makeSearchEnv(makeAskFixture());
+  const result = await askScopeFromBody({
+    question: "What shared scope behavior is current?",
+    scope: { mode: "multi", chains: ["alpha", "beta"] },
+    top_k: 2,
+    per_chain_k: 1,
+    max_expansions: 2,
+    context_lines: 0
+  }, env);
+  assert.equal(result.ok, true);
+  assert.equal(result.schema, "cairnstone-scope-answer-v1");
+  assert.equal(result.scope_snapshot.chains.length, 2);
+  assert.deepEqual(new Set(result.evidence.filter(item => item.ref_id).map(item => item.repo)), new Set(["org/a", "org/b"]));
+  assert.deepEqual(new Set(result.evidence.filter(item => item.ref_id).map(item => item.authority_class)), new Set(["PATH_HEAD"]));
+  assert.deepEqual(new Set(result.cited_stones), new Set([ASK_ALPHA_PATH, ASK_BETA_PATH]));
+  assert.equal(result.citation_validation.ok, true);
+  assert.equal(result.coverage.orientation_chain_count, 2);
+  assert.equal(result.persistence, null);
+  assert.deepEqual(result.read_only, {
+    chain_heads_written: false,
+    path_heads_written: false,
+    stones_written: false,
+    edges_written: false
+  });
+});
+
+test("V7.7.2 ask_scope: invented citation fails closed", async () => {
+  const env = makeSearchEnv(makeAskFixture({
+    aiResponse: `Unsupported claim [stone:${"e".repeat(64)} ref:not-supplied]`
+  }));
+  const result = await askScopeFromBody({
+    question: "What shared scope behavior is current?",
+    scope: { mode: "multi", chains: ["alpha", "beta"] },
+    top_k: 2,
+    per_chain_k: 1,
+    max_expansions: 2
+  }, env);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "citation_validation_failed");
+  assert.equal(result.citation_validation.ok, false);
+});
+
+test("V7.7.2 ask_scope: synthesis refuses a scope broader than the bounded chain ceiling", async () => {
+  const chains = Array.from({ length: 26 }, (_, i) => ({
+    chain: `chain-${String(i).padStart(2, "0")}`,
+    head_hash: i.toString(16).padStart(64, "0"),
+    updated_at: "2026-09-06T00:00:00Z"
+  }));
+  const stones = chains.map(item => ({ hash: item.head_hash, chain_hash: item.chain, repo: `org/repo-${item.chain}` }));
+  const env = makeSearchEnv({ chainHeads: chains, stones, pathHeads: [], refs: [], rawByKey: {}, aiResponse: "unused" });
+  const result = await askScopeFromBody({
+    question: "Summarize everything.",
+    scope: { mode: "vault", max_chains: 26 }
+  }, env);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "scope_too_broad_for_synthesis");
+  assert.equal(result.max_chains, 25);
+  assert.equal(result.resolved_chain_count, 26);
+});
+
+test("V7.7.2 ask_scope: a participating headless chain fails closed before synthesis", async () => {
+  const fixture = makeAskFixture({
+    chainHeads: [{ chain: "alpha", head_hash: ASK_ALPHA_HEAD, updated_at: "2026-09-06T00:00:00Z" }]
+  });
+  fixture.stones.push({ hash: "e".repeat(64), chain_hash: "headless", repo: "org/headless" });
+  const env = makeSearchEnv(fixture);
+  const result = await askScopeFromBody({
+    question: "Compare alpha and headless.",
+    scope: { mode: "multi", chains: ["alpha", "headless"] }
+  }, env);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "scope_chain_head_missing");
+  assert.equal(result.chain, "headless");
+});
+
+test("V7.7.2 ask_scope: authority movement detected after model synthesis fails closed", async () => {
+  const fixture = makeAskFixture({
+    headMutationSchedule: {
+      chain: "alpha",
+      sequence: [
+        ASK_ALPHA_HEAD, ASK_ALPHA_HEAD, ASK_ALPHA_HEAD, ASK_ALPHA_HEAD,
+        ASK_ALPHA_HEAD, ASK_ALPHA_HEAD, ASK_ALPHA_HEAD, ASK_ALPHA_HEAD,
+        "f".repeat(64)
+      ]
+    }
+  });
+  const env = makeSearchEnv(fixture);
+  const result = await askScopeFromBody({
+    question: "What shared scope behavior is current?",
+    scope: { mode: "multi", chains: ["alpha", "beta"] },
+    top_k: 2,
+    per_chain_k: 1,
+    max_expansions: 2
+  }, env);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "scope_compile_race");
+  assert.equal(result.phase, "post_model");
+  assert.equal(result.chain, "alpha");
 });
