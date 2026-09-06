@@ -86,7 +86,7 @@ import {
   SCOPE_FIND_TOOL_DEFINITION
 } from "./vault-catalog.js";
 
-const VERSION = "0.5.26";
+const VERSION = "0.5.27";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -317,7 +317,7 @@ function routes() {
     "POST /v2/find-scope",
     "GET /v2/chains/:chain/manifest?detail=summary|compact|orientation|full&since=ISO&path=...", 
     "GET /v2/stones/:hash?level=lod1-5",
-    "GET /v2/chains/:chain/resume?detail=full|compact&since=ISO&path=..."
+    "GET /v2/chains/:chain/resume?detail=full|compact|start_here&since=ISO&path=..."
   ];
 }
 
@@ -1216,13 +1216,13 @@ function mcpTools() {
     },
     {
       name: "cairnstone_resume_chain",
-      description: "Deterministic one-call chain resume/orientation. detail=full (default, backward compatible) returns canonical HEAD provenance, every accepted path head, and every edge touching HEAD. V7.6.3 detail=compact returns the same HEAD provenance/HEAD-edge neighborhood plus the complete accepted-authority digest/root and counts while transmitting path-head metadata only for exact paths[] and/or accepted heads updated since an ISO cursor. Compact responses include an accepted-state next_cursor and explicit full-expansion recipe. Read-only: never creates stones or moves accepted state.",
+      description: "Deterministic one-call chain resume/orientation. detail=start_here is the V7.7.1a bounded pickup card: it returns canonical HEAD identity + LOD5 summary + bounded primitive metadata/next, cryptographically commits to the complete accepted path-head vector, rechecks that vector before returning, and transmits zero path-head metadata. detail=full (default, backward compatible) returns canonical HEAD provenance, every accepted path head, and every edge touching HEAD. detail=compact returns the same HEAD provenance/HEAD-edge neighborhood plus the complete accepted-authority digest/root and counts while transmitting path-head metadata only for exact paths[] and/or accepted heads updated since an ISO cursor. Read-only: never creates stones or moves accepted state.",
       inputSchema: {
         type: "object",
         required: ["chain"],
         properties: {
           chain: { type: "string" },
-          detail: { type: "string", enum: ["full", "compact"] },
+          detail: { type: "string", enum: ["full", "compact", "start_here"] },
           since: { type: "string", description: "compact only: ISO accepted-state cursor; include path heads updated at/after it." },
           paths: { type: "array", items: { type: "string" }, maxItems: 50, description: "compact only: exact accepted paths whose metadata should be represented." }
         }
@@ -2697,6 +2697,44 @@ export function latestAcceptedStateCursor(headUpdatedAt, pathHeads) {
   return candidates.length ? candidates.sort().at(-1) : null;
 }
 
+function boundedStartHereText(value, maxLength) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text) return null;
+  return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+export function buildStartHereCard(canonicalHead, stoneJson, provenance) {
+  const metadata = isObject(stoneJson && stoneJson.metadata) ? stoneJson.metadata : {};
+  const layers = isObject(stoneJson && stoneJson.layers) ? stoneJson.layers : {};
+  const preferredKeys = ["milestone", "status", "runtime", "version", "repo_sha", "workflow_run", "phase", "next"];
+  const orderedKeys = [...preferredKeys, ...Object.keys(metadata).sort()].filter((key, index, all) => all.indexOf(key) === index);
+  const compactMetadata = {};
+  for (const key of orderedKeys) {
+    if (Object.keys(compactMetadata).length >= 12) break;
+    const value = metadata[key];
+    if (typeof value === "string") {
+      const bounded = boundedStartHereText(value, 256);
+      if (bounded !== null) compactMetadata[key] = bounded;
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      compactMetadata[key] = value;
+    }
+  }
+
+  return {
+    schema: "cairnstone-start-here-card-v1",
+    stone_hash: canonicalHead.hash,
+    title: boundedStartHereText(canonicalHead.title, 512),
+    path: canonicalHead.path || null,
+    repo: canonicalHead.repo || null,
+    commit_sha: canonicalHead.commit_sha || null,
+    summary: boundedStartHereText(layers.lod5, 1200),
+    next: typeof compactMetadata.next === "string" ? compactMetadata.next : null,
+    metadata: compactMetadata,
+    provenance
+  };
+}
+
 // V6.4 full mode remains byte/shape compatible. V7.6.3 compact mode reuses
 // the exact V7.6.1 accepted-authority manifest identity while omitting
 // unrequested path-head metadata from transmission.
@@ -2704,7 +2742,7 @@ async function resumeChainFromBody(body, env) {
   requireBindings(env);
   const chain = requiredString(body.chain, "chain");
   const detail = body.detail === undefined || body.detail === null || body.detail === "" ? "full" : String(body.detail);
-  if (!["full", "compact"].includes(detail)) return { ok: false, error: "invalid_resume_detail", allowed: ["full", "compact"] };
+  if (!["full", "compact", "start_here"].includes(detail)) return { ok: false, error: "invalid_resume_detail", allowed: ["full", "compact", "start_here"] };
 
   let requestedPaths = [];
   let since = null;
@@ -2800,6 +2838,80 @@ async function resumeChainFromBody(body, env) {
     commit_sha: headStoneRow.commit_sha || null,
     source_type: metadata.source_type || (isObject(metadata.github) ? "github_file" : null)
   };
+
+  if (detail === "start_here") {
+    const authorityManifest = await computeAcceptedAuthorityManifest({
+      chain,
+      chain_head: canonical_head.hash,
+      path_heads
+    });
+
+    // V7.7.1a: the card is intentionally tiny, but it is not allowed to be
+    // assembled from a mixed accepted-state generation. Re-read both the
+    // chain HEAD and complete path-head vector and fail closed if either
+    // changed while the card was being assembled.
+    const verifyHeadRow = await env.CAIRNSTONE_DB.prepare(
+      "SELECT head_hash, updated_at FROM chain_heads WHERE chain = ?"
+    ).bind(chain).first();
+    if (!verifyHeadRow || verifyHeadRow.head_hash !== canonical_head.hash) {
+      return { ok: false, error: "start_here_orientation_race", chain, detail: "chain_head_changed_during_card_compile" };
+    }
+    const verifyPathHeadsResult = await env.CAIRNSTONE_DB.prepare(
+      `SELECT ph.path AS path, ph.head_hash AS stone_hash, ph.updated_at AS updated_at,
+              s.repo AS repo, s.commit_sha AS commit_sha
+       FROM path_heads ph
+       LEFT JOIN stones s ON s.hash = ph.head_hash
+       WHERE ph.chain = ?
+       ORDER BY ph.path ASC`
+    ).bind(chain).all();
+    const verifyPathHeads = (verifyPathHeadsResult.results || []).map(row => ({
+      path: row.path,
+      stone_hash: row.stone_hash,
+      repo: row.repo || null,
+      commit_sha: row.commit_sha || null,
+      updated_at: row.updated_at
+    }));
+    const verifyManifest = await computeAcceptedAuthorityManifest({
+      chain,
+      chain_head: verifyHeadRow.head_hash,
+      path_heads: verifyPathHeads
+    });
+    if (verifyManifest.authority_manifest_id !== authorityManifest.authority_manifest_id ||
+        verifyManifest.path_heads_digest !== authorityManifest.path_heads_digest) {
+      return { ok: false, error: "start_here_orientation_race", chain, detail: "path_heads_changed_during_card_compile" };
+    }
+
+    return {
+      ok: true,
+      chain,
+      detail: "start_here",
+      start_here: buildStartHereCard(canonical_head, stoneJson, provenance),
+      authority: {
+        ...authorityManifest,
+        mode: "start_here_orientation",
+        represented_path_head_count: 0,
+        omitted_path_head_count: authorityManifest.full_path_head_count,
+        full_vector_verified: true
+      },
+      path_heads: [],
+      path_heads_complete: authorityManifest.full_path_head_count === 0,
+      accepted_state_cursor: {
+        next_cursor: latestAcceptedStateCursor(verifyHeadRow.updated_at, verifyPathHeads),
+        chain_head_updated_at: verifyHeadRow.updated_at
+      },
+      expansion: {
+        tool: "cairnstone_resume_chain",
+        arguments: { chain, detail: "compact" },
+        expected_authority_manifest_id: authorityManifest.authority_manifest_id,
+        expected_path_heads_digest: authorityManifest.path_heads_digest
+      },
+      resume: {
+        canonical_source: "chain_head",
+        timestamp_ordering_used: false,
+        full_authority_vector_verified: true
+      }
+    };
+  }
 
   if (detail === "compact") {
     const authorityManifest = await computeAcceptedAuthorityManifest({
