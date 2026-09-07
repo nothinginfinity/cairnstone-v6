@@ -1,12 +1,12 @@
-// Compact-result contract for CairnStone subagents (first bounded slice).
+// Compact-result contract for CairnStone subagents.
 //
 // Schema: cairnstone-subagent-result-v1
 //
-// Purpose: wrap an existing V7.2/V7.4 cairnstone_delegate success/failure into a
-// parent-friendly envelope so outer LLMs keep answer + citations instead of the
-// fuller cairnstone-delegation-result-v1 evidence dump. This slice does NOT add
-// a multi-turn brokered tool loop, does NOT mutate chain/path HEAD, and grants
-// zero execution/mutation authority.
+// Purpose: wrap an existing V7.2/V7.4 cairnstone_delegate success/failure
+// (including the brokered multi-turn read loop) into a parent-friendly
+// envelope so outer LLMs keep answer + citations instead of the fuller
+// cairnstone-delegation-result-v1 evidence dump. Never mutates chain/path
+// HEAD; grants zero execution/mutation authority.
 //
 // Parent consumption rule:
 //   default keep: answer + citations (+ identities/diagnostics as needed)
@@ -211,35 +211,78 @@ export function buildExpandHintsFromDelegationEvidence(evidence) {
 
 export function buildToolReceiptsFromDelegation(delegation) {
   const receipts = [];
+  const seen = new Set();
+  const push = item => {
+    if (!item || !isNonEmptyString(item.tool_id)) return;
+    const toolId = item.tool_id.trim();
+    const hash = isNonEmptyString(item.stone_hash) && STONE_HASH_RE.test(item.stone_hash)
+      ? item.stone_hash.toLowerCase()
+      : (isNonEmptyString(item.receipt_stone_hash) && STONE_HASH_RE.test(item.receipt_stone_hash)
+        ? item.receipt_stone_hash.toLowerCase()
+        : null);
+    const key = `${toolId}:${hash || ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const receipt = {
+      tool_id: toolId,
+      read_only: true
+    };
+    if (hash) receipt.receipt_stone_hash = hash;
+    if (isNonEmptyString(item.chain)) receipt.chain = item.chain.trim();
+    receipts.push(receipt);
+  };
+
   const fromGrounding = Array.isArray(delegation?.grounding?.read_receipts)
     ? delegation.grounding.read_receipts
     : [];
   for (const item of fromGrounding) {
-    if (!item || !isNonEmptyString(item.tool_id)) continue;
-    const receipt = {
-      tool_id: item.tool_id.trim(),
-      read_only: true
-    };
-    if (isNonEmptyString(item.stone_hash) && STONE_HASH_RE.test(item.stone_hash)) {
-      receipt.receipt_stone_hash = item.stone_hash.toLowerCase();
-    }
-    if (isNonEmptyString(item.chain)) receipt.chain = item.chain.trim();
-    receipts.push(receipt);
+    push(item);
+    if (receipts.length >= MAX_TOOL_RECEIPTS) return receipts;
+  }
+
+  const fromLoop = Array.isArray(delegation?.loop?.read_receipts)
+    ? delegation.loop.read_receipts
+    : [];
+  for (const item of fromLoop) {
+    push(item);
+    if (receipts.length >= MAX_TOOL_RECEIPTS) return receipts;
+  }
+
+  // Also accept compact evidence entries that already carry receipt hashes.
+  const fromLoopEvidence = Array.isArray(delegation?.loop?.evidence)
+    ? delegation.loop.evidence
+    : [];
+  for (const item of fromLoopEvidence) {
+    if (!item) continue;
+    push({
+      tool_id: item.tool_id,
+      stone_hash: item.receipt_stone_hash,
+      chain: item.receipt_chain
+    });
     if (receipts.length >= MAX_TOOL_RECEIPTS) break;
   }
+
   return receipts;
 }
 
-function readOnlyPolicy(toolsExecuted = 0) {
+function readOnlyPolicy(toolsExecuted = 0, options = {}) {
+  const delegationMode = options.delegation_mode === "brokered_read_loop"
+    ? "brokered_read_loop"
+    : "read_only";
   return {
-    delegation_mode: "read_only",
-    tools_exposed_to_model: 0,
+    delegation_mode: delegationMode,
+    tools_exposed_to_model: Number.isFinite(Number(options.tools_exposed_to_model))
+      ? Number(options.tools_exposed_to_model)
+      : 0,
     tools_executed: toolsExecuted,
     execution_authority: false,
     mutation_authority: false,
     accepted_state_mutation: false,
     parent_should_keep: ["answer", "citations"],
-    expand_via: "expand_hints"
+    expand_via: "expand_hints",
+    ...(delegationMode === "brokered_read_loop"
+      ? { tool_intents_only: true, model_intent_is_execution_authority: false }
+      : {})
   };
 }
 
@@ -356,6 +399,21 @@ export async function buildSubagentResultFromDelegation({
     : (Number.isFinite(Number(delegation?.diagnostics?.tools_executed))
       ? Number(delegation.diagnostics.tools_executed)
       : 0);
+  const toolsExposed = Number.isFinite(Number(delegation?.policy?.tools_exposed_to_model))
+    ? Number(delegation.policy.tools_exposed_to_model)
+    : 0;
+  const delegationMode = delegation?.policy?.delegation_mode === "brokered_read_loop"
+    ? "brokered_read_loop"
+    : "read_only";
+  const turns = Number.isFinite(Number(delegation?.diagnostics?.turns))
+    ? Number(delegation.diagnostics.turns)
+    : (Number.isFinite(Number(delegation?.loop?.turns))
+      ? Number(delegation.loop.turns)
+      : (delegation?.ok === true ? 1 : 0));
+  const policyOptions = {
+    delegation_mode: delegationMode,
+    tools_exposed_to_model: toolsExposed
+  };
 
   const identities = baseIdentities({
     actor_id: effectiveActorId,
@@ -386,7 +444,7 @@ export async function buildSubagentResultFromDelegation({
         input_tokens: null,
         output_tokens: null
       },
-      policy: readOnlyPolicy(0)
+      policy: readOnlyPolicy(0, policyOptions)
     };
   }
 
@@ -406,16 +464,24 @@ export async function buildSubagentResultFromDelegation({
         max_answer_bytes: SUBAGENT_RESULT_MAX_ANSWER_BYTES,
         max_answer_tokens_estimate: SUBAGENT_RESULT_MAX_ANSWER_TOKENS_ESTIMATE,
         answer_truncated: false,
-        turns: 0,
+        turns,
+        stop_reason: delegation?.diagnostics?.stop_reason || delegation?.loop?.stop_reason || null,
         input_tokens: delegation.usage?.input_tokens ?? null,
         output_tokens: delegation.usage?.output_tokens ?? null,
-        ...(isObject(delegation.diagnostics) ? { delegation: delegation.diagnostics } : {})
+        ...(isObject(delegation.diagnostics) ? { delegation: delegation.diagnostics } : {}),
+        ...(isObject(delegation.loop) ? { loop: {
+          max_turns: delegation.loop.max_turns ?? null,
+          turns: delegation.loop.turns ?? null,
+          stop_reason: delegation.loop.stop_reason ?? null,
+          allowlist_size: Array.isArray(delegation.loop.allowlist) ? delegation.loop.allowlist.length : null
+        } } : {})
       },
       policy: {
-        ...readOnlyPolicy(toolsExecuted),
+        ...readOnlyPolicy(toolsExecuted, policyOptions),
         ...(isObject(delegation.policy)
           ? {
               tools_executed: toolsExecuted,
+              tools_exposed_to_model: toolsExposed,
               execution_authority: false,
               mutation_authority: false,
               accepted_state_mutation: false
@@ -438,7 +504,8 @@ export async function buildSubagentResultFromDelegation({
     max_answer_bytes: SUBAGENT_RESULT_MAX_ANSWER_BYTES,
     max_answer_tokens_estimate: SUBAGENT_RESULT_MAX_ANSWER_TOKENS_ESTIMATE,
     answer_truncated: false,
-    turns: 1,
+    turns,
+    stop_reason: delegation?.diagnostics?.stop_reason || delegation?.loop?.stop_reason || (turns > 1 ? "final_answer" : null),
     input_tokens: delegation.usage?.input_tokens ?? null,
     output_tokens: delegation.usage?.output_tokens ?? null,
     finish_reason: delegation.output?.finish_reason || null,
@@ -457,7 +524,13 @@ export async function buildSubagentResultFromDelegation({
       context_package_returned: false,
       server_carried_context_package: true,
       tools_executed: toolsExecuted
-    })
+    }),
+    ...(isObject(delegation.loop) ? { loop: {
+      max_turns: delegation.loop.max_turns ?? null,
+      turns: delegation.loop.turns ?? null,
+      stop_reason: delegation.loop.stop_reason ?? null,
+      allowlist_size: Array.isArray(delegation.loop.allowlist) ? delegation.loop.allowlist.length : null
+    } } : {})
   };
 
   if (answerBytes > SUBAGENT_RESULT_MAX_ANSWER_BYTES) {
@@ -476,7 +549,7 @@ export async function buildSubagentResultFromDelegation({
       expand_hints: expandHints,
       tool_receipts: toolReceipts,
       diagnostics: { ...diagnostics, answer_truncated: true, fail_closed: true },
-      policy: readOnlyPolicy(toolsExecuted)
+      policy: readOnlyPolicy(toolsExecuted, policyOptions)
     };
   }
 
@@ -488,6 +561,6 @@ export async function buildSubagentResultFromDelegation({
     expand_hints: expandHints,
     tool_receipts: toolReceipts,
     diagnostics,
-    policy: readOnlyPolicy(toolsExecuted)
+    policy: readOnlyPolicy(toolsExecuted, policyOptions)
   };
 }

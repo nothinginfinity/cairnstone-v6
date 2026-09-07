@@ -129,7 +129,7 @@ See [`docs/ROADMAP_V7.md`](docs/ROADMAP_V7.md) and [`docs/V7_0_CONTEXT_COMPILER_
 
 ### Parent agents: compact subagent results
 
-For delegated vault work, prefer `cairnstone_delegate(..., compact_result=true)` so the parent keeps **answer + citations** (`cairnstone-subagent-result-v1`) instead of the fuller delegation evidence dump. Expand only via `expand_hints`. See [`docs/V7_SUBAGENT_COMPACT_RESULT.md`](docs/V7_SUBAGENT_COMPACT_RESULT.md).
+For delegated vault work, prefer `cairnstone_delegate(..., compact_result=true)` so the parent keeps **answer + citations** (`cairnstone-subagent-result-v1`) instead of the fuller delegation evidence dump. Expand only via `expand_hints`. See [`docs/V7_SUBAGENT_COMPACT_RESULT.md`](docs/V7_SUBAGENT_COMPACT_RESULT.md). For iterative vault reads, set `max_turns` (recommended `4`) to enable the brokered automatic-read loop; loop mode defaults to compact results. See [`docs/V7_SUBAGENT_DELEGATE_LOOP.md`](docs/V7_SUBAGENT_DELEGATE_LOOP.md).
 
 ## Start here for AI agents
 
