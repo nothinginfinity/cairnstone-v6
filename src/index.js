@@ -141,6 +141,12 @@ export default {
       if (request.method === "OPTIONS") return withCors(new Response(null, { status: 204 }));
       if (url.pathname === "/mcp") return handleMcp(request, env, url);
       if (url.pathname === "/mcp/core") return handleMcp(request, env, url, { core: true });
+      // Client-catalog-cache workaround (AC1 thread cairnstone-conversation-2026-09-06b,
+      // "MCP Twin Phase 1 PASS"): identical full-catalog surface as /mcp under a second
+      // path, so a client that dedupes/caches tools/list by connector URL can add this as
+      // a distinct connector and force a fresh tools/list fetch after a tool-schema deploy.
+      // No new logic, no new bindings, no new identity -- same handleMcp, same env, same D1/R2.
+      if (url.pathname === "/mcp-b") return handleMcp(request, env, url);
       if (request.method === "GET" && url.pathname === "/") return json(landing(env, url));
       if (request.method === "GET" && url.pathname === "/health") return json(health(env));
       if (request.method === "GET" && url.pathname === "/v1/stones") return json(await listStones(env, url));
@@ -313,6 +319,8 @@ function routes() {
     "GET /mcp",
     "POST /mcp/core",
     "GET /mcp/core",
+    "POST /mcp-b",
+    "GET /mcp-b",
     "POST /v1/stones",
     "GET /v1/stones",
     "POST /v1/stones/github",
