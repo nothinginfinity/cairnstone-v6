@@ -1000,14 +1000,16 @@ function mcpTools() {
     HANDOFF_DISPATCH_TOOL_DEFINITION,
     {
       name: "cairnstone_get_inbox",
-      description: "AC1: list compact correspondence metadata and LOD5 for one recipient without mutating message Stones.",
+      description: "AC1: list compact correspondence metadata and LOD5 for one recipient without mutating message Stones. Optional since filters inclusive on delivery created_at; optional thread_id is an exact match.",
       inputSchema: {
         type: "object",
         required: ["recipient_id"],
         properties: {
           recipient_id: { type: "string" },
           status: { type: "string", enum: ["queued", "delivered", "read", "acked", "archived"] },
-          limit: { type: "number", minimum: 1, maximum: 200 }
+          limit: { type: "number", minimum: 1, maximum: 200 },
+          since: { type: "string", description: "Inclusive lower bound on delivery created_at (ISO-8601)." },
+          thread_id: { type: "string", description: "Exact thread_id filter." }
         },
         additionalProperties: false
       }
