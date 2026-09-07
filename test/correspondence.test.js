@@ -22,12 +22,15 @@ function makeHarness(options = {}) {
     },
     async listInbox(recipientId, options = {}) {
       const limit = Math.max(1, Math.min(200, Number(options.limit || 50)));
+      const after = options.after_cursor || null;
+      const compare = (left, right) => String(left.created_at).localeCompare(String(right.created_at)) || String(left.id).localeCompare(String(right.id));
       return deliveries
         .filter(row => row.recipient_id === recipientId)
         .filter(row => !options.status || row.status === options.status)
         .filter(row => !options.thread_id || row.thread_id === options.thread_id)
         .filter(row => !options.since || String(row.created_at) >= String(options.since))
-        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+        .filter(row => !after || String(row.created_at) > String(after.created_at) || (String(row.created_at) === String(after.created_at) && String(row.id) > String(after.id)))
+        .sort(after ? compare : (a, b) => compare(b, a))
         .slice(0, limit)
         .map(row => ({ ...row, stone_json: stones.get(row.stone_hash).stone_json }));
     },
@@ -398,4 +401,121 @@ test("AC1 message_id reuse with changed content fails closed", async () => {
   assert.equal(conflict.error, "idempotency_conflict");
   assert.equal(h.stoneCreates, 1);
   assert.equal(h.deliveries.length, 1);
+});
+
+test("V7.7.4a immutable messages derive dual-plane labels and Scope hints without authority", async () => {
+  const h = makeHarness();
+  const sent = await h.service.sendMessage({
+    message_id: "msg:mailbox-labels",
+    from: "chatgpt:chat",
+    to: ["claude:chat"],
+    content: "Review the scoped design note.",
+    intent: "message",
+    labels: ["review-request"],
+    scope: { mode: "single_chain", chains: ["cairnstone-v6-project-memory"] }
+  });
+  assert.equal(sent.ok, true);
+  const inbox = await h.service.getInbox({ recipient_id: "claude:chat" });
+  assert.equal(inbox.plane, "chat");
+  assert.deepEqual(inbox.messages[0].labels, ["chat-plane", "review-request", "scope-bound"]);
+  assert.equal(inbox.messages[0].scope.mode, "single_chain");
+  assert.equal(inbox.messages[0].scope.authority, "transport_hint_only");
+  const stoneMeta = h.stones.get(sent.stone_hash).stone_json;
+  assert.equal(JSON.parse(stoneMeta).metadata.correspondence.policy.scope_hint_authority, false);
+});
+
+test("V7.7.4a task flows deny chat plane and work-plane tasks remain allowed", async () => {
+  const h = makeHarness();
+  const denied = await h.service.sendMessage({
+    message_id: "msg:chat-task-denied",
+    from: "chatgpt:chat",
+    to: ["grok-bot:cairnstone-v6"],
+    content: "Do durable engineering work.",
+    intent: "task_request"
+  });
+  assert.equal(denied.ok, false);
+  assert.equal(denied.error, "mailbox_policy_denied");
+  assert.equal(denied.policy.reason, "task_flow_requires_work_or_custom_plane");
+
+  const allowed = await h.service.sendMessage({
+    message_id: "msg:work-task-allowed",
+    from: "chatgpt:cairnstone-v6",
+    to: ["grok-bot:cairnstone-v6"],
+    content: "Do durable engineering work.",
+    intent: "task_request"
+  });
+  assert.equal(allowed.ok, true);
+  const inbox = await h.service.getInbox({ recipient_id: "grok-bot:cairnstone-v6" });
+  assert.ok(inbox.messages[0].labels.includes("work-plane"));
+  assert.ok(inbox.messages[0].labels.includes("task-open"));
+});
+
+test("V7.7.4a mailbox cursor is exclusive and returns only later events", async () => {
+  const h = makeHarness();
+  await h.service.sendMessage({
+    message_id: "msg:cursor-1",
+    from: "chatgpt:cairnstone-v6",
+    to: ["claude:cairnstone-v6"],
+    content: "first"
+  });
+  const initial = await h.service.getInbox({ recipient_id: "claude:cairnstone-v6" });
+  assert.equal(initial.total, 1);
+  assert.ok(initial.next_cursor);
+  await h.service.sendMessage({
+    message_id: "msg:cursor-2",
+    from: "chatgpt:cairnstone-v6",
+    to: ["claude:cairnstone-v6"],
+    content: "second"
+  });
+  const delta = await h.service.getInbox({ recipient_id: "claude:cairnstone-v6", after_cursor: initial.next_cursor });
+  assert.equal(delta.cursor_inclusive, false);
+  assert.equal(delta.total, 1);
+  assert.equal(delta.messages[0].message_id, "msg:cursor-2");
+});
+
+test("V7.7.4a thread views summarize participants tasks labels and Scope without new authority", async () => {
+  const h = makeHarness();
+  const worker = "grok-bot:cairnstone-v6";
+  const parent = "chatgpt:cairnstone-v6";
+  await h.service.sendMessage({
+    message_id: "msg:thread-task",
+    thread_id: "thread-control-plane",
+    from: parent,
+    to: [worker],
+    content: "Inspect the mailbox control plane.",
+    intent: "task_request",
+    scope: { mode: "repo", repos: ["nothinginfinity/cairnstone-v6"] }
+  });
+  await h.service.sendMessage({
+    message_id: "msg:thread-result",
+    thread_id: "thread-control-plane",
+    from: worker,
+    to: [parent],
+    content: "Inspection complete.",
+    intent: "task_result"
+  });
+  await h.service.sendMessage({
+    message_id: "msg:thread-other",
+    thread_id: "thread-other",
+    from: worker,
+    to: [parent],
+    content: "Other thread."
+  });
+
+  const threads = await h.service.listThreads({ recipient_id: parent });
+  assert.equal(threads.ok, true);
+  assert.equal(threads.schema, "cairnstone-mailbox-thread-list-v1");
+  assert.equal(threads.total, 2);
+  const target = threads.threads.find(thread => thread.thread_id === "thread-control-plane");
+  assert.ok(target);
+  assert.equal(target.open_task_count, 0);
+  assert.equal(target.authority, "correspondence_transport_only");
+  assert.ok(target.labels.includes("task-result"));
+  assert.equal(target.scope_hints.length, 0, "recipient sees only messages delivered to itself; sender-side task request is not fabricated into its inbox view");
+
+  const thread = await h.service.getThread({ recipient_id: parent, thread_id: "thread-control-plane" });
+  assert.equal(thread.ok, true);
+  assert.equal(thread.thread.message_count, 1);
+  assert.equal(thread.messages[0].intent, "task_result");
+  assert.equal(thread.policy.accepted_state_authority, false);
 });
