@@ -418,6 +418,115 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       additionalProperties: false
     }
   }),
+  // V7.7.4a mailbox control-plane surfaces. Inbox/thread reads expose
+  // recipient-private coordination metadata, so they are read-class but
+  // scoped_grant (never automatic model reads). Policy preview is pure and
+  // automatic. read_message also changes delivery state and is mutation-class.
+  Object.freeze({
+    tool_id: "cairnstone_get_inbox",
+    connector: "cairnstone",
+    handler: "cairnstone_get_inbox",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "Read one recipient's compact mailbox cards with bounded cursor/filter semantics; recipient-private and never automatic for models.",
+    input_schema: {
+      type: "object",
+      required: ["recipient_id"],
+      properties: {
+        recipient_id: { type: "string" },
+        status: { type: "string", enum: ["queued", "delivered", "read", "acked", "archived"] },
+        limit: { type: "number", minimum: 1, maximum: 200 },
+        since: { type: "string", description: "Inclusive lower bound on delivery created_at (ISO-8601). Legacy compatibility filter." },
+        after_cursor: { type: "string", description: "Exclusive opaque mailbox event cursor returned as next_cursor; preferred for incremental pickup without duplicate timestamps." },
+        thread_id: { type: "string", description: "Exact thread_id filter." },
+        labels: {
+          type: "array", maxItems: 20, items: {
+            type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound"]
+          }
+        }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_list_threads",
+    connector: "cairnstone",
+    handler: "cairnstone_list_threads",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "Derive bounded thread summaries for one recipient; recipient-private and never automatic for models.",
+    input_schema: {
+      type: "object",
+      required: ["recipient_id"],
+      properties: {
+        recipient_id: { type: "string" },
+        status: { type: "string", enum: ["queued", "delivered", "read", "acked", "archived"] },
+        after_cursor: { type: "string" },
+        limit: { type: "number", minimum: 1, maximum: 100 }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_get_thread",
+    connector: "cairnstone",
+    handler: "cairnstone_get_thread",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "Read one bounded correspondence thread for one recipient; recipient-private and never automatic for models.",
+    input_schema: {
+      type: "object",
+      required: ["recipient_id", "thread_id"],
+      properties: {
+        recipient_id: { type: "string" },
+        thread_id: { type: "string" },
+        limit: { type: "number", minimum: 1, maximum: 200 }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_mailbox_policy_preview",
+    connector: "cairnstone",
+    handler: "cairnstone_mailbox_policy_preview",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "Preview deterministic dual-plane communication policy without reading message contents or mutating state.",
+    input_schema: {
+      type: "object",
+      required: ["from", "to"],
+      properties: {
+        from: { type: "string" },
+        to: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 25 },
+        intent: { type: "string", enum: ["message", "handoff", "task_request", "task_result", "ack"] }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_read_message",
+    connector: "cairnstone",
+    handler: "cairnstone_read_message",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "Read one recipient message and mutate only that recipient's delivery state to read; never accepted-state authority.",
+    input_schema: {
+      type: "object",
+      required: ["recipient_id"],
+      properties: {
+        recipient_id: { type: "string" },
+        message_id: { type: "string" },
+        stone_hash: { type: "string" }
+      },
+      oneOf: [{ required: ["message_id"] }, { required: ["stone_hash"] }],
+      additionalProperties: false
+    }
+  }),
   Object.freeze({
     tool_id: "cairnstone_send_message",
     connector: "cairnstone",
@@ -436,8 +545,24 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
         message_id: { type: "string" },
         thread_id: { type: "string" },
         intent: { type: "string" },
-        priority: { type: "string" },
-        subject: { type: "string" }
+        priority: { type: "string", enum: ["low", "normal", "high", "urgent"] },
+        subject: { type: "string" },
+        labels: {
+          type: "array", maxItems: 20, items: {
+            type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound"]
+          }
+        },
+        scope: {
+          type: "object",
+          required: ["mode"],
+          properties: {
+            mode: { type: "string", enum: ["single_chain", "repo", "multi", "vault"] },
+            repos: { type: "array", items: { type: "string" }, maxItems: 25 },
+            chains: { type: "array", items: { type: "string" }, maxItems: 50 },
+            max_chains: { type: "integer", minimum: 1, maximum: 500 }
+          },
+          additionalProperties: false
+        }
       },
       additionalProperties: false
     }
