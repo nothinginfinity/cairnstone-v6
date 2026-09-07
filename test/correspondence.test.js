@@ -21,9 +21,14 @@ function makeHarness(options = {}) {
       return this.findByMessage(rows[0].sender_id, rows[0].message_id);
     },
     async listInbox(recipientId, options = {}) {
+      const limit = Math.max(1, Math.min(200, Number(options.limit || 50)));
       return deliveries
-        .filter(row => row.recipient_id === recipientId && (!options.status || row.status === options.status))
-        .slice(0, options.limit || 50)
+        .filter(row => row.recipient_id === recipientId)
+        .filter(row => !options.status || row.status === options.status)
+        .filter(row => !options.thread_id || row.thread_id === options.thread_id)
+        .filter(row => !options.since || String(row.created_at) >= String(options.since))
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+        .slice(0, limit)
         .map(row => ({ ...row, stone_json: stones.get(row.stone_hash).stone_json }));
     },
     async getDelivery(recipientId, selector) {
@@ -283,6 +288,99 @@ test("AC1 retry reuses the original stone and creates no duplicate delivery", as
   assert.equal(second.stone_hash, first.stone_hash);
   assert.equal(h.stoneCreates, 1);
   assert.equal(h.deliveries.length, 1);
+});
+
+test("AC1 get_inbox filters by thread_id exactly", async () => {
+  const h = makeHarness();
+  await h.service.sendMessage({
+    message_id: "msg:thread-a",
+    thread_id: "thread-alpha",
+    from: "agent:chatgpt:jared",
+    to: ["agent:claude:jared"],
+    content: "alpha body"
+  });
+  await h.service.sendMessage({
+    message_id: "msg:thread-b",
+    thread_id: "thread-beta",
+    from: "agent:chatgpt:jared",
+    to: ["agent:claude:jared"],
+    content: "beta body"
+  });
+  const inbox = await h.service.getInbox({ recipient_id: "agent:claude:jared", thread_id: "thread-alpha" });
+  assert.equal(inbox.ok, true);
+  assert.equal(inbox.thread_id, "thread-alpha");
+  assert.equal(inbox.total, 1);
+  assert.equal(inbox.messages[0].message_id, "msg:thread-a");
+});
+
+test("AC1 get_inbox since=created_at inclusive excludes older rows", async () => {
+  const h = makeHarness();
+  const first = await h.service.sendMessage({
+    message_id: "msg:older",
+    from: "agent:chatgpt:jared",
+    to: ["agent:claude:jared"],
+    content: "older"
+  });
+  const second = await h.service.sendMessage({
+    message_id: "msg:newer",
+    from: "agent:chatgpt:jared",
+    to: ["agent:claude:jared"],
+    content: "newer"
+  });
+  const cutoff = h.deliveries.find(row => row.message_id === "msg:newer").created_at;
+  const inbox = await h.service.getInbox({ recipient_id: "agent:claude:jared", since: cutoff });
+  assert.equal(inbox.ok, true);
+  assert.equal(inbox.since, cutoff);
+  assert.equal(inbox.total, 1);
+  assert.equal(inbox.messages[0].message_id, "msg:newer");
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+});
+
+test("AC1 get_inbox since + thread_id + status compose with AND", async () => {
+  const h = makeHarness();
+  await h.service.sendMessage({
+    message_id: "msg:and-old",
+    thread_id: "thread-and",
+    from: "agent:chatgpt:jared",
+    to: ["agent:claude:jared"],
+    content: "old and"
+  });
+  const keep = await h.service.sendMessage({
+    message_id: "msg:and-keep",
+    thread_id: "thread-and",
+    from: "agent:chatgpt:jared",
+    to: ["agent:claude:jared"],
+    content: "keep and"
+  });
+  await h.service.sendMessage({
+    message_id: "msg:and-other-thread",
+    thread_id: "thread-other",
+    from: "agent:chatgpt:jared",
+    to: ["agent:claude:jared"],
+    content: "other thread"
+  });
+  await h.service.readMessage({ recipient_id: "agent:claude:jared", message_id: "msg:and-keep" });
+  const since = h.deliveries.find(row => row.message_id === "msg:and-keep").created_at;
+  const inbox = await h.service.getInbox({
+    recipient_id: "agent:claude:jared",
+    thread_id: "thread-and",
+    status: "read",
+    since
+  });
+  assert.equal(inbox.ok, true);
+  assert.equal(inbox.status, "read");
+  assert.equal(inbox.thread_id, "thread-and");
+  assert.equal(inbox.total, 1);
+  assert.equal(inbox.messages[0].message_id, "msg:and-keep");
+  assert.equal(keep.ok, true);
+});
+
+test("AC1 get_inbox invalid since fails closed", async () => {
+  const h = makeHarness();
+  const inbox = await h.service.getInbox({ recipient_id: "agent:claude:jared", since: "not-a-date" });
+  assert.equal(inbox.ok, false);
+  assert.equal(inbox.error, "invalid_since");
 });
 
 test("AC1 message_id reuse with changed content fails closed", async () => {
