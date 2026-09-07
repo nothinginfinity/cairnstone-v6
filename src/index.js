@@ -9,10 +9,17 @@ import {
   getInboxFromBody,
   readMessageFromBody,
   sendMessageFromBody,
-  HANDOFF_DISPATCH_TOOL_DEFINITION
+  listThreadsFromBody,
+  getThreadFromBody,
+  mailboxPolicyPreviewFromBody,
+  HANDOFF_DISPATCH_TOOL_DEFINITION,
+  LIST_THREADS_TOOL_DEFINITION,
+  GET_THREAD_TOOL_DEFINITION,
+  MAILBOX_POLICY_PREVIEW_TOOL_DEFINITION
 } from "./correspondence.js";
 import {
   runTaskRequestFromBody,
+  issueMailboxCapabilityFromBody,
   RUN_TASK_REQUEST_TOOL_DEFINITION
 } from "./worker-session.js";
 import { askChainFromBody, ASK_TOOL_DEFINITION } from "./ask.js";
@@ -92,7 +99,7 @@ import {
   SCOPE_ASK_TOOL_DEFINITION
 } from "./vault-catalog.js";
 
-const VERSION = "0.5.28";
+const VERSION = "0.5.29";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -152,6 +159,12 @@ export default {
         const auth = await requireOperatorAuthorization(request, env);
         if (!auth.ok) return json(auth, auth.status || 401);
         return json(await listToolAuthorizationsFromBody({ status: url.searchParams.get("status") || undefined, limit: url.searchParams.get("limit") || undefined }, env));
+      }
+      if (url.pathname === "/v1/mailbox-capabilities" && request.method === "POST") {
+        const auth = await requireOperatorAuthorization(request, env);
+        if (!auth.ok) return json(auth, auth.status || 401);
+        const capabilityBody = await request.json();
+        return json(await issueMailboxCapabilityFromBody({ ...capabilityBody, issued_by: auth.subject }, env));
       }
       const authorizationMatch = url.pathname.match(/^\/v1\/tool-authorizations\/([^/]+)$/);
       if (authorizationMatch && request.method === "GET") {
@@ -308,6 +321,7 @@ function routes() {
     "POST /v1/reconcile-repo",
     "POST /v1/set-path-head",
     "GET /v1/tool-authorizations",
+    "POST /v1/mailbox-capabilities",
     "GET /v1/tool-authorizations/:authorization_request_id",
     "POST /v1/tool-authorizations/:authorization_request_id/decision",
     "POST /v1/tool-authorizations/:authorization_request_id/execute",
@@ -735,6 +749,9 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_send_message") return sendMessageFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   if (name === "cairnstone_dispatch_handoff") return dispatchHandoffFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   if (name === "cairnstone_get_inbox") return getInboxFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
+  if (name === "cairnstone_list_threads") return listThreadsFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
+  if (name === "cairnstone_get_thread") return getThreadFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
+  if (name === "cairnstone_mailbox_policy_preview") return mailboxPolicyPreviewFromBody(args);
   if (name === "cairnstone_read_message") return readMessageFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   if (name === "cairnstone_list_stones") return listStones(env, { ...args, origin: "mcp://cairnstone" });
   if (name === "cairnstone_fetch_github_file") return fetchGitHubFileFromBody(args, env);
@@ -1005,7 +1022,23 @@ function mcpTools() {
           thread_id: { type: "string" },
           intent: { type: "string", enum: ["message", "handoff", "task_request", "task_result", "ack"] },
           priority: { type: "string", enum: ["low", "normal", "high", "urgent"] },
-          subject: { type: "string" }
+          subject: { type: "string" },
+          labels: {
+            type: "array", maxItems: 20, items: {
+              type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound"]
+            }
+          },
+          scope: {
+            type: "object",
+            required: ["mode"],
+            properties: {
+              mode: { type: "string", enum: ["single_chain", "repo", "multi", "vault"] },
+              repos: { type: "array", items: { type: "string" }, maxItems: 25 },
+              chains: { type: "array", items: { type: "string" }, maxItems: 50 },
+              max_chains: { type: "integer", minimum: 1, maximum: 500 }
+            },
+            additionalProperties: false
+          }
         },
         additionalProperties: false
       }
@@ -1021,12 +1054,21 @@ function mcpTools() {
           recipient_id: { type: "string" },
           status: { type: "string", enum: ["queued", "delivered", "read", "acked", "archived"] },
           limit: { type: "number", minimum: 1, maximum: 200 },
-          since: { type: "string", description: "Inclusive lower bound on delivery created_at (ISO-8601)." },
-          thread_id: { type: "string", description: "Exact thread_id filter." }
+          since: { type: "string", description: "Inclusive lower bound on delivery created_at (ISO-8601). Legacy compatibility filter." },
+          after_cursor: { type: "string", description: "Exclusive opaque mailbox event cursor returned as next_cursor; preferred for incremental pickup without duplicate timestamps." },
+          thread_id: { type: "string", description: "Exact thread_id filter." },
+          labels: {
+            type: "array", maxItems: 20, items: {
+              type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound"]
+            }
+          }
         },
         additionalProperties: false
       }
     },
+    LIST_THREADS_TOOL_DEFINITION,
+    GET_THREAD_TOOL_DEFINITION,
+    MAILBOX_POLICY_PREVIEW_TOOL_DEFINITION,
     {
       name: "cairnstone_read_message",
       description: "AC1: read one recipient message by message_id or stone_hash and mark only its delivery state as read.",
