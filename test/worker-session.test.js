@@ -12,12 +12,24 @@ import {
   RUN_TASK_REQUEST_TOOL_DEFINITION,
   buildTaskRequestContent,
   buildTaskResultContent,
+  issueMailboxCapabilityFromBody,
   parseTaskRequest,
   selectTaskRequestCandidates,
   runTaskRequestFromBody
 } from "../src/worker-session.js";
 
 const HASH_A = "a".repeat(64);
+const TEST_ENV = { CAIRNSTONE_MAILBOX_CAPABILITY_SECRET: "worker-session-test-secret" };
+
+async function mailboxCapabilityFor(workerActorId) {
+  const issued = await issueMailboxCapabilityFromBody({
+    principal_actor_id: workerActorId,
+    scopes: ["mail.read:self", "mail.reply:self", "task.consume:self"],
+    ttl_seconds: 300
+  }, TEST_ENV);
+  assert.equal(issued.ok, true);
+  return issued.mailbox_capability;
+}
 
 function makeCorrespondenceHarness() {
   const deliveries = [];
@@ -159,6 +171,13 @@ function compactDelegationResult({ answer = "Grounded answer.", turns = 2 } = {}
   };
 }
 
+async function runWorker(body, _env, deps) {
+  return runTaskRequestFromBody({
+    ...body,
+    mailbox_capability: await mailboxCapabilityFor(body.worker_actor_id)
+  }, TEST_ENV, deps);
+}
+
 function makeRunner(options = {}) {
   const h = makeCorrespondenceHarness();
   const delegateCalls = [];
@@ -204,7 +223,7 @@ function makeRunner(options = {}) {
 test("worker-session tool schema stays closed", () => {
   assert.equal(RUN_TASK_REQUEST_TOOL_DEFINITION.name, "cairnstone_run_task_request");
   assert.equal(RUN_TASK_REQUEST_TOOL_DEFINITION.inputSchema.additionalProperties, false);
-  assert.deepEqual(RUN_TASK_REQUEST_TOOL_DEFINITION.inputSchema.required, ["worker_actor_id", "route"]);
+  assert.deepEqual(RUN_TASK_REQUEST_TOOL_DEFINITION.inputSchema.required, ["worker_actor_id", "route", "mailbox_capability"]);
 });
 
 test("build/parse task_request round-trip", () => {
@@ -327,7 +346,7 @@ test("pickup by thread_id + since produces compact task_result without HEAD writ
   assert.equal(request.chain_head_written, false);
 
   const since = h.deliveries.find(row => row.message_id === "msg:task-req-1").created_at;
-  const out = await runTaskRequestFromBody({
+  const out = await runWorker({
     worker_actor_id: worker,
     route: { provider: "mock-a", model: "mock-a/text-tools-v1" },
     thread_id: threadId,
@@ -353,6 +372,10 @@ test("pickup by thread_id + since produces compact task_result without HEAD writ
   assert.equal(delegateCalls[0].max_turns, 4);
   assert.equal(delegateCalls[0].compact_result, true);
   assert.equal(delegateCalls[0].chain, "cairnstone-conversation");
+  assert.equal(delegateCalls[0].include_inbox, false);
+  assert.deepEqual(delegateCalls[0].route, { provider: "mock-a", model: "mock-a/text-tools-v1" });
+  assert.equal(out.policy.mailbox_capability_authenticated, true);
+  assert.equal(out.policy.principal_actor_id, worker);
 
   const parentInbox = await h.service.getInbox({ recipient_id: parent, thread_id: threadId });
   assert.equal(parentInbox.ok, true);
@@ -374,6 +397,40 @@ test("pickup by thread_id + since produces compact task_result without HEAD writ
   assert.ok(h.setAsHeadCalls.every(v => v === false));
 });
 
+test("task_request transport cannot widen worker route/profile/inbox/reply policy", () => {
+  const content = buildTaskRequestContent({
+    task: "Requester task",
+    chain: "cairnstone-v6-project-memory",
+    profile_id: "cairnstone-maintainer",
+    route: { provider: "grok", model: "grok-4", credential_alias: "privileged" },
+    limits: { max_memory_bytes: 60000 },
+    generation: { max_output_tokens: 4096 },
+    include_inbox: true,
+    reply_to: "third-party:cairnstone-v6"
+  });
+  const parsed = parseTaskRequest(content);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.request.profile_id, null);
+  assert.equal(parsed.request.route, null);
+  assert.equal(parsed.request.limits, null);
+  assert.equal(parsed.request.generation, null);
+  assert.equal(parsed.request.include_inbox, false);
+  assert.equal(parsed.request.reply_to, null);
+});
+
+test("mailbox capability is bound to the claimed worker principal", async () => {
+  const { deps } = makeRunner();
+  const token = await mailboxCapabilityFor("grok-bot:cairnstone-v6");
+  const out = await runTaskRequestFromBody({
+    worker_actor_id: "chatgpt:cairnstone-v6",
+    mailbox_capability: token,
+    route: { provider: "mock-a", model: "mock-a/text-tools-v1" },
+    message_id: "msg:any"
+  }, TEST_ENV, deps);
+  assert.equal(out.ok, false);
+  assert.equal(out.error, "mailbox_capability_principal_mismatch");
+});
+
 test("message_id pickup ignores other threads and returns idle when empty", async () => {
   const { h, deps } = makeRunner();
   const worker = "grok-bot:cairnstone-v6";
@@ -391,7 +448,7 @@ test("message_id pickup ignores other threads and returns idle when empty", asyn
     })
   });
 
-  const exact = await runTaskRequestFromBody({
+  const exact = await runWorker({
     worker_actor_id: worker,
     route: { provider: "mock-a", model: "mock-a/text-tools-v1" },
     message_id: "msg:exact"
@@ -399,7 +456,7 @@ test("message_id pickup ignores other threads and returns idle when empty", asyn
   assert.equal(exact.ok, true);
   assert.equal(exact.request.message_id, "msg:exact");
 
-  const idle = await runTaskRequestFromBody({
+  const idle = await runWorker({
     worker_actor_id: worker,
     route: { provider: "mock-a", model: "mock-a/text-tools-v1" },
     thread_id: "no-such-thread",
@@ -428,7 +485,7 @@ test("deny/require_authorization path stays closed — still emits task_result, 
     })
   });
 
-  const out = await runTaskRequestFromBody({
+  const out = await runWorker({
     worker_actor_id: worker,
     route: { provider: "mock-a", model: "mock-a/text-tools-v1" },
     message_id: "msg:deny-task"
@@ -492,7 +549,7 @@ test("oversized compact answer still fail-closes through worker reply path", asy
     })
   });
 
-  const out = await runTaskRequestFromBody({
+  const out = await runWorker({
     worker_actor_id: worker,
     route: { provider: "mock-a", model: "mock-a/text-tools-v1" },
     message_id: "msg:oversized"
@@ -514,7 +571,7 @@ test("worker refuses to process non-task_request when message_id is forced", asy
     message_id: "msg:handoff-only",
     content: "not a task request"
   });
-  const out = await runTaskRequestFromBody({
+  const out = await runWorker({
     worker_actor_id: worker,
     route: { provider: "mock-a", model: "mock-a/text-tools-v1" },
     message_id: "msg:handoff-only"
