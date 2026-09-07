@@ -23,11 +23,25 @@ import {
   SUBAGENT_RESULT_SCHEMA,
   buildSubagentResultFromDelegation
 } from "./subagent-result.js";
+import {
+  DELEGATE_LOOP_DEFAULT_MAX_TURNS,
+  DELEGATE_LOOP_MAX_MAX_TURNS,
+  resolveDelegateLoopControls,
+  runBrokeredReadLoop
+} from "./delegate-loop.js";
 
 export const AGENT_CONTEXT_SCHEMA = "cairnstone-agent-context-v1";
 export const MODEL_REQUEST_SCHEMA = "cairnstone-model-request-v1";
 export const MODEL_RESULT_SCHEMA = "cairnstone-model-result-v1";
 export { SUBAGENT_RESULT_SCHEMA } from "./subagent-result.js";
+export {
+  DELEGATE_LOOP_DEFAULT_MAX_TURNS,
+  DELEGATE_LOOP_MAX_MAX_TURNS,
+  resolveDelegateLoopControls,
+  resolveLoopAllowlist,
+  listAutomaticReadToolIds,
+  runBrokeredReadLoop
+} from "./delegate-loop.js";
 
 const PACKAGE_ID_RE = /^sha256:[0-9a-f]{64}$/;
 
@@ -2895,7 +2909,7 @@ function compactProfileMetadata(profile) {
 
 export const DELEGATE_TOOL_DEFINITION = {
   name: "cairnstone_delegate",
-  description: "V7.2/V7.4: bounded server-side delegation. Without profile_id it preserves the original V7.2 read-only path with zero tool execution. With an accepted V7.4 profile from the cross-project registry (e.g. cairnstone-maintainer, repo-debugger, release-reviewer), CairnStone may execute only profile-allowlisted automatic reads through the V7.3 broker before routing, then sends the model zero tools. Default returns cairnstone-delegation-result-v1. Set compact_result=true to wrap the same internals as cairnstone-subagent-result-v1 (answer + citations for parent LLMs; expand only via expand_hints). Grants zero execution/mutation authority; never mutates chain/path HEAD.",
+  description: "V7.2/V7.4/brokered-read-loop: bounded server-side delegation. Without profile_id it preserves the original V7.2 read-only path with zero tool execution. With an accepted V7.4 profile, CairnStone may execute only profile-allowlisted automatic reads through the V7.3 broker before routing. Set max_turns>=2 to enable the brokered multi-turn read loop (model proposes tool intents → policy preview → only allowlisted automatic reads execute → re-ground → next turn; default max useful budget is 4). Loop mode defaults compact_result to true (cairnstone-subagent-result-v1) unless compact_result is explicitly false. Mutation/require_authorization intents never auto-run. Grants zero execution/mutation authority; never mutates chain/path HEAD.",
   inputSchema: {
     type: "object",
     required: ["actor_id", "task", "chain", "route"],
@@ -2956,7 +2970,13 @@ export const DELEGATE_TOOL_DEFINITION = {
       profile_id: { type: "string", description: "Optional V7.4 reusable agent profile identity from the cross-project profile registry (e.g. 'cairnstone-maintainer', 'repo-debugger', 'release-reviewer'). Activates deterministic operational-state grounding before the model call." },
       compact_result: {
         type: "boolean",
-        description: "When true, wrap the delegation output as cairnstone-subagent-result-v1 (answer + citations; fail closed if answer exceeds ~4KB). Default false preserves cairnstone-delegation-result-v1."
+        description: "When true, wrap the delegation output as cairnstone-subagent-result-v1 (answer + citations; fail closed if answer exceeds ~4KB). Default false for single-shot; default true when max_turns>=2 (loop mode) unless explicitly set false."
+      },
+      max_turns: {
+        type: "number",
+        minimum: 1,
+        maximum: DELEGATE_LOOP_MAX_MAX_TURNS,
+        description: `Model-turn budget. 1 (default/omitted) = single-shot V7.2/V7.4 path. 2..${DELEGATE_LOOP_MAX_MAX_TURNS} enables the brokered automatic-read loop (recommended ${DELEGATE_LOOP_DEFAULT_MAX_TURNS}). Mutation/require_authorization intents stop the loop without executing.`
       }
     },
     additionalProperties: false
@@ -2969,12 +2989,18 @@ export async function delegateFromBody(body, env, deps = {}) {
     if (typeof deps.agentBootstrapFromBody !== "function" || typeof deps.modelRouteFromBody !== "function") {
       return delegationFailure("delegation_dependencies_missing");
     }
+
+    const loopControls = resolveDelegateLoopControls(body);
+    if (!loopControls.ok) {
+      return delegationFailure(loopControls.error || "invalid_delegation_request", loopControls.detail);
+    }
+    const { maxTurns, loopEnabled, compactResult } = loopControls;
+
     const actorId = delegationRequiredText(body.actor_id, "actor_id", 240);
     const task = delegationRequiredText(body.task, "task", DELEGATION_MAX_TASK_LENGTH);
     const chain = delegationRequiredText(body.chain, "chain", 300);
     const route = body.route && typeof body.route === "object" ? body.route : null;
     if (!route) return delegationFailure("invalid_delegation_request", "route_not_an_object");
-    const compactResult = body.compact_result === true;
     const generation = normalizeDelegationGeneration(body.generation, { compactResult });
     const profileId = typeof body.profile_id === "string" && body.profile_id.trim() ? body.profile_id.trim() : null;
     let profile = null;
@@ -2982,6 +3008,7 @@ export async function delegateFromBody(body, env, deps = {}) {
     let taskForBootstrap = task;
     let grounding = null;
     let readToolsExecuted = 0;
+    let instructionsChain = null;
 
     if (profileId) {
       const profileResolver = typeof deps.getAgentProfile === "function" ? deps.getAgentProfile : getAgentProfile;
@@ -2994,7 +3021,7 @@ export async function delegateFromBody(body, env, deps = {}) {
       if (!chainAllowed(profile, chain)) {
         return { ...delegationFailure("agent_profile_scope_mismatch", "profile_chain_not_permitted_for_this_profile"), profile: compactProfileMetadata(profile) };
       }
-      const profileInstructionsChain = profile.scope?.chain && profile.scope.chain !== chain ? profile.scope.chain : null;
+      instructionsChain = profile.scope?.chain && profile.scope.chain !== chain ? profile.scope.chain : null;
       effectiveActorId = profile.ac1_identity?.actor_id || actorId;
       const classify = typeof deps.classifyGroundingTask === "function" ? deps.classifyGroundingTask : classifyGroundingTask;
       const planReads = typeof deps.planProfileGroundingReads === "function" ? deps.planProfileGroundingReads : planProfileGroundingReads;
@@ -3021,7 +3048,7 @@ export async function delegateFromBody(body, env, deps = {}) {
           actor_id: effectiveActorId,
           task,
           chain,
-          ...(profileInstructionsChain ? { instructions_chain: profileInstructionsChain } : {}),
+          ...(instructionsChain ? { instructions_chain: instructionsChain } : {}),
           capabilities: {
             tools: readPlan.reads.map(read => ({ id: read.tool_id, available: true, class: "read" })),
             supports_tool_calls: true
@@ -3088,11 +3115,54 @@ export async function delegateFromBody(body, env, deps = {}) {
       };
     }
 
+    if (loopEnabled) {
+      const loopResult = await runBrokeredReadLoop({
+        env,
+        deps: {
+          ...deps,
+          registry: Array.isArray(deps.registry) ? deps.registry : DEFAULT_TOOL_BROKER_REGISTRY,
+          toolPolicyPreview: typeof deps.toolPolicyPreview === "function"
+            ? deps.toolPolicyPreview
+            : (previewBody, previewEnv) => toolPolicyPreviewFromBody(previewBody, previewEnv, {
+              registry: Array.isArray(deps.registry) ? deps.registry : DEFAULT_TOOL_BROKER_REGISTRY
+            })
+        },
+        actorId,
+        effectiveActorId,
+        task,
+        baseTaskForBootstrap: taskForBootstrap,
+        chain,
+        route,
+        generation,
+        limits: body.limits,
+        includeInbox: body.include_inbox !== false,
+        profile,
+        profileMeta: profile ? compactProfileMetadata(profile) : null,
+        grounding,
+        instructionsChain,
+        initialToolsExecuted: readToolsExecuted,
+        maxTurns,
+        helpers: {
+          compactDelegationEvidence,
+          compactDelegationRoute,
+          compactDelegationUsage,
+          compactDelegationObservability,
+          compactDelegationDiagnostics,
+          delegationReadOnlyPolicy,
+          defaultRegistry: DEFAULT_TOOL_BROKER_REGISTRY,
+          delegationResultSchema: DELEGATION_RESULT_SCHEMA
+        }
+      });
+      return maybeWrapCompactDelegationResult(loopResult, {
+        compactResult, task, actor_id: actorId, chain, profile_id: profileId, deps
+      });
+    }
+
     const bootstrap = await deps.agentBootstrapFromBody({
       actor_id: effectiveActorId,
       task: taskForBootstrap,
       chain,
-      ...(profile && profile.scope?.chain && profile.scope.chain !== chain ? { instructions_chain: profile.scope.chain } : {}),
+      ...(instructionsChain ? { instructions_chain: instructionsChain } : {}),
       capabilities: { tools: [], supports_tool_calls: false },
       limits: body.limits,
       include_inbox: body.include_inbox !== false

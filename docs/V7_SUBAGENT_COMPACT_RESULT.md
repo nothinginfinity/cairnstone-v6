@@ -130,6 +130,6 @@ Parent LLMs (Grok Bot, ChatGPT, Claude) should keep **answer + citations**, not 
 4. Force an oversized model answer (test harness) and assert `error == "subagent_answer_exceeds_cap"`.
 5. Confirm chain/path HEADs unchanged via `cairnstone_resume_chain` before/after.
 
-## Next slice (explicitly out of scope)
+## Next slice
 
-Brokered multi-turn read loop (`delegate_loop` / flag): model tool-intents → V7.3 broker automatic reads → re-ground → compact result. Do not implement here.
+Brokered multi-turn read loop: implemented as `max_turns` on `cairnstone_delegate`. See [`docs/V7_SUBAGENT_DELEGATE_LOOP.md`](V7_SUBAGENT_DELEGATE_LOOP.md).
