@@ -25,6 +25,14 @@ export const WORKER_SESSION_RESULT_SCHEMA = "cairnstone-worker-session-result-v1
 const ACTOR_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}:[a-z0-9][a-z0-9._-]{0,127}$/i;
 const MAX_TASK_CHARS = 4000;
 const MAX_SUBJECT_CHARS = 500;
+const MAILBOX_CAPABILITY_SCHEMA = "cairnstone-mailbox-capability-v1";
+const MAILBOX_CAPABILITY_MAX_TTL_SECONDS = 3600;
+const MAILBOX_CAPABILITY_DEFAULT_TTL_SECONDS = 900;
+const MAILBOX_CAPABILITY_SCOPES = Object.freeze(new Set([
+  "mail.read:self",
+  "mail.reply:self",
+  "task.consume:self"
+]));
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -44,6 +52,138 @@ function actorId(value, field) {
 function optionalActorId(value, field) {
   if (value === undefined || value === null || value === "") return null;
   return actorId(value, field);
+}
+
+function mailboxCapabilitySecret(env) {
+  const dedicated = typeof env?.CAIRNSTONE_MAILBOX_CAPABILITY_SECRET === "string"
+    ? env.CAIRNSTONE_MAILBOX_CAPABILITY_SECRET.trim()
+    : "";
+  if (dedicated) return dedicated;
+  const operator = typeof env?.CAIRNSTONE_OPERATOR_TOKEN === "string"
+    ? env.CAIRNSTONE_OPERATOR_TOKEN.trim()
+    : "";
+  return operator || null;
+}
+
+function encodeBase64Url(value) {
+  const bytes = new TextEncoder().encode(String(value));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
+}
+
+function decodeBase64Url(value) {
+  const text = String(value || "").replaceAll("-", "+").replaceAll("_", "/");
+  const padded = text + "=".repeat((4 - (text.length % 4 || 4)) % 4);
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+async function hmacSha256Base64Url(secret, value) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
+  let binary = "";
+  for (const byte of new Uint8Array(signature)) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
+}
+
+function constantTimeTextEqual(left, right) {
+  const a = new TextEncoder().encode(String(left || ""));
+  const b = new TextEncoder().encode(String(right || ""));
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+export async function issueMailboxCapabilityFromBody(body = {}, env = {}) {
+  const secret = mailboxCapabilitySecret(env);
+  if (!secret) return { ok: false, error: "mailbox_capability_not_configured" };
+  let principalActorId;
+  try { principalActorId = actorId(body.principal_actor_id, "principal_actor_id"); }
+  catch (error) { return { ok: false, error: "invalid_mailbox_principal", detail: String(error.message || error) }; }
+  const requestedScopes = Array.isArray(body.scopes) ? body.scopes : [];
+  const scopes = [...new Set(requestedScopes.map(value => String(value || "").trim()).filter(Boolean))].sort();
+  if (!scopes.length || scopes.some(scope => !MAILBOX_CAPABILITY_SCOPES.has(scope))) {
+    return { ok: false, error: "invalid_mailbox_capability_scopes", allowed: [...MAILBOX_CAPABILITY_SCOPES] };
+  }
+  const ttlSeconds = clampInt(
+    body.ttl_seconds,
+    30,
+    MAILBOX_CAPABILITY_MAX_TTL_SECONDS,
+    MAILBOX_CAPABILITY_DEFAULT_TTL_SECONDS
+  );
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const payload = {
+    schema: MAILBOX_CAPABILITY_SCHEMA,
+    principal_actor_id: principalActorId,
+    scopes,
+    iat: issuedAt,
+    exp: issuedAt + ttlSeconds,
+    nonce: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${issuedAt}:${Math.random()}`,
+    policy: {
+      self_only: true,
+      transport_only: true,
+      execution_authority: false,
+      mutation_authority: false,
+      accepted_state_authority: false
+    }
+  };
+  const encodedPayload = encodeBase64Url(stableJson(payload));
+  const signature = await hmacSha256Base64Url(secret, encodedPayload);
+  return {
+    ok: true,
+    schema: MAILBOX_CAPABILITY_SCHEMA,
+    mailbox_capability: `${encodedPayload}.${signature}`,
+    principal_actor_id: principalActorId,
+    scopes,
+    issued_at: new Date(payload.iat * 1000).toISOString(),
+    expires_at: new Date(payload.exp * 1000).toISOString(),
+    policy: payload.policy
+  };
+}
+
+export async function verifyMailboxCapability(token, expectedActorId, requiredScopes = [], env = {}) {
+  const secret = mailboxCapabilitySecret(env);
+  if (!secret) return { ok: false, error: "mailbox_capability_not_configured" };
+  if (!isNonEmptyString(token)) return { ok: false, error: "mailbox_capability_required" };
+  const parts = token.trim().split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return { ok: false, error: "mailbox_capability_invalid" };
+  const expectedSignature = await hmacSha256Base64Url(secret, parts[0]);
+  if (!constantTimeTextEqual(parts[1], expectedSignature)) return { ok: false, error: "mailbox_capability_invalid_signature" };
+  let payload;
+  try { payload = JSON.parse(decodeBase64Url(parts[0])); }
+  catch { return { ok: false, error: "mailbox_capability_invalid_payload" }; }
+  if (!isObject(payload) || payload.schema !== MAILBOX_CAPABILITY_SCHEMA) return { ok: false, error: "mailbox_capability_wrong_schema" };
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isInteger(payload.iat) || !Number.isInteger(payload.exp) || payload.exp <= now || payload.iat > now + 60) {
+    return { ok: false, error: "mailbox_capability_expired_or_invalid_time" };
+  }
+  if (payload.exp - payload.iat > MAILBOX_CAPABILITY_MAX_TTL_SECONDS) return { ok: false, error: "mailbox_capability_ttl_exceeded" };
+  let principalActorId;
+  try { principalActorId = actorId(payload.principal_actor_id, "principal_actor_id"); }
+  catch { return { ok: false, error: "mailbox_capability_invalid_principal" }; }
+  if (principalActorId !== expectedActorId) {
+    return { ok: false, error: "mailbox_capability_principal_mismatch", principal_actor_id: principalActorId, requested_actor_id: expectedActorId };
+  }
+  const scopes = Array.isArray(payload.scopes) ? [...new Set(payload.scopes.map(String))] : [];
+  const missing = requiredScopes.filter(scope => !scopes.includes(scope));
+  if (missing.length) return { ok: false, error: "mailbox_capability_scope_missing", missing };
+  return {
+    ok: true,
+    schema: MAILBOX_CAPABILITY_SCHEMA,
+    principal_actor_id: principalActorId,
+    scopes,
+    expires_at: new Date(payload.exp * 1000).toISOString(),
+    policy: payload.policy || null
+  };
 }
 
 function clampInt(value, min, max, fallback) {
@@ -114,10 +254,15 @@ export function buildTaskRequestContent({
       accepted_state_authority: false
     }
   };
-  if (isObject(route)) content.route = route;
-  if (isObject(limits)) content.limits = limits;
-  if (isObject(generation)) content.generation = generation;
-  if (typeof include_inbox === "boolean") content.include_inbox = include_inbox;
+  // Security boundary: task-request correspondence carries task intent only.
+  // Provider routes, credentials/failover, generation/limits, inbox hydration,
+  // reply redirection, and worker profile policy are runner-local authority and
+  // are deliberately NOT serialized from a requester-controlled message.
+  void reply_to;
+  void route;
+  void limits;
+  void generation;
+  void include_inbox;
   return stableJson(content);
 }
 
@@ -163,7 +308,7 @@ export function parseTaskRequest(content, fallbacks = {}) {
         schema: parsed.schema === "cairnstone-handoff-v1" ? "cairnstone-handoff-v1" : TASK_REQUEST_SCHEMA,
         task,
         chain,
-        profile_id: isNonEmptyString(parsed.profile_id) ? parsed.profile_id.trim() : (fallbacks.profile_id || null),
+        profile_id: fallbacks.profile_id || null,
         package_id: isNonEmptyString(parsed.package_id) ? parsed.package_id.trim() : null,
         max_turns: clampInt(
           parsed.max_turns ?? fallbacks.max_turns,
@@ -174,11 +319,11 @@ export function parseTaskRequest(content, fallbacks = {}) {
         compact_result: parsed.compact_result === undefined
           ? (fallbacks.compact_result !== false)
           : parsed.compact_result !== false,
-        reply_to: isNonEmptyString(parsed.reply_to) ? parsed.reply_to.trim() : null,
-        route: isObject(parsed.route) ? parsed.route : null,
-        limits: isObject(parsed.limits) ? parsed.limits : null,
-        generation: isObject(parsed.generation) ? parsed.generation : null,
-        include_inbox: typeof parsed.include_inbox === "boolean" ? parsed.include_inbox : undefined
+        reply_to: null,
+        route: null,
+        limits: null,
+        generation: null,
+        include_inbox: false
       }
     };
   }
@@ -292,11 +437,15 @@ export const RUN_TASK_REQUEST_TOOL_DEFINITION = {
     "AC1 worker session: pick up one task_request from the worker's own inbox (optional since/thread_id/message_id), run vault-grounded work via cairnstone_delegate (prefer max_turns + compact_result), and reply with a compact task_result embedding cairnstone-subagent-result-v1. Never scans other actors' inboxes and never writes chain/path HEAD.",
   inputSchema: {
     type: "object",
-    required: ["worker_actor_id", "route"],
+    required: ["worker_actor_id", "route", "mailbox_capability"],
     properties: {
       worker_actor_id: {
         type: "string",
-        description: "Canonical product actor id whose own inbox is scanned (e.g. grok-bot:cairnstone-v6). Foreign inboxes are denied."
+        description: "Canonical product actor id whose own inbox is scanned (e.g. grok-bot:cairnstone-v6). Must match the signed mailbox capability principal."
+      },
+      mailbox_capability: {
+        type: "string",
+        description: "Short-lived server-signed capability proving this caller may consume tasks from worker_actor_id's own mailbox."
       },
       route: {
         type: "object",
@@ -331,11 +480,7 @@ export const RUN_TASK_REQUEST_TOOL_DEFINITION = {
       },
       compact_result: {
         type: "boolean",
-        description: "Force compact_result on delegate. Default true for worker sessions."
-      },
-      reply_to: {
-        type: "string",
-        description: "Optional reply recipient override. Defaults to the task_request sender."
+        description: "Compatibility field. Worker sessions always force compact_result=true; requester messages cannot widen this policy."
       },
       subject: { type: "string", description: "Optional subject for the task_result reply." },
       generation: {
@@ -380,6 +525,14 @@ export async function runTaskRequestFromBody(body = {}, env, deps = {}) {
     if (!isObject(body.route) || !isNonEmptyString(body.route.provider) || !isNonEmptyString(body.route.model)) {
       return workerFailure("invalid_route", "route.provider and route.model are required");
     }
+
+    const mailboxCapability = await verifyMailboxCapability(
+      body.mailbox_capability,
+      workerActorId,
+      ["mail.read:self", "mail.reply:self", "task.consume:self"],
+      env
+    );
+    if (!mailboxCapability.ok) return workerFailure(mailboxCapability.error, mailboxCapability);
 
     const messageId = isNonEmptyString(body.message_id) ? body.message_id.trim() : null;
     const threadId = isNonEmptyString(body.thread_id) ? body.thread_id.trim() : null;
@@ -455,29 +608,19 @@ export async function runTaskRequestFromBody(body = {}, env, deps = {}) {
     if (!parsed.ok) return workerFailure(parsed.error, parsed);
 
     const request = parsed.request;
-    const effectiveProfileId = isNonEmptyString(body.profile_id)
-      ? body.profile_id.trim()
-      : request.profile_id;
-    const effectiveMaxTurns = clampInt(
-      body.max_turns ?? request.max_turns,
-      1,
-      DELEGATE_LOOP_MAX_MAX_TURNS,
-      DELEGATE_LOOP_DEFAULT_MAX_TURNS
-    );
-    const effectiveCompact = body.compact_result === undefined
-      ? request.compact_result !== false
-      : body.compact_result !== false;
-    const route = isObject(request.route)
-      ? { ...request.route, ...body.route }
-      : body.route;
+    if (isNonEmptyString(body.chain) && body.chain.trim() !== request.chain) {
+      return workerFailure("worker_chain_pin_mismatch", { requested_chain: request.chain, allowed_chain: body.chain.trim() });
+    }
+    const effectiveProfileId = isNonEmptyString(body.profile_id) ? body.profile_id.trim() : null;
+    const localMaxTurns = clampInt(body.max_turns, 1, DELEGATE_LOOP_MAX_MAX_TURNS, DELEGATE_LOOP_DEFAULT_MAX_TURNS);
+    const requestedMaxTurns = clampInt(request.max_turns, 1, DELEGATE_LOOP_MAX_MAX_TURNS, localMaxTurns);
+    const effectiveMaxTurns = Math.min(localMaxTurns, requestedMaxTurns);
+    const effectiveCompact = true;
+    const route = body.route;
 
     let replyTo;
     try {
-      replyTo = optionalActorId(body.reply_to, "reply_to")
-        || request.reply_to
-        || selectedMeta.sender_id
-        || read.metadata?.from
-        || read.delivery?.sender_id;
+      replyTo = selectedMeta.sender_id || read.metadata?.from || read.delivery?.sender_id;
       replyTo = actorId(replyTo, "reply_to");
     } catch (error) {
       return workerFailure("invalid_reply_to", String(error.message || error));
@@ -491,13 +634,11 @@ export async function runTaskRequestFromBody(body = {}, env, deps = {}) {
       max_turns: effectiveMaxTurns,
       compact_result: effectiveCompact,
       ...(effectiveProfileId ? { profile_id: effectiveProfileId } : {}),
-      ...(isObject(body.generation) ? { generation: body.generation }
-        : (isObject(request.generation) ? { generation: request.generation } : {})),
-      ...(isObject(body.limits) ? { limits: body.limits }
-        : (isObject(request.limits) ? { limits: request.limits } : {})),
-      ...(typeof body.include_inbox === "boolean"
-        ? { include_inbox: body.include_inbox }
-        : (typeof request.include_inbox === "boolean" ? { include_inbox: request.include_inbox } : {}))
+      ...(isObject(body.generation) ? { generation: body.generation } : {}),
+      ...(isObject(body.limits) ? { limits: body.limits } : {}),
+      // Worker-task correspondence is data, never permission to hydrate the
+      // worker's unrelated inbox into model context.
+      include_inbox: false
     };
 
     const delegation = await deps.delegateFromBody(delegateBody, env);
@@ -588,7 +729,17 @@ export async function runTaskRequestFromBody(body = {}, env, deps = {}) {
         error: delegation?.error || null,
         detail: delegation?.detail || null
       },
-      policy: workerPolicy()
+      policy: {
+        ...workerPolicy(),
+        mailbox_capability_authenticated: true,
+        principal_actor_id: mailboxCapability.principal_actor_id,
+        requester_controls_route: false,
+        requester_controls_profile: false,
+        requester_controls_reply_target: false,
+        requester_controls_inbox_hydration: false,
+        requester_can_only_narrow_turn_budget: true,
+        compact_result_forced: true
+      }
     };
   } catch (error) {
     return workerFailure("worker_session_exception", String(error && error.message ? error.message : error));
