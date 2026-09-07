@@ -519,3 +519,133 @@ test("V7.7.4a thread views summarize participants tasks labels and Scope without
   assert.equal(thread.messages[0].intent, "task_result");
   assert.equal(thread.policy.accepted_state_authority, false);
 });
+
+test("Actor-local notes: note_self creates a self-addressed note excluded from inbox/threads by default", async () => {
+  const h = makeHarness();
+  const owner = "agent:claude:jared";
+  const other = "agent:chatgpt:jared";
+
+  const noted = await h.service.noteSelf({
+    actor_id: owner,
+    note_id: "note:continuity-1",
+    subject: "Continuity checkpoint",
+    content: "Private continuity note."
+  });
+  assert.equal(noted.ok, true);
+  assert.equal(noted.idempotent_replay, false);
+  assert.equal(noted.actor_id, owner);
+  assert.equal(noted.immutable_note_stone, true);
+  assert.equal(noted.policy.execution_authority, false);
+  assert.equal(noted.policy.mutation_authority, false);
+  assert.equal(noted.policy.accepted_state_authority, false);
+  assert.equal(noted.policy.scope_hint_authority, false);
+  assert.equal(noted.policy.inbox_excluded_by_default, true);
+  assert.equal(noted.policy.chain_head_written, false);
+  assert.equal(noted.policy.path_head_written, false);
+
+  const createdStone = h.stones.get(noted.stone_hash);
+  const stone = JSON.parse(createdStone.stone_json);
+  assert.equal(stone.border.path, "notes/note_continuity-1.txt");
+  assert.equal(stone.metadata.correspondence.labels.includes("actor-local-note"), true);
+  assert.deepEqual(stone.metadata.correspondence.note, {
+    schema: "cairnstone-actor-note-v1",
+    owner_actor: owner,
+    authority: "actor_local_continuity_only"
+  });
+
+  // Excluded from the owner's own inbox/threads/thread view by default.
+  const inbox = await h.service.getInbox({ recipient_id: owner });
+  assert.equal(inbox.total, 0);
+  const threads = await h.service.listThreads({ recipient_id: owner });
+  assert.equal(threads.total, 0);
+  const thread = await h.service.getThread({ recipient_id: owner, thread_id: noted.thread_id });
+  assert.equal(thread.ok, false);
+  assert.equal(thread.error, "thread_not_found");
+
+  // A different actor never sees the note.
+  const otherInbox = await h.service.getInbox({ recipient_id: other });
+  assert.equal(otherInbox.total, 0);
+  const otherNotes = await h.service.getNotes({ actor_id: other });
+  assert.equal(otherNotes.total, 0);
+
+  const notes = await h.service.getNotes({ actor_id: owner });
+  assert.equal(notes.ok, true);
+  assert.equal(notes.total, 1);
+  assert.equal(notes.notes[0].stone_hash, noted.stone_hash);
+  assert.equal(notes.policy.inbox_excluded_by_default, true);
+});
+
+test("Actor-local notes: note_self enforces owner_actor == author_actor and rejects redirect/intent misuse", async () => {
+  const h = makeHarness();
+  const owner = "agent:claude:jared";
+  const other = "agent:chatgpt:jared";
+
+  const ownerMismatch = await h.service.noteSelf({ actor_id: owner, from: other, content: "x" });
+  assert.equal(ownerMismatch.ok, false);
+  assert.equal(ownerMismatch.error, "note_owner_mismatch");
+
+  const redirect = await h.service.noteSelf({ actor_id: owner, to: [other], content: "x" });
+  assert.equal(redirect.ok, false);
+  assert.equal(redirect.error, "note_redirect_forbidden");
+
+  const intentForbidden = await h.service.noteSelf({ actor_id: owner, intent: "task_request", content: "x" });
+  assert.equal(intentForbidden.ok, false);
+  assert.equal(intentForbidden.error, "note_intent_forbidden");
+
+  assert.equal(h.stoneCreates, 0, "no note stone should have been created for any rejected request");
+});
+
+test("Actor-local notes: send_message with actor-local-note label to a third party is redirect-forbidden", async () => {
+  const h = makeHarness();
+  const owner = "agent:claude:jared";
+  const other = "agent:chatgpt:jared";
+
+  const redirected = await h.service.sendMessage({
+    from: owner,
+    to: [other],
+    content: "Should not be allowed as a note.",
+    labels: ["actor-local-note"]
+  });
+  assert.equal(redirected.ok, false);
+  assert.equal(redirected.error, "note_redirect_forbidden");
+  assert.equal(h.stoneCreates, 0);
+
+  const selfAddressed = await h.service.sendMessage({
+    message_id: "msg:self-note-via-send",
+    from: owner,
+    to: [owner],
+    content: "Self-addressed with note label is allowed.",
+    labels: ["actor-local-note"]
+  });
+  assert.equal(selfAddressed.ok, true);
+});
+
+test("Actor-local notes: get_notes cursor is exclusive and scope filter is a non-authoritative hint", async () => {
+  const h = makeHarness();
+  const owner = "agent:claude:jared";
+
+  const first = await h.service.noteSelf({ actor_id: owner, note_id: "note:one", content: "First note.", scope: { mode: "repo", repos: ["nothinginfinity/cairnstone-v6"] } });
+  assert.equal(first.ok, true);
+  const initial = await h.service.getNotes({ actor_id: owner });
+  assert.equal(initial.total, 1);
+  assert.ok(initial.next_cursor);
+
+  const second = await h.service.noteSelf({ actor_id: owner, note_id: "note:two", content: "Second note.", scope: { mode: "repo", repos: ["nothinginfinity/other-repo"] } });
+  assert.equal(second.ok, true);
+
+  const all = await h.service.getNotes({ actor_id: owner });
+  assert.equal(all.total, 2);
+
+  const delta = await h.service.getNotes({ actor_id: owner, after_cursor: initial.next_cursor });
+  assert.equal(delta.cursor_inclusive, false);
+  assert.equal(delta.total, 1, "after_cursor must be exclusive of the row it points at");
+  assert.equal(delta.notes[0].stone_hash, second.stone_hash);
+
+  const scoped = await h.service.getNotes({ actor_id: owner, scope: { mode: "repo", repos: ["nothinginfinity/cairnstone-v6"] } });
+  assert.equal(scoped.total, 1);
+  assert.equal(scoped.notes[0].stone_hash, first.stone_hash);
+  assert.equal(scoped.policy.scope_hint_authority, false, "scope is a filter hint only, never an access-control authority");
+
+  const unscoped = await h.service.getNotes({ actor_id: owner });
+  assert.equal(unscoped.total, 2, "omitting scope still returns every note regardless of its own scope hint");
+});

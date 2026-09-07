@@ -12,10 +12,14 @@ import {
   listThreadsFromBody,
   getThreadFromBody,
   mailboxPolicyPreviewFromBody,
+  noteSelfFromBody,
+  getNotesFromBody,
   HANDOFF_DISPATCH_TOOL_DEFINITION,
   LIST_THREADS_TOOL_DEFINITION,
   GET_THREAD_TOOL_DEFINITION,
-  MAILBOX_POLICY_PREVIEW_TOOL_DEFINITION
+  MAILBOX_POLICY_PREVIEW_TOOL_DEFINITION,
+  NOTE_SELF_TOOL_DEFINITION,
+  GET_NOTES_TOOL_DEFINITION
 } from "./correspondence.js";
 import {
   runTaskRequestFromBody,
@@ -99,7 +103,7 @@ import {
   SCOPE_ASK_TOOL_DEFINITION
 } from "./vault-catalog.js";
 
-const VERSION = "0.5.29";
+const VERSION = "0.5.30";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -753,6 +757,8 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_get_thread") return getThreadFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   if (name === "cairnstone_mailbox_policy_preview") return mailboxPolicyPreviewFromBody(args);
   if (name === "cairnstone_read_message") return readMessageFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
+  if (name === "cairnstone_note_self") return noteSelfFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
+  if (name === "cairnstone_get_notes") return getNotesFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   if (name === "cairnstone_list_stones") return listStones(env, { ...args, origin: "mcp://cairnstone" });
   if (name === "cairnstone_fetch_github_file") return fetchGitHubFileFromBody(args, env);
   if (name === "cairnstone_find_by_source") return findBySourceFromBody(args, env);
@@ -1025,7 +1031,7 @@ function mcpTools() {
           subject: { type: "string" },
           labels: {
             type: "array", maxItems: 20, items: {
-              type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound"]
+              type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound", "actor-local-note"]
             }
           },
           scope: {
@@ -1059,7 +1065,7 @@ function mcpTools() {
           thread_id: { type: "string", description: "Exact thread_id filter." },
           labels: {
             type: "array", maxItems: 20, items: {
-              type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound"]
+              type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound", "actor-local-note"]
             }
           }
         },
@@ -1087,6 +1093,8 @@ function mcpTools() {
         additionalProperties: false
       }
     },
+    NOTE_SELF_TOOL_DEFINITION,
+    GET_NOTES_TOOL_DEFINITION,
     {
       name: "cairnstone_create_stone",
       description: "Create a CairnStone from either inline content or server-side GitHub fetch input. For scale, pass owner, repo, path, and ref instead of content.",

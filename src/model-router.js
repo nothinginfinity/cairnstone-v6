@@ -442,7 +442,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
         thread_id: { type: "string", description: "Exact thread_id filter." },
         labels: {
           type: "array", maxItems: 20, items: {
-            type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound"]
+            type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound", "actor-local-note"]
           }
         }
       },
@@ -528,6 +528,83 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     }
   }),
   Object.freeze({
+    tool_id: "cairnstone_get_notes",
+    connector: "cairnstone",
+    handler: "cairnstone_get_notes",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "Read one actor's own actor-local-note Stones; recipient-private and never automatic for models.",
+    input_schema: {
+      type: "object",
+      required: ["actor_id"],
+      properties: {
+        actor_id: { type: "string" },
+        after_cursor: { type: "string" },
+        limit: { type: "number", minimum: 1, maximum: 200 },
+        thread_id: { type: "string" },
+        labels: {
+          type: "array", maxItems: 20, items: {
+            type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound", "actor-local-note"]
+          }
+        },
+        scope: {
+          type: "object",
+          required: ["mode"],
+          properties: {
+            mode: { type: "string", enum: ["single_chain", "repo", "multi", "vault"] },
+            repos: { type: "array", items: { type: "string" }, maxItems: 25 },
+            chains: { type: "array", items: { type: "string" }, maxItems: 50 },
+            max_chains: { type: "integer", minimum: 1, maximum: 500 }
+          },
+          additionalProperties: false
+        }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_note_self",
+    connector: "cairnstone",
+    handler: "cairnstone_note_self",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "Create one immutable self-addressed actor-local-note Stone; grants no execution, mutation, accepted-state, or scope authority and never moves chain/path HEAD.",
+    input_schema: {
+      type: "object",
+      required: ["actor_id", "content"],
+      properties: {
+        actor_id: { type: "string" },
+        content: { type: "string" },
+        from: { type: "string" },
+        to: { type: "array", items: { type: "string" }, maxItems: 25 },
+        note_id: { type: "string" },
+        message_id: { type: "string" },
+        thread_id: { type: "string" },
+        subject: { type: "string" },
+        priority: { type: "string", enum: ["low", "normal", "high", "urgent"] },
+        labels: {
+          type: "array", maxItems: 20, items: {
+            type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound", "actor-local-note"]
+          }
+        },
+        scope: {
+          type: "object",
+          required: ["mode"],
+          properties: {
+            mode: { type: "string", enum: ["single_chain", "repo", "multi", "vault"] },
+            repos: { type: "array", items: { type: "string" }, maxItems: 25 },
+            chains: { type: "array", items: { type: "string" }, maxItems: 50 },
+            max_chains: { type: "integer", minimum: 1, maximum: 500 }
+          },
+          additionalProperties: false
+        }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
     tool_id: "cairnstone_send_message",
     connector: "cairnstone",
     handler: "cairnstone_send_message",
@@ -549,7 +626,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
         subject: { type: "string" },
         labels: {
           type: "array", maxItems: 20, items: {
-            type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound"]
+            type: "string", enum: ["needs-response", "decision-needed", "review-request", "blocked", "informational", "handoff", "task-open", "task-result", "ack", "urgent", "chat-plane", "work-plane", "scope-bound", "actor-local-note"]
           }
         },
         scope: {
