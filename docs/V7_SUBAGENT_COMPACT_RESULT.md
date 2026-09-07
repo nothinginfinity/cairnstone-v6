@@ -133,3 +133,5 @@ Parent LLMs (Grok Bot, ChatGPT, Claude) should keep **answer + citations**, not 
 ## Next slice
 
 Brokered multi-turn read loop: implemented as `max_turns` on `cairnstone_delegate`. See [`docs/V7_SUBAGENT_DELEGATE_LOOP.md`](V7_SUBAGENT_DELEGATE_LOOP.md).
+
+AC1 worker session pattern (`task_request` → own-inbox pickup → compact `task_result`): see [`docs/V7_SUBAGENT_WORKER_SESSION.md`](V7_SUBAGENT_WORKER_SESSION.md).
