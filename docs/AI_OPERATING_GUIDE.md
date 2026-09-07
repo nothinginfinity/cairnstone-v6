@@ -228,9 +228,19 @@ count and version — this list will keep growing.
   returns the message content and advances delivery status
   `queued/delivered → read`. Mutates delivery state only, never the message
   stone itself.
-- **Actor ID format:** `namespace:identifier`, e.g. `claude:cairnstone-v6`,
-  `chatgpt:cairnstone-v6`. No central registry — any well-formed ID works,
-  but use consistent, recognizable IDs so other sessions can find you.
+- **Actor ID format:** `namespace:identifier`. Main interactive sessions use two
+  canonical mailbox planes under the same model namespace:
+  - **Chat plane:** `<namespace>:chat` for conversation, coordination, and design
+    questions (for example `claude:chat`, `chatgpt:chat`, `grok:chat`).
+  - **Work plane:** `<namespace>:cairnstone-v6` for durable repo/engineering
+    handoffs and existing work history (for example `claude:cairnstone-v6`,
+    `chatgpt:cairnstone-v6`, `grok:cairnstone-v6`).
+  The `:cairnstone-v6` work suffix is a durable address/history identity even
+  while the live runtime is V7; do not silently migrate that history to a
+  `:cairnstone-v7` address. Compatibility aliases may be checked when known to
+  contain traffic, but they do not replace the canonical chat/work pair. Bots
+  without a Jared-facing main session remain work-only; delegated subagents
+  report to their calling session rather than receiving independent mailboxes.
 
 ### Version-controlled skills (V6.9 — progressive capability loading)
 - **Canonical skills chain:** `cairnstone-v6-skills`. GitHub files under `skills/` are the editable source; CairnStone `(chain,path)` HEADs are the acceptance authority.
@@ -292,9 +302,13 @@ more accepted path-head/edge detail.
 1. **Orient.** Call
    `cairnstone_resume_chain(chain="cairnstone-v6-project-memory", detail="start_here")`
    on V6/V7 runtime for the bounded canonical continuation card. Verify the
-   returned chain HEAD + sparse-authority identity, then check the AC1 inbox
-   for your own actor ID and other known agent IDs before starting work that
-   might overlap with someone else's. Expand to `detail="compact"` only when
+   returned chain HEAD + sparse-authority identity, then check **both canonical
+   AC1 inbox planes for the current main-session model**: `<namespace>:chat`
+   and `<namespace>:cairnstone-v6`. Call `cairnstone_get_inbox` on both before
+   starting work that might overlap with someone else's. Inbox LOD5 is
+   coordination metadata, not accepted project state; read only relevant
+   unread messages instead of dumping archives into the main context. Expand
+   to `detail="compact"` only when
    accepted path-head/HEAD-edge context is needed, and to `detail="full"`
    only for an explicit complete authority/edge dump. Then use
    `cairnstone_resolve_skills` and `cairnstone_get_skill` to load only the
@@ -367,8 +381,11 @@ more accepted path-head/edge detail.
 - Don't trust `created_at` ordering as a proxy for "which stone is current."
   Use HEAD (chain-level) and path HEAD (file-level) — that's precisely what
   they exist to make unambiguous.
-- **Never assume you're the only session working this project.** Check the
-  AC1 inbox. This guide exists because that assumption failed once already.
+- **Never assume you're the only session working this project.** Main sessions
+  must check both canonical AC1 inbox planes — `<namespace>:chat` and
+  `<namespace>:cairnstone-v6` — during startup. Compatibility aliases are
+  supplemental only. This guide exists because the single-inbox assumption
+  failed in real cross-model coordination.
 
 ## 9. First-turn checklist for a new chat here
 
@@ -382,9 +399,13 @@ more accepted path-head/edge detail.
    `detail=start_here` but the connector schema does not expose `detail`, note
    the stale connector schema and use the available safe fallback until the
    connector is refreshed.
-3. Call `cairnstone_get_inbox` for your own actor ID and check for recent
-   messages from other agent IDs (e.g. `chatgpt:cairnstone-v6` if you're
-   Claude, or vice versa) that might indicate concurrent or very recent work.
+3. Call `cairnstone_get_inbox` for **both** canonical inboxes belonging to the
+   current main-session model: `<namespace>:chat` and
+   `<namespace>:cairnstone-v6`. Use the chat plane for conversation/
+   coordination/design and the work plane for durable repo/engineering
+   handoffs. Inspect compact inbox metadata first, then read only relevant
+   unread messages. Do not substitute a `:cairnstone-v7` alias for the durable
+   work inbox merely because the live runtime is V7.
 4. Resolve the current task against the accepted `cairnstone-v6-skills` catalog. Load `core.orient` first, then only the specialized skills recommended for the task.
 5. Apply Section 6's workflow in order — don't skip straight to "fix."
 6. When you create or fix something, leave the graph in a state a future
