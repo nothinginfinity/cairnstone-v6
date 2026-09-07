@@ -1,0 +1,58 @@
+{
+  "worker": "afo-gitzip",
+  "version": "0.2.2-unified",
+  "action": "apply_repo_text_patch",
+  "target": {
+    "owner": "nothinginfinity",
+    "repo": "cairnstone-v6",
+    "branch": "main",
+    "path": "skills/core/orient/SKILL.md"
+  },
+  "source_sha": "1742df1b18740c13624bd40450be8d240577a09d",
+  "result_sha": "c62d22dfd609d60cff29bfce57a8d551699e7912",
+  "commit_sha": "897ece66f52ead4defc4fec170b1dc4f29be2f81",
+  "diff": {
+    "before_length": 1606,
+    "after_length": 2063,
+    "delta": 457,
+    "common_prefix": 914,
+    "common_suffix": 592,
+    "before_fingerprint": "5c7da7d8",
+    "after_fingerprint": "1c1c940e"
+  },
+  "applied": [
+    {
+      "label": "op_0",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    }
+  ],
+  "verification": {
+    "ok": true,
+    "results": [
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      }
+    ],
+    "failed": []
+  },
+  "timestamp": "2026-09-07T05:28:10.947Z"
+}
