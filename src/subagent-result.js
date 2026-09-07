@@ -119,14 +119,31 @@ function citationFromSkill(item) {
   return citation;
 }
 
-function citationFromAnswerMention(hashPrefix, evidenceHashes) {
-  const matches = evidenceHashes.filter(hash => hash.startsWith(hashPrefix));
+function citationFromAnswerMention(hashPrefix, evidenceRefs) {
+  const matches = evidenceRefs.filter(item => item && item.stone_hash && item.stone_hash.startsWith(hashPrefix));
   if (matches.length !== 1) return null;
-  return {
-    stone_hash: matches[0],
-    authority: "HISTORICAL",
-    note: "mentioned_in_answer"
-  };
+  return { ...matches[0], note: "explicitly_cited_in_answer" };
+}
+
+/**
+ * Validate answer-attached Stone citations against the exact evidence set.
+ * Only explicit [stone:<unique-hash-prefix>] markers become citations. The
+ * broader evidence inventory is returned separately as evidence_refs and must
+ * never be presented as if every item supported the generated answer.
+ */
+export function buildValidatedCitationsFromAnswer(evidenceRefs, answer = "") {
+  const refs = Array.isArray(evidenceRefs) ? evidenceRefs : [];
+  const citations = [];
+  const seen = new Set();
+  const pattern = /\[stone:([0-9a-f]{12,64})(?:\s+ref:([^\]\s]+))?\]/gi;
+  for (const match of String(answer || "").matchAll(pattern)) {
+    const citation = citationFromAnswerMention(match[1].toLowerCase(), refs);
+    if (!citation || seen.has(citation.stone_hash)) continue;
+    seen.add(citation.stone_hash);
+    citations.push(citation);
+    if (citations.length >= MAX_CITATIONS) break;
+  }
+  return citations;
 }
 
 /**
@@ -175,14 +192,6 @@ export function buildCitationsFromDelegationEvidence(evidence, answer = "") {
   for (const item of skills) {
     push(citationFromSkill(item));
     if (citations.length >= MAX_CITATIONS) return citations;
-  }
-
-  const evidenceHashes = [...seen];
-  const pattern = /\[stone:([0-9a-f]{12,64})(?:\s+ref:([^\]\s]+))?\]/gi;
-  for (const match of String(answer || "").matchAll(pattern)) {
-    const resolved = citationFromAnswerMention(match[1].toLowerCase(), evidenceHashes);
-    if (resolved) push(resolved);
-    if (citations.length >= MAX_CITATIONS) break;
   }
 
   return citations;
@@ -348,6 +357,9 @@ export function validateSubagentResult(result) {
     }
   }
 
+  if (result.evidence_refs !== undefined) {
+    if (!Array.isArray(result.evidence_refs)) errors.push("evidence_refs must be an array when present");
+  }
   if (result.expand_hints !== undefined) {
     if (!Array.isArray(result.expand_hints)) errors.push("expand_hints must be an array when present");
   }
@@ -494,7 +506,8 @@ export async function buildSubagentResultFromDelegation({
   const answer = typeof delegation.output?.text === "string" ? delegation.output.text : "";
   const answerBytes = utf8ByteLength(answer);
   const answerTokensEstimate = estimateAnswerTokens(answer);
-  const citations = buildCitationsFromDelegationEvidence(delegation.evidence, answer);
+  const evidenceRefs = buildCitationsFromDelegationEvidence(delegation.evidence, answer);
+  const citations = buildValidatedCitationsFromAnswer(evidenceRefs, answer);
   const expandHints = buildExpandHintsFromDelegationEvidence(delegation.evidence);
   const toolReceipts = buildToolReceiptsFromDelegation(delegation);
 
@@ -510,6 +523,8 @@ export async function buildSubagentResultFromDelegation({
     output_tokens: delegation.usage?.output_tokens ?? null,
     finish_reason: delegation.output?.finish_reason || null,
     citations_count: citations.length,
+    evidence_refs_count: evidenceRefs.length,
+    citations_validated_against_evidence: true,
     expand_hints_count: expandHints.length,
     tool_receipts_count: toolReceipts.length,
     ...(isObject(delegation.diagnostics) ? {
@@ -546,6 +561,7 @@ export async function buildSubagentResultFromDelegation({
       },
       answer: "",
       citations,
+      evidence_refs: evidenceRefs,
       expand_hints: expandHints,
       tool_receipts: toolReceipts,
       diagnostics: { ...diagnostics, answer_truncated: true, fail_closed: true },
@@ -558,6 +574,7 @@ export async function buildSubagentResultFromDelegation({
     ...identities,
     answer,
     citations,
+    evidence_refs: evidenceRefs,
     expand_hints: expandHints,
     tool_receipts: toolReceipts,
     diagnostics,
