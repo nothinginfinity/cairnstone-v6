@@ -282,11 +282,13 @@ test("max_turns stops the brokered read loop", async () => {
   });
 
   assert.equal(routeCalls, 2);
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
   assert.equal(result.schema, DELEGATION_RESULT_SCHEMA);
+  assert.equal(result.error, "delegate_loop_max_turns");
   assert.equal(result.loop.stop_reason, "max_turns");
   assert.equal(result.loop.max_turns, 2);
   assert.equal(result.diagnostics.turns, 2);
+  assert.equal(result.detail.partial_answer_present, true);
   assert.equal(result.policy.mutation_authority, false);
   assert.equal(result.policy.accepted_state_mutation, false);
   assert.ok(result.policy.tools_executed >= 1);
