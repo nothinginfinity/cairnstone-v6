@@ -3,6 +3,12 @@ const MESSAGE_TYPE = "correspondence";
 const ALLOWED_INTENTS = new Set(["message", "handoff", "task_request", "task_result", "ack"]);
 const ALLOWED_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
 const ALLOWED_STATUSES = new Set(["queued", "delivered", "read", "acked", "archived"]);
+const ALLOWED_MAILBOX_LABELS = new Set([
+  "needs-response", "decision-needed", "review-request", "blocked", "informational",
+  "handoff", "task-open", "task-result", "ack", "urgent",
+  "chat-plane", "work-plane", "scope-bound"
+]);
+const ALLOWED_SCOPE_MODES = new Set(["single_chain", "repo", "multi", "vault"]);
 const MAX_MESSAGE_BYTES = 900000;
 const MAX_RECIPIENTS = 25;
 const HANDOFF_SCHEMA = "cairnstone-handoff-v1";
@@ -51,7 +57,65 @@ export const HANDOFF_DISPATCH_TOOL_DEFINITION = {
         additionalProperties: false
       },
       message_id: { type: "string" }, thread_id: { type: "string" }, subject: { type: "string" },
-      priority: { type: "string", enum: ["low", "normal", "high", "urgent"] }
+      priority: { type: "string", enum: ["low", "normal", "high", "urgent"] },
+      labels: { type: "array", items: { type: "string", enum: [...ALLOWED_MAILBOX_LABELS] }, maxItems: 20 },
+      scope: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: [...ALLOWED_SCOPE_MODES] },
+          repos: { type: "array", items: { type: "string" }, maxItems: 25 },
+          chains: { type: "array", items: { type: "string" }, maxItems: 50 },
+          max_chains: { type: "integer", minimum: 1, maximum: 500 }
+        },
+        required: ["mode"],
+        additionalProperties: false
+      }
+    },
+    additionalProperties: false
+  }
+};
+
+export const LIST_THREADS_TOOL_DEFINITION = {
+  name: "cairnstone_list_threads",
+  description: "AC1 mailbox view: derive bounded first-class thread summaries from immutable correspondence Stones plus recipient delivery state. Supports an exclusive event cursor; never mutates accepted state.",
+  inputSchema: {
+    type: "object",
+    required: ["recipient_id"],
+    properties: {
+      recipient_id: { type: "string" },
+      status: { type: "string", enum: [...ALLOWED_STATUSES] },
+      after_cursor: { type: "string" },
+      limit: { type: "number", minimum: 1, maximum: 100 }
+    },
+    additionalProperties: false
+  }
+};
+
+export const GET_THREAD_TOOL_DEFINITION = {
+  name: "cairnstone_get_thread",
+  description: "AC1 mailbox view: read one bounded correspondence thread for one recipient without changing immutable message Stones or accepted-state authority.",
+  inputSchema: {
+    type: "object",
+    required: ["recipient_id", "thread_id"],
+    properties: {
+      recipient_id: { type: "string" },
+      thread_id: { type: "string" },
+      limit: { type: "number", minimum: 1, maximum: 200 }
+    },
+    additionalProperties: false
+  }
+};
+
+export const MAILBOX_POLICY_PREVIEW_TOOL_DEFINITION = {
+  name: "cairnstone_mailbox_policy_preview",
+  description: "Preview deterministic dual-plane mailbox communication policy. Task flows deny chat-plane participation; handoffs to chat remain compatibility-allowed with a warning. Preview only; grants no authority.",
+  inputSchema: {
+    type: "object",
+    required: ["from", "to"],
+    properties: {
+      from: { type: "string" },
+      to: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 25 },
+      intent: { type: "string", enum: [...ALLOWED_INTENTS] }
     },
     additionalProperties: false
   }
@@ -103,17 +167,23 @@ export function createD1CorrespondenceStore(env) {
       const status = options.status || null;
       const since = options.since || null;
       const threadId = options.thread_id || null;
+      const afterCursor = options.after_cursor || null;
       const where = ["d.recipient_id = ?"];
       const binds = [recipientId];
       if (status) { where.push("d.status = ?"); binds.push(status); }
       if (threadId) { where.push("d.thread_id = ?"); binds.push(threadId); }
       if (since) { where.push("d.created_at >= ?"); binds.push(since); }
+      if (afterCursor) {
+        where.push("(d.created_at > ? OR (d.created_at = ? AND d.id > ?))");
+        binds.push(afterCursor.created_at, afterCursor.created_at, afterCursor.id);
+      }
       binds.push(limit);
+      const order = afterCursor ? "d.created_at ASC, d.id ASC" : "d.created_at DESC, d.id DESC";
       const sql = `SELECT d.*, s.stone_json
         FROM correspondence_deliveries d
         JOIN stones s ON s.hash = d.stone_hash
         WHERE ${where.join(" AND ")}
-        ORDER BY d.created_at DESC LIMIT ?`;
+        ORDER BY ${order} LIMIT ?`;
       const result = await env.CAIRNSTONE_DB.prepare(sql).bind(...binds).all();
       return result?.results || [];
     },
@@ -179,6 +249,15 @@ export function createCorrespondenceService({
       if (!ALLOWED_INTENTS.has(intent)) return { ok: false, error: "invalid_intent", allowed: [...ALLOWED_INTENTS] };
       if (!ALLOWED_PRIORITIES.has(priority)) return { ok: false, error: "invalid_priority", allowed: [...ALLOWED_PRIORITIES] };
       const subject = optionalText(body.subject, "subject", 500);
+      const explicitLabels = normalizeMailboxLabels(body.labels);
+      const scope = normalizeScopeHint(body.scope);
+      const policyPreview = mailboxPolicyPreviewFromBody({ from: senderId, to: recipients, intent });
+      if (!policyPreview.ok || policyPreview.decision === "deny") {
+        return { ok: false, error: "mailbox_policy_denied", policy: policyPreview };
+      }
+      const senderPlane = classifyMailboxPlane(senderId);
+      const recipientPlanes = recipients.map(recipient_id => ({ recipient_id, plane: classifyMailboxPlane(recipient_id) }));
+      const labels = deriveMailboxLabels({ intent, priority, senderPlane, recipientPlanes, explicitLabels, scope });
 
       const contract = {
         type: MESSAGE_TYPE,
@@ -189,7 +268,17 @@ export function createCorrespondenceService({
         thread_id: threadId,
         intent,
         priority,
-        subject
+        subject,
+        labels,
+        scope,
+        plane: { sender: senderPlane, recipients: recipientPlanes },
+        policy: {
+          transport_only: true,
+          execution_authority: false,
+          mutation_authority: false,
+          accepted_state_authority: false,
+          scope_hint_authority: false
+        }
       };
       const fingerprint = await hash(stableJson({ ...contract, content }));
       const existing = await store.findByMessage(senderId, messageId);
@@ -275,6 +364,8 @@ export function createCorrespondenceService({
       const continuationRefs = normalizeContinuationRefs(body.continuation_refs);
       const githubArtifact = normalizeGitHubArtifact(body.github_artifact);
       const githubInbox = normalizeGitHubInboxTarget(body.github_inbox);
+      const scope = normalizeScopeHint(body.scope);
+      const labels = normalizeMailboxLabels(body.labels);
       const messageId = opaqueId(body.message_id || `msg:${randomUUID()}`, "message_id");
       const threadId = opaqueId(body.thread_id || messageId, "thread_id");
       const priority = body.priority === undefined ? "normal" : String(body.priority);
@@ -291,11 +382,13 @@ export function createCorrespondenceService({
         continuation_refs: continuationRefs,
         github_artifact: githubArtifact,
         github_inbox: githubInbox,
+        scope,
+        labels,
         policy: handoffPolicy()
       };
       const sent = await this.sendMessage({
         from: senderId, to: recipients, content: stableJson(handoff), message_id: messageId, thread_id: threadId,
-        intent: "handoff", priority, subject
+        intent: "handoff", priority, subject, labels, scope
       });
       if (!sent?.ok) return sent;
       const out = {
@@ -343,15 +436,83 @@ export function createCorrespondenceService({
       }
       const since = parseSince(body.since);
       if (since && since.error) return since;
-      const rows = await store.listInbox(recipientId, { status, limit: body.limit, since, thread_id: threadId });
+      const afterCursor = parseMailboxCursor(body.after_cursor);
+      if (afterCursor && afterCursor.error) return afterCursor;
+      const labels = normalizeMailboxLabels(body.labels);
+      const requestedLimit = clamp(Number(body.limit || 50), 1, 200);
+      const scanLimit = labels.length ? 200 : requestedLimit;
+      const rows = await store.listInbox(recipientId, {
+        status,
+        limit: scanLimit,
+        since,
+        thread_id: threadId,
+        after_cursor: afterCursor
+      });
+      const cards = rows.map(inboxCard);
+      const filtered = labels.length ? cards.filter(card => labels.every(label => card.labels.includes(label))) : cards;
+      const messages = filtered.slice(0, requestedLimit);
+      const cursorRow = rows.length ? (afterCursor ? rows[rows.length - 1] : rows[0]) : null;
       return {
         ok: true,
         recipient_id: recipientId,
+        plane: classifyMailboxPlane(recipientId),
         ...(since ? { since } : {}),
+        ...(afterCursor ? { after_cursor: body.after_cursor, cursor_inclusive: false } : {}),
         ...(threadId ? { thread_id: threadId } : {}),
         ...(status ? { status } : {}),
-        total: rows.length,
-        messages: rows.map(inboxCard)
+        ...(labels.length ? { labels } : {}),
+        total: messages.length,
+        scanned: rows.length,
+        next_cursor: cursorRow ? buildMailboxCursor(cursorRow.created_at, cursorRow.id) : (body.after_cursor || null),
+        messages
+      };
+    },
+
+    async listThreads(body = {}) {
+      const recipientId = actorId(body.recipient_id, "recipient_id");
+      const status = body.status === undefined ? null : String(body.status);
+      if (status && !ALLOWED_STATUSES.has(status)) return { ok: false, error: "invalid_status", allowed: [...ALLOWED_STATUSES] };
+      const afterCursor = parseMailboxCursor(body.after_cursor);
+      if (afterCursor && afterCursor.error) return afterCursor;
+      const rows = await store.listInbox(recipientId, { status, limit: 200, after_cursor: afterCursor });
+      const cards = rows.map(inboxCard);
+      const grouped = new Map();
+      for (const card of cards) {
+        if (!grouped.has(card.thread_id)) grouped.set(card.thread_id, []);
+        grouped.get(card.thread_id).push(card);
+      }
+      const limit = clamp(Number(body.limit || 50), 1, 100);
+      const threads = [...grouped.entries()]
+        .map(([thread_id, threadCards]) => buildThreadSummary(recipientId, thread_id, threadCards))
+        .sort((a, b) => String(b.latest_at || "").localeCompare(String(a.latest_at || "")))
+        .slice(0, limit);
+      const cursorRow = rows.length ? (afterCursor ? rows[rows.length - 1] : rows[0]) : null;
+      return {
+        ok: true,
+        schema: "cairnstone-mailbox-thread-list-v1",
+        recipient_id: recipientId,
+        plane: classifyMailboxPlane(recipientId),
+        total: threads.length,
+        next_cursor: cursorRow ? buildMailboxCursor(cursorRow.created_at, cursorRow.id) : (body.after_cursor || null),
+        threads,
+        policy: mailboxReadPolicy()
+      };
+    },
+
+    async getThread(body = {}) {
+      const recipientId = actorId(body.recipient_id, "recipient_id");
+      const threadId = opaqueId(body.thread_id, "thread_id");
+      const rows = await store.listInbox(recipientId, { thread_id: threadId, limit: clamp(Number(body.limit || 200), 1, 200) });
+      if (!rows.length) return { ok: false, error: "thread_not_found", recipient_id: recipientId, thread_id: threadId };
+      const messages = rows.map(inboxCard).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.delivery_id || "").localeCompare(String(b.delivery_id || "")));
+      return {
+        ok: true,
+        schema: "cairnstone-mailbox-thread-v1",
+        recipient_id: recipientId,
+        thread: buildThreadSummary(recipientId, threadId, messages),
+        messages,
+        immutable_message_stones: true,
+        policy: mailboxReadPolicy()
       };
     },
 
@@ -409,6 +570,16 @@ export async function getInboxFromBody(body, env, deps = {}) {
 export async function readMessageFromBody(body, env, deps = {}) {
   const service = createRuntimeService(env, deps);
   return service.readMessage(body);
+}
+
+export async function listThreadsFromBody(body, env, deps = {}) {
+  const service = createRuntimeService(env, deps);
+  return service.listThreads(body);
+}
+
+export async function getThreadFromBody(body, env, deps = {}) {
+  const service = createRuntimeService(env, deps);
+  return service.getThread(body);
 }
 
 function createRuntimeService(env, deps) {
@@ -616,7 +787,176 @@ function decodeBase64Utf8(value) {
 }
 
 function handoffPolicy() {
-  return { transport_only: true, execution_authority: false, mutation_authority: false, accepted_state_authority: false, external_mirror_authority: false };
+  return { transport_only: true, execution_authority: false, mutation_authority: false, accepted_state_authority: false, external_mirror_authority: false, scope_hint_authority: false };
+}
+
+export function classifyMailboxPlane(actorIdValue) {
+  const value = String(actorIdValue || "").trim().toLowerCase();
+  if (value.endsWith(":chat")) return "chat";
+  if (value.endsWith(":cairnstone-v6")) return "work";
+  return "custom";
+}
+
+function normalizeMailboxLabels(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("Invalid mailbox labels");
+  const labels = [...new Set(value.map(item => String(item || "").trim()).filter(Boolean))].sort();
+  if (labels.length > 20) throw new Error("Too many mailbox labels: max 20");
+  const invalid = labels.filter(label => !ALLOWED_MAILBOX_LABELS.has(label));
+  if (invalid.length) throw new Error(`Invalid mailbox labels: ${invalid.join(",")}`);
+  return labels;
+}
+
+function normalizeScopeHint(value) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid scope hint");
+  const mode = String(value.mode || "").trim();
+  if (!ALLOWED_SCOPE_MODES.has(mode)) throw new Error("Invalid scope hint mode");
+  const repos = Array.isArray(value.repos) ? [...new Set(value.repos.map(item => String(item || "").trim()).filter(Boolean))].slice(0, 25) : [];
+  const chains = Array.isArray(value.chains) ? [...new Set(value.chains.map(item => String(item || "").trim()).filter(Boolean))].slice(0, 50) : [];
+  const maxChains = Number.isInteger(Number(value.max_chains)) ? clamp(Number(value.max_chains), 1, 500) : null;
+  if (mode === "single_chain" && chains.length !== 1) throw new Error("single_chain scope hint requires exactly one chain");
+  if (mode === "repo" && repos.length !== 1) throw new Error("repo scope hint requires exactly one repo");
+  if (mode === "multi" && !repos.length && !chains.length) throw new Error("multi scope hint requires repos or chains");
+  return {
+    schema: "cairnstone-scope-v1",
+    mode,
+    ...(repos.length ? { repos } : {}),
+    ...(chains.length ? { chains } : {}),
+    ...(maxChains !== null ? { max_chains: maxChains } : {}),
+    authority: "transport_hint_only"
+  };
+}
+
+function deriveMailboxLabels({ intent, priority, senderPlane, recipientPlanes, explicitLabels, scope }) {
+  const labels = new Set(explicitLabels || []);
+  if (intent === "handoff") labels.add("handoff");
+  if (intent === "task_request") labels.add("task-open");
+  if (intent === "task_result") labels.add("task-result");
+  if (intent === "ack") labels.add("ack");
+  if (priority === "urgent") labels.add("urgent");
+  const planes = new Set([senderPlane, ...(recipientPlanes || []).map(item => item.plane)]);
+  if (planes.has("chat")) labels.add("chat-plane");
+  if (planes.has("work")) labels.add("work-plane");
+  if (scope) labels.add("scope-bound");
+  return [...labels].sort();
+}
+
+export function mailboxPolicyPreviewFromBody(body = {}) {
+  let sender;
+  let recipients;
+  try {
+    sender = actorId(body.from, "from");
+    recipients = recipientIds(body.to);
+  } catch (error) {
+    return { ok: false, error: "invalid_mailbox_policy_request", detail: String(error.message || error) };
+  }
+  const intent = body.intent === undefined ? "message" : String(body.intent);
+  if (!ALLOWED_INTENTS.has(intent)) return { ok: false, error: "invalid_intent", allowed: [...ALLOWED_INTENTS] };
+  const senderPlane = classifyMailboxPlane(sender);
+  const recipientPlanes = recipients.map(recipient_id => ({ recipient_id, plane: classifyMailboxPlane(recipient_id) }));
+  const chatInTaskFlow = ["task_request", "task_result"].includes(intent) &&
+    (senderPlane === "chat" || recipientPlanes.some(item => item.plane === "chat"));
+  const warnings = [];
+  if (intent === "handoff" && (senderPlane === "chat" || recipientPlanes.some(item => item.plane === "chat"))) {
+    warnings.push("durable engineering handoffs should normally use the :cairnstone-v6 work plane; chat-plane handoffs remain compatibility-allowed");
+  }
+  return {
+    ok: true,
+    schema: "cairnstone-mailbox-policy-decision-v1",
+    decision: chatInTaskFlow ? "deny" : "allow",
+    reason: chatInTaskFlow ? "task_flow_requires_work_or_custom_plane" : "mailbox_policy_allowed",
+    from: { actor_id: sender, plane: senderPlane },
+    to: recipientPlanes,
+    intent,
+    warnings,
+    policy: {
+      transport_only: true,
+      accepted_state_authority: false,
+      execution_authority: false,
+      mutation_authority: false,
+      chat_plane: "conversation_coordination_design",
+      work_plane: "durable_engineering_handoffs_history"
+    }
+  };
+}
+
+function mailboxReadPolicy() {
+  return {
+    read_only: true,
+    immutable_message_stones: true,
+    delivery_state_authority: false,
+    accepted_state_authority: false,
+    execution_authority: false,
+    mutation_authority: false
+  };
+}
+
+function buildMailboxCursor(createdAt, id) {
+  const raw = stableJson({ created_at: String(createdAt || ""), id: String(id || "") });
+  let binary = "";
+  for (const byte of new TextEncoder().encode(raw)) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
+}
+
+function parseMailboxCursor(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") return { ok: false, error: "invalid_mailbox_cursor" };
+  try {
+    const text = value.replaceAll("-", "+").replaceAll("_", "/");
+    const padded = text + "=".repeat((4 - (text.length % 4 || 4)) % 4);
+    const binary = atob(padded);
+    const decoded = new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0)));
+    const parsed = JSON.parse(decoded);
+    if (!parsed || typeof parsed.created_at !== "string" || !Number.isFinite(Date.parse(parsed.created_at)) || typeof parsed.id !== "string" || !parsed.id) {
+      return { ok: false, error: "invalid_mailbox_cursor" };
+    }
+    return { created_at: parsed.created_at, id: parsed.id };
+  } catch {
+    return { ok: false, error: "invalid_mailbox_cursor" };
+  }
+}
+
+function buildThreadSummary(recipientId, threadId, cards) {
+  const ordered = [...cards].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  const latest = ordered.at(-1) || null;
+  const participants = [...new Set(ordered.flatMap(card => [card.sender_id, card.recipient_id]).filter(Boolean))].sort();
+  const labels = [...new Set(ordered.flatMap(card => Array.isArray(card.labels) ? card.labels : []))].sort();
+  const planes = [...new Set(ordered.flatMap(card => [card.sender_plane, card.recipient_plane]).filter(Boolean))].sort();
+  const unreadCount = ordered.filter(card => card.status === "queued" || card.status === "delivered").length;
+  const taskRequests = ordered.filter(card => card.intent === "task_request").length;
+  const taskResults = ordered.filter(card => card.intent === "task_result").length;
+  const scopeHints = [];
+  const scopeSeen = new Set();
+  for (const card of ordered) {
+    if (!card.scope) continue;
+    const key = stableJson(card.scope);
+    if (scopeSeen.has(key)) continue;
+    scopeSeen.add(key);
+    scopeHints.push(card.scope);
+  }
+  return {
+    thread_id: threadId,
+    recipient_id: recipientId,
+    participants,
+    planes,
+    labels,
+    message_count: ordered.length,
+    unread_count: unreadCount,
+    open_task_count: Math.max(0, taskRequests - taskResults),
+    latest_at: latest?.created_at || null,
+    latest_message: latest ? {
+      message_id: latest.message_id,
+      stone_hash: latest.stone_hash,
+      sender_id: latest.sender_id,
+      subject: latest.subject,
+      intent: latest.intent,
+      priority: latest.priority,
+      lod5: latest.lod5
+    } : null,
+    scope_hints: scopeHints,
+    authority: "correspondence_transport_only"
+  };
 }
 
 function recipientIds(value) {
@@ -662,7 +1002,10 @@ function safePathSegment(value) {
 function inboxCard(row) {
   const stone = parseStone(row.stone_json);
   const metadata = stone?.metadata?.correspondence || {};
+  const recipientPlane = classifyMailboxPlane(row.recipient_id);
   return {
+    delivery_id: row.id,
+    cursor: buildMailboxCursor(row.created_at, row.id),
     message_id: row.message_id,
     stone_hash: row.stone_hash,
     sender_id: row.sender_id,
@@ -672,6 +1015,10 @@ function inboxCard(row) {
     subject: metadata.subject || null,
     intent: metadata.intent || "message",
     priority: metadata.priority || "normal",
+    labels: Array.isArray(metadata.labels) ? metadata.labels : [],
+    scope: metadata.scope || null,
+    sender_plane: metadata.plane?.sender || classifyMailboxPlane(row.sender_id),
+    recipient_plane: metadata.plane?.recipients?.find?.(item => item.recipient_id === row.recipient_id)?.plane || recipientPlane,
     lod5: stone?.layers?.lod5 || "",
     created_at: row.created_at,
     delivered_at: row.delivered_at,
