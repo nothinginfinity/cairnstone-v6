@@ -52,7 +52,7 @@ left the canonical chain's graph in a disconnected, two-branch state before
 the mismatch was caught and reconciled.
 
 **The fix is procedural, not just corrective:** always resume the canonical
-V6 chain and check the AC1 inbox before starting work (Section 8), and use
+V6 chain and check the AC1 inbox before starting work (Section 9), and use
 AC1 correspondence to leave a status note when your session materially
 changes shared project state — especially if you know or suspect another
 session (human-directed AI or otherwise) might be working the same project
@@ -370,7 +370,67 @@ more accepted path-head/edge detail.
   to re-derive context from scratch, and never collides silently with a
   concurrent one.
 
-## 8. Defaults
+## 8. MCP Twin — client tool-catalog cache workaround (Grok, Claude, ChatGPT)
+
+Across Grok, Claude, and ChatGPT sessions we've repeatedly hit the same failure
+mode: the Worker deploys new tools (confirmed via `cairnstone_health`), but an
+already-connected AI client keeps calling `tools/list` against a *cached*
+schema and never sees them. This is a client-side caching bug, not a
+CairnStone problem — CairnStone itself stays a single D1+R2 backend the
+entire time. The fix is a second HTTP path on the same Worker
+(`/mcp-b`, added 2026-09-07 at commit `b9c3460b`) that is a byte-for-byte
+alias of `/mcp` — same `handleMcp()`, same bindings, same tool catalog. A
+client that won't refresh an existing connector's cache will still do a
+fresh `tools/list` fetch against a URL it hasn't seen before.
+
+**This is a transport workaround, never a second source of truth.** No
+matter which path (`/mcp` or `/mcp-b`) mediates a call, the actor ID stays
+the canonical work-plane one (`<namespace>:cairnstone-v6`, e.g.
+`claude:cairnstone-v6`, `grok:cairnstone-v6`) — the path is not part of
+identity, and project-memory content must never imply two vaults exist.
+
+**Don't confuse this with `/mcp/core`.** `/mcp/core` intentionally exposes a
+bounded subset for the V7.6.2a Deferred Tool Hydration experiment (see
+Section 4). `/mcp-b` exposes the full legacy catalog, identically to `/mcp`.
+
+Remediation differs by client — verify the client's actual connector model
+before assuming the runbook below transfers directly:
+
+- **Grok**: one connector slot maps to one server identity, and its
+  `tools/list` is cached per that identity. Toggling the *same* connector
+  off/on does **not** refresh it. Fix: register a second connector at the
+  twin path, enable it, leave the stale one connected-but-idle (flip, don't
+  delete). Proven live 2026-09-07, AC1 thread
+  `cairnstone-conversation-2026-09-06b`, plan stone
+  `project-memory/mcp-twin-catalog-hotswap-plan.md` (hash `d5bdd483...`).
+- **Claude**: connectors are additive, not a single slot — each gets its own
+  tool-name prefix, and more than one CairnStone connector can be enabled at
+  once. Claude also refuses to register a second connector against an
+  *identical* URL ("This URL is already installed"), so a genuinely
+  different path is required just to add a twin at all — once added, there
+  is no need to disable the original. If a known-deployed tool is still
+  missing from every currently-attached CairnStone connector's tool list
+  inside an existing conversation, the reliable fix is starting a **new**
+  conversation with the desired connector enabled (fresh `tools/list` fetch
+  at session start) rather than toggling within the same conversation.
+  `/mcp-b` exists for the case where that alone isn't enough. Proven live
+  2026-09-07. A generic 404 on a not-yet-deployed alias path can surface in
+  Claude's UI as a misleading OAuth/sign-in registration error — don't
+  chase auth config in that case; verify the route is actually live first
+  (`curl` the endpoint) before assuming a credentials problem.
+- **ChatGPT**: not yet directly tested against this specific pattern as of
+  this writing. Assume an additive-connector model similar to Claude's until
+  verified, and update this bullet once tested rather than assuming the
+  Grok runbook transfers as-is.
+
+**When to add another twin path:** only after a genuine tool-schema deploy,
+and only once the client's ordinary refresh path (new conversation for
+Claude; connector toggle where that's known to work) has already failed to
+surface the new tool. Don't pre-emptively multiply alias paths — `/mcp` and
+`/mcp-b` is the current standard; a third alias should be a deliberate,
+documented decision, not a default reflex.
+
+## 9. Defaults
 
 - A tool succeeding (push OK, deploy `conclusion: success`) is not the same
   as the underlying problem being fixed. Verify actual live behavior.
@@ -387,7 +447,7 @@ more accepted path-head/edge detail.
   supplemental only. This guide exists because the single-inbox assumption
   failed in real cross-model coordination.
 
-## 9. First-turn checklist for a new chat here
+## 10. First-turn checklist for a new chat here
 
 1. Call `cairnstone_health` on the V6 connector. Confirm it's reachable and
    note the live tool count/version.
@@ -416,7 +476,10 @@ more accepted path-head/edge detail.
 
 ---
 
-*Last updated: 2026-09-06. V7.7.1a bounded START HERE orientation is production-live-accepted on runtime 0.5.27: normal continuation should use `cairnstone_resume_chain(..., detail="start_here")`, with `compact`/`full` as deliberate expansion modes. V7.7 vault catalog/scope/search primitives are live; Scope is retrieval/navigation context only and never synthetic global authority. Cross-chain grounded Q&A (`cairnstone_ask_scope`) remains planned for V7.7.2 and must not be assumed shipped. V6.10 remains the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
+*Last updated: 2026-09-07 (added Section 8, MCP Twin client tool-catalog
+cache workaround; renumbered old Sections 8→9, 9→10).*
+
+*Previously: 2026-09-06. V7.7.1a bounded START HERE orientation is production-live-accepted on runtime 0.5.27: normal continuation should use `cairnstone_resume_chain(..., detail="start_here")`, with `compact`/`full` as deliberate expansion modes. V7.7 vault catalog/scope/search primitives are live; Scope is retrieval/navigation context only and never synthetic global authority. Cross-chain grounded Q&A (`cairnstone_ask_scope`) remains planned for V7.7.2 and must not be assumed shipped. V6.10 remains the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
 update it in place here and keep the "Last updated" line current — this
 file is meant to be the single source of truth referenced by URL from every
 provider's project instructions, not re-pasted and forked per provider.*
