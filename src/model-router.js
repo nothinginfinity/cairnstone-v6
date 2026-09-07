@@ -18,10 +18,16 @@ import {
   planProfileGroundingReads,
   profileAllowsChain
 } from "./profiles.js";
+import {
+  SUBAGENT_RESULT_MAX_OUTPUT_TOKENS,
+  SUBAGENT_RESULT_SCHEMA,
+  buildSubagentResultFromDelegation
+} from "./subagent-result.js";
 
 export const AGENT_CONTEXT_SCHEMA = "cairnstone-agent-context-v1";
 export const MODEL_REQUEST_SCHEMA = "cairnstone-model-request-v1";
 export const MODEL_RESULT_SCHEMA = "cairnstone-model-result-v1";
+export { SUBAGENT_RESULT_SCHEMA } from "./subagent-result.js";
 
 const PACKAGE_ID_RE = /^sha256:[0-9a-f]{64}$/;
 
@@ -2889,7 +2895,7 @@ function compactProfileMetadata(profile) {
 
 export const DELEGATE_TOOL_DEFINITION = {
   name: "cairnstone_delegate",
-  description: "V7.2/V7.4: bounded server-side delegation. Without profile_id it preserves the original V7.2 read-only path with zero tool execution. With an accepted V7.4 profile from the cross-project registry (e.g. cairnstone-maintainer, repo-debugger, release-reviewer), CairnStone may execute only profile-allowlisted automatic reads through the V7.3 broker before routing, then sends the model zero tools. Returns compact text, profile/grounding evidence, identities, usage, and diagnostics; grants zero execution/mutation authority to the model or profile.",
+  description: "V7.2/V7.4: bounded server-side delegation. Without profile_id it preserves the original V7.2 read-only path with zero tool execution. With an accepted V7.4 profile from the cross-project registry (e.g. cairnstone-maintainer, repo-debugger, release-reviewer), CairnStone may execute only profile-allowlisted automatic reads through the V7.3 broker before routing, then sends the model zero tools. Default returns cairnstone-delegation-result-v1. Set compact_result=true to wrap the same internals as cairnstone-subagent-result-v1 (answer + citations for parent LLMs; expand only via expand_hints). Grants zero execution/mutation authority; never mutates chain/path HEAD.",
   inputSchema: {
     type: "object",
     required: ["actor_id", "task", "chain", "route"],
@@ -2947,7 +2953,11 @@ export const DELEGATE_TOOL_DEFINITION = {
         additionalProperties: false
       },
       include_inbox: { type: "boolean", description: "Include the non-mutating AC1 inbox snapshot in the server-side V7.0 package. Defaults to true." },
-      profile_id: { type: "string", description: "Optional V7.4 reusable agent profile identity from the cross-project profile registry (e.g. 'cairnstone-maintainer', 'repo-debugger', 'release-reviewer'). Activates deterministic operational-state grounding before the model call." }
+      profile_id: { type: "string", description: "Optional V7.4 reusable agent profile identity from the cross-project profile registry (e.g. 'cairnstone-maintainer', 'repo-debugger', 'release-reviewer'). Activates deterministic operational-state grounding before the model call." },
+      compact_result: {
+        type: "boolean",
+        description: "When true, wrap the delegation output as cairnstone-subagent-result-v1 (answer + citations; fail closed if answer exceeds ~4KB). Default false preserves cairnstone-delegation-result-v1."
+      }
     },
     additionalProperties: false
   }
@@ -2964,7 +2974,8 @@ export async function delegateFromBody(body, env, deps = {}) {
     const chain = delegationRequiredText(body.chain, "chain", 300);
     const route = body.route && typeof body.route === "object" ? body.route : null;
     if (!route) return delegationFailure("invalid_delegation_request", "route_not_an_object");
-    const generation = normalizeDelegationGeneration(body.generation);
+    const compactResult = body.compact_result === true;
+    const generation = normalizeDelegationGeneration(body.generation, { compactResult });
     const profileId = typeof body.profile_id === "string" && body.profile_id.trim() ? body.profile_id.trim() : null;
     let profile = null;
     let effectiveActorId = actorId;
@@ -3087,13 +3098,17 @@ export async function delegateFromBody(body, env, deps = {}) {
       include_inbox: body.include_inbox !== false
     }, env);
     if (!bootstrap || bootstrap.ok !== true) {
-      return {
+      return maybeWrapCompactDelegationResult({
         ok: false,
         error: "delegation_bootstrap_failed",
         detail: bootstrap && bootstrap.error ? bootstrap.error : "unknown",
         bootstrap_error: compactDelegationFailure(bootstrap),
+        actor_id: effectiveActorId,
+        chain,
         policy: delegationReadOnlyPolicy(readToolsExecuted)
-      };
+      }, {
+        compactResult, task, actor_id: actorId, chain, profile_id: profileId, deps
+      });
     }
 
     const routed = await deps.modelRouteFromBody({
@@ -3102,7 +3117,7 @@ export async function delegateFromBody(body, env, deps = {}) {
       request: { tools: [], generation }
     }, env);
     if (!routed || routed.ok !== true) {
-      return {
+      return maybeWrapCompactDelegationResult({
         ok: false,
         schema: DELEGATION_RESULT_SCHEMA,
         error: routed && routed.error ? routed.error : "delegation_route_failed",
@@ -3118,12 +3133,14 @@ export async function delegateFromBody(body, env, deps = {}) {
         policy: delegationReadOnlyPolicy(readToolsExecuted),
         evidence: compactDelegationEvidence(bootstrap),
         diagnostics: compactDelegationDiagnostics(bootstrap, routed, readToolsExecuted)
-      };
+      }, {
+        compactResult, task, actor_id: actorId, chain, profile_id: profileId, deps
+      });
     }
 
     const toolIntents = Array.isArray(routed.output?.tool_intents) ? routed.output.tool_intents : [];
     if (toolIntents.length) {
-      return {
+      const forbidden = {
         ok: false,
         schema: DELEGATION_RESULT_SCHEMA,
         error: "delegation_tool_intent_forbidden",
@@ -3139,9 +3156,12 @@ export async function delegateFromBody(body, env, deps = {}) {
         evidence: compactDelegationEvidence(bootstrap),
         diagnostics: { ...compactDelegationDiagnostics(bootstrap, routed, readToolsExecuted), tool_intents_returned: toolIntents.length }
       };
+      return maybeWrapCompactDelegationResult(forbidden, {
+        compactResult, task, actor_id: actorId, chain, profile_id: profileId, deps
+      });
     }
 
-    return {
+    const success = {
       ok: true,
       schema: DELEGATION_RESULT_SCHEMA,
       actor_id: effectiveActorId,
@@ -3157,17 +3177,48 @@ export async function delegateFromBody(body, env, deps = {}) {
       policy: delegationReadOnlyPolicy(readToolsExecuted),
       diagnostics: compactDelegationDiagnostics(bootstrap, routed, readToolsExecuted)
     };
+    return maybeWrapCompactDelegationResult(success, {
+      compactResult, task, actor_id: actorId, chain, profile_id: profileId, deps
+    });
   } catch (error) {
     return delegationFailure("invalid_delegation_request", String(error && error.message ? error.message : error));
   }
 }
 
-function normalizeDelegationGeneration(value) {
+async function maybeWrapCompactDelegationResult(delegation, {
+  compactResult,
+  task,
+  actor_id,
+  chain,
+  profile_id,
+  deps
+}) {
+  if (!compactResult) return delegation;
+  const builder = typeof deps.buildSubagentResultFromDelegation === "function"
+    ? deps.buildSubagentResultFromDelegation
+    : buildSubagentResultFromDelegation;
+  return builder({
+    delegation,
+    task,
+    actor_id,
+    chain,
+    profile_id
+  });
+}
+
+function normalizeDelegationGeneration(value, options = {}) {
   const source = value && typeof value === "object" ? value : {};
+  const compactResult = options.compactResult === true;
+  const hardCap = compactResult
+    ? Math.min(DELEGATION_MAX_OUTPUT_TOKENS, SUBAGENT_RESULT_MAX_OUTPUT_TOKENS)
+    : DELEGATION_MAX_OUTPUT_TOKENS;
+  const defaultTokens = compactResult
+    ? Math.min(DELEGATION_DEFAULT_OUTPUT_TOKENS, SUBAGENT_RESULT_MAX_OUTPUT_TOKENS)
+    : DELEGATION_DEFAULT_OUTPUT_TOKENS;
   const requested = Number(source.max_output_tokens);
   const maxOutputTokens = Number.isFinite(requested)
-    ? Math.max(1, Math.min(DELEGATION_MAX_OUTPUT_TOKENS, Math.floor(requested)))
-    : DELEGATION_DEFAULT_OUTPUT_TOKENS;
+    ? Math.max(1, Math.min(hardCap, Math.floor(requested)))
+    : defaultTokens;
   const requestedTemperature = Number(source.temperature);
   const temperature = Number.isFinite(requestedTemperature) ? Math.max(0, Math.min(2, requestedTemperature)) : 0.2;
   return { max_output_tokens: maxOutputTokens, temperature };

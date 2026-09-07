@@ -127,6 +127,10 @@ The V7 goal is simple:
 
 See [`docs/ROADMAP_V7.md`](docs/ROADMAP_V7.md) and [`docs/V7_0_CONTEXT_COMPILER_CONTRACT.md`](docs/V7_0_CONTEXT_COMPILER_CONTRACT.md).
 
+### Parent agents: compact subagent results
+
+For delegated vault work, prefer `cairnstone_delegate(..., compact_result=true)` so the parent keeps **answer + citations** (`cairnstone-subagent-result-v1`) instead of the fuller delegation evidence dump. Expand only via `expand_hints`. See [`docs/V7_SUBAGENT_COMPACT_RESULT.md`](docs/V7_SUBAGENT_COMPACT_RESULT.md).
+
 ## Start here for AI agents
 
 Before repo work, debugging, or CairnStone calls, read the canonical operating guide in full:
