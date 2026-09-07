@@ -101,21 +101,20 @@ export function createD1CorrespondenceStore(env) {
     async listInbox(recipientId, options = {}) {
       const limit = clamp(Number(options.limit || 50), 1, 200);
       const status = options.status || null;
-      const sql = status
-        ? `SELECT d.*, s.stone_json
-           FROM correspondence_deliveries d
-           JOIN stones s ON s.hash = d.stone_hash
-           WHERE d.recipient_id = ? AND d.status = ?
-           ORDER BY d.created_at DESC LIMIT ?`
-        : `SELECT d.*, s.stone_json
-           FROM correspondence_deliveries d
-           JOIN stones s ON s.hash = d.stone_hash
-           WHERE d.recipient_id = ?
-           ORDER BY d.created_at DESC LIMIT ?`;
-      const stmt = env.CAIRNSTONE_DB.prepare(sql);
-      const result = status
-        ? await stmt.bind(recipientId, status, limit).all()
-        : await stmt.bind(recipientId, limit).all();
+      const since = options.since || null;
+      const threadId = options.thread_id || null;
+      const where = ["d.recipient_id = ?"];
+      const binds = [recipientId];
+      if (status) { where.push("d.status = ?"); binds.push(status); }
+      if (threadId) { where.push("d.thread_id = ?"); binds.push(threadId); }
+      if (since) { where.push("d.created_at >= ?"); binds.push(since); }
+      binds.push(limit);
+      const sql = `SELECT d.*, s.stone_json
+        FROM correspondence_deliveries d
+        JOIN stones s ON s.hash = d.stone_hash
+        WHERE ${where.join(" AND ")}
+        ORDER BY d.created_at DESC LIMIT ?`;
+      const result = await env.CAIRNSTONE_DB.prepare(sql).bind(...binds).all();
       return result?.results || [];
     },
 
@@ -337,10 +336,20 @@ export function createCorrespondenceService({
       const recipientId = actorId(body.recipient_id, "recipient_id");
       const status = body.status === undefined ? null : String(body.status);
       if (status && !ALLOWED_STATUSES.has(status)) return { ok: false, error: "invalid_status", allowed: [...ALLOWED_STATUSES] };
-      const rows = await store.listInbox(recipientId, { status, limit: body.limit });
+      let threadId = null;
+      if (body.thread_id !== undefined && body.thread_id !== null && body.thread_id !== "") {
+        try { threadId = opaqueId(body.thread_id, "thread_id"); }
+        catch { return { ok: false, error: "invalid_thread_id" }; }
+      }
+      const since = parseSince(body.since);
+      if (since && since.error) return since;
+      const rows = await store.listInbox(recipientId, { status, limit: body.limit, since, thread_id: threadId });
       return {
         ok: true,
         recipient_id: recipientId,
+        ...(since ? { since } : {}),
+        ...(threadId ? { thread_id: threadId } : {}),
+        ...(status ? { status } : {}),
         total: rows.length,
         messages: rows.map(inboxCard)
       };
@@ -695,6 +704,14 @@ function sameStrings(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
   return true;
+}
+
+function parseSince(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") return { ok: false, error: "invalid_since" };
+  const text = value.trim();
+  if (!text || !Number.isFinite(Date.parse(text))) return { ok: false, error: "invalid_since" };
+  return text;
 }
 
 function clamp(value, min, max) {
