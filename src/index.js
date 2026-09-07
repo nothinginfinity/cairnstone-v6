@@ -11,6 +11,10 @@ import {
   sendMessageFromBody,
   HANDOFF_DISPATCH_TOOL_DEFINITION
 } from "./correspondence.js";
+import {
+  runTaskRequestFromBody,
+  RUN_TASK_REQUEST_TOOL_DEFINITION
+} from "./worker-session.js";
 import { askChainFromBody, ASK_TOOL_DEFINITION } from "./ask.js";
 import { skillAgentFromBody, SKILL_AGENT_TOOL_DEFINITION } from "./skill-agent.js";
 import {
@@ -857,6 +861,15 @@ async function callMcpTool(name, args, env) {
       createStone: stoneBody => createStoneFromBody(stoneBody, e)
     })
   });
+  if (name === "cairnstone_run_task_request") {
+    const createStone = stoneBody => createStoneFromBody(stoneBody, env);
+    return runTaskRequestFromBody(args, env, {
+      getInboxFromBody: (inboxBody, e) => getInboxFromBody(inboxBody, e, { createStone }),
+      readMessageFromBody: (readBody, e) => readMessageFromBody(readBody, e, { createStone }),
+      sendMessageFromBody: (sendBody, e) => sendMessageFromBody(sendBody, e, { createStone }),
+      delegateFromBody: (delegateBody, e) => callMcpTool("cairnstone_delegate", delegateBody, e)
+    });
+  }
   if (name === "cairnstone_tool_search") return toolSearchFromBody(args, env, { mcpToolDefinitions: mcpTools() });
   if (name === "cairnstone_get_tool_contract") return toolContractFromBody(args, env, { mcpToolDefinitions: mcpTools() });
   if (name === "cairnstone_vault_catalog") return vaultCatalogFromBody(args, env);
@@ -1327,6 +1340,7 @@ function mcpTools() {
     TOOL_AUTHORIZATION_REQUEST_TOOL_DEFINITION,
     MODEL_ROUTE_TOOL_DEFINITION,
     DELEGATE_TOOL_DEFINITION,
+    RUN_TASK_REQUEST_TOOL_DEFINITION,
     PAID_AGENT_QUOTE_PREVIEW_TOOL_DEFINITION,
     PAID_AGENT_X402_QUOTE_PREVIEW_TOOL_DEFINITION,
     TOOL_SEARCH_TOOL_DEFINITION,

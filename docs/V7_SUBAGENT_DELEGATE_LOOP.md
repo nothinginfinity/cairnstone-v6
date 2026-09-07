@@ -105,3 +105,7 @@ When wrapped as `cairnstone-subagent-result-v1`:
 - No paid/x402 work
 - No ack/archive inbox tools
 - No new starter profiles in this slice
+
+## Next slice
+
+AC1 worker session pattern (`task_request` → own-inbox pickup → compact `task_result`): see [`docs/V7_SUBAGENT_WORKER_SESSION.md`](V7_SUBAGENT_WORKER_SESSION.md).
