@@ -251,7 +251,8 @@ test("oversized answer fails closed (never ok:true truncated)", async () => {
   assert.equal(built.diagnostics.answer_truncated, true);
   assert.equal(built.diagnostics.fail_closed, true);
   assert.equal(built.detail.answer_bytes, SUBAGENT_RESULT_MAX_ANSWER_BYTES + 1);
-  assert.ok(built.citations.length >= 1);
+  assert.deepEqual(built.citations, []);
+  assert.ok(built.evidence_refs.length >= 1);
   assert.equal(built.policy.mutation_authority, false);
   assert.equal(built.detail.max_answer_bytes, SUBAGENT_RESULT_MAX_ANSWER_BYTES);
   assert.ok(estimateAnswerTokens(oversized) >= Math.ceil((SUBAGENT_RESULT_MAX_ANSWER_BYTES + 1) / 4));
