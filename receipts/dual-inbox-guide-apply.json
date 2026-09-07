@@ -1,0 +1,81 @@
+{
+  "worker": "afo-gitzip",
+  "version": "0.2.2-unified",
+  "action": "apply_repo_text_patch",
+  "target": {
+    "owner": "nothinginfinity",
+    "repo": "cairnstone-v6",
+    "branch": "main",
+    "path": "docs/AI_OPERATING_GUIDE.md"
+  },
+  "source_sha": "cf70ed601a5af7994a5a32a6c89cebcf7c97227b",
+  "result_sha": "c840ebe93f7d8b4fd17bb8019665da7a517d2d3c",
+  "commit_sha": "49ae5ec314c371f391a12fd1473e9edf1bfae213",
+  "diff": {
+    "before_length": 27409,
+    "after_length": 28856,
+    "delta": 1447,
+    "common_prefix": 13012,
+    "common_suffix": 1464,
+    "before_fingerprint": "252d1949",
+    "after_fingerprint": "201aa3d2"
+  },
+  "applied": [
+    {
+      "label": "op_0",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    },
+    {
+      "label": "op_1",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    },
+    {
+      "label": "op_2",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    },
+    {
+      "label": "op_3",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    }
+  ],
+  "verification": {
+    "ok": true,
+    "results": [
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      }
+    ],
+    "failed": []
+  },
+  "timestamp": "2026-09-07T05:27:53.739Z"
+}
