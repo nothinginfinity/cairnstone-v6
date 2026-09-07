@@ -98,8 +98,11 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   // V7.7.1 adds three accepted-state read-only Scope primitives -- vault
   // catalog, scope resolver, and scope-aware search -- (16 -> 19).
   // V7.7.2 registers cairnstone_ask_scope on the same reviewed broker
-  // surface (19 -> 20).
-  assert.equal(result.total, 20);
+  // surface (19 -> 20). V7.7.4a adds five mailbox control-plane entries:
+  // get_inbox/list_threads/get_thread are scoped reads, mailbox policy preview
+  // is automatic read-only, and read_message remains scoped mutation because
+  // it advances only mutable delivery read state (20 -> 25).
+  assert.equal(result.total, 25);
 
   const health = result.tools.find(item => item.tool_id === "cairnstone_health");
   assert.equal(health.risk_class, "read");
@@ -124,6 +127,21 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   assert.equal(askScope.authorization, "automatic");
   assert.equal(askScope.available, true);
   assert.deepEqual(askScope.input_schema.required, ["question", "scope"]);
+
+  for (const toolId of ["cairnstone_get_inbox", "cairnstone_list_threads", "cairnstone_get_thread"]) {
+    const mailboxRead = result.tools.find(item => item.tool_id === toolId);
+    assert.ok(mailboxRead, `${toolId} must be broker-classified`);
+    assert.equal(mailboxRead.risk_class, "read");
+    assert.equal(mailboxRead.authorization, "scoped_grant");
+  }
+  const mailboxPolicy = result.tools.find(item => item.tool_id === "cairnstone_mailbox_policy_preview");
+  assert.ok(mailboxPolicy);
+  assert.equal(mailboxPolicy.risk_class, "read");
+  assert.equal(mailboxPolicy.authorization, "automatic");
+  const readMessage = result.tools.find(item => item.tool_id === "cairnstone_read_message");
+  assert.ok(readMessage);
+  assert.equal(readMessage.risk_class, "mutation");
+  assert.equal(readMessage.authorization, "scoped_grant");
 });
 
 test("V7.3.0 automatic read policy can allow an intent but remains preview-only and unexecuted", async () => {
