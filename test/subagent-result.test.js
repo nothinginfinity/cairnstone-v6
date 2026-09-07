@@ -168,7 +168,7 @@ test("buildSubagentResultFromDelegation produces a valid schema shape", async ()
       chain: "cairnstone-v6-project-memory",
       package_id: PACKAGE_ID,
       request_ir_id: PACKAGE_ID,
-      output: { text: "Short answer grounded in accepted state.", finish_reason: "stop" },
+      output: { text: `Short answer grounded in accepted state. [stone:${HASH_C.slice(0, 12)}]`, finish_reason: "stop" },
       route: { provider: "mock-a", model: "mock-a/text-tools-v1" },
       usage: { input_tokens: 10, output_tokens: 5, cost: null },
       evidence: {
@@ -205,8 +205,10 @@ test("buildSubagentResultFromDelegation produces a valid schema shape", async ()
 
   assert.equal(built.ok, true);
   assert.equal(built.schema, SUBAGENT_RESULT_SCHEMA);
-  assert.equal(built.answer, "Short answer grounded in accepted state.");
-  assert.ok(built.citations.length >= 1);
+  assert.equal(built.answer, `Short answer grounded in accepted state. [stone:${HASH_C.slice(0, 12)}]`);
+  assert.equal(built.citations.length, 1);
+  assert.equal(built.citations[0].stone_hash, HASH_C);
+  assert.ok(built.evidence_refs.length >= built.citations.length);
   assert.ok(built.expand_hints.length >= 1);
   assert.deepEqual(built.tool_receipts, []);
   assert.equal(built.diagnostics.answer_truncated, false);
@@ -288,7 +290,7 @@ test("delegate compact_result wraps success and preserves zero mutation side eff
           credential_mode: "none",
           failover_policy: "none"
         },
-        output: { text: "Compact answer.", tool_intents: [], finish_reason: "stop" },
+        output: { text: `Compact answer. [stone:${HASH_C.slice(0, 12)}]`, tool_intents: [], finish_reason: "stop" },
         usage: { input_tokens: 1, output_tokens: 1, cost: null },
         observability: { gateway_id: null, gateway_request_id: null, attempts: [] },
         policy: { tool_intents_only: true, execution_authority: false, mutation_authority: false },
@@ -307,8 +309,9 @@ test("delegate compact_result wraps success and preserves zero mutation side eff
   assert.equal(setHeadCalls, 0);
   assert.equal(result.ok, true);
   assert.equal(result.schema, SUBAGENT_RESULT_SCHEMA);
-  assert.equal(result.answer, "Compact answer.");
-  assert.ok(result.citations.length >= 1, "expected citations from bootstrap evidence");
+  assert.equal(result.answer, `Compact answer. [stone:${HASH_C.slice(0, 12)}]`);
+  assert.equal(result.citations.length, 1, "only explicit answer-attached evidence should become a citation");
+  assert.ok(result.evidence_refs.length >= result.citations.length);
   assert.ok(result.citations.some(item => item.stone_hash === HASH_C));
   assert.ok(result.expand_hints.some(item => item.stone_hash === HASH_C && item.ref_id === "ref-decisions"));
   assert.equal(result.policy.execution_authority, false);
