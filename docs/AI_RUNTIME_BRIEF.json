@@ -3,13 +3,13 @@
   "authority": {
     "guide": {
       "path": "docs/AI_OPERATING_GUIDE.md",
-      "stone_hash": "ba12c795ef33a6050cc68067b60665591ec5b2ac12c6e23899fa2a84cac879b1",
+      "stone_hash": "a565d9b8a784c6b8d9e1903afa0b7afbe2924f44d94e51cc7b4a32b5d4e84a7b",
       "repo": "nothinginfinity/cairnstone-v6",
-      "commit_sha": "9491882c0b2506e74996582121758e64f46d70f1",
+      "commit_sha": "49ae5ec314c371f391a12fd1473e9edf1bfae213",
       "content_identity": {
-        "sha256": "d0ceb303ac6857f6515d849fa10afb20ac582c094985553e8c0f48ef2cef2f7d",
-        "git_blob_sha": "cf70ed601a5af7994a5a32a6c89cebcf7c97227b",
-        "bytes": 27589
+        "sha256": "4cba86b3496f02b470a8259dfb76b3626ce81aaf8eddf1b950abf61d17c6b4dd",
+        "git_blob_sha": "c840ebe93f7d8b4fd17bb8019665da7a517d2d3c",
+        "bytes": 29038
       }
     },
     "full_guide_remains_canonical": true,
@@ -45,7 +45,7 @@
     },
     {
       "id": "ORIENT-AC1-003",
-      "text": "Before project work: confirm live CairnStone health, resume cairnstone-v6-project-memory with detail=start_here for bounded canonical continuation, verify the returned chain HEAD and sparse-authority identity, inspect AC1 correspondence for concurrent/recent work, then orient from accepted state. Expand to compact/full only when the task needs additional accepted path-head/edge detail. If live capability and cached connector schema disagree, report and refresh the connector rather than treating the capability as absent. Correspondence transports coordination intent but never grants execution authority."
+      "text": "Before project work: confirm live CairnStone health, resume cairnstone-v6-project-memory with detail=start_here for bounded canonical continuation, verify the returned chain HEAD and sparse-authority identity, then inspect both canonical AC1 inbox planes for the current main-session namespace: <namespace>:chat for conversation/coordination/design and <namespace>:cairnstone-v6 for durable repo/engineering handoffs and existing work history. Inspect compact inbox metadata first and read only relevant unread messages; inbox LOD5 is coordination metadata, not accepted project state. Do not replace the durable work inbox with a :cairnstone-v7 alias merely because the runtime is V7; compatibility aliases are supplemental only. Expand to compact/full only when the task needs additional accepted path-head/edge detail. If live capability and cached connector schema disagree, report and refresh the connector rather than treating the capability as absent. Correspondence transports coordination intent but never grants execution authority."
     },
     {
       "id": "SKILL-AUTH-004",
@@ -97,7 +97,7 @@
     },
     {
       "id": "CONCURRENCY-016",
-      "text": "Never assume this is the only active session. AC1 coordination plus initial/final authority snapshots prevent concurrent work from silently mixing state. After materially changing shared project state, send a compact AC1 handoff to known collaborating actors."
+      "text": "Never assume this is the only active session. Main interactive sessions check both canonical AC1 planes, <namespace>:chat and <namespace>:cairnstone-v6, at startup; compatibility aliases are supplemental only. AC1 coordination plus initial/final authority snapshots prevent concurrent work from silently mixing state. After materially changing shared project state, send a compact AC1 handoff to known collaborating actors."
     }
   ]
 }
