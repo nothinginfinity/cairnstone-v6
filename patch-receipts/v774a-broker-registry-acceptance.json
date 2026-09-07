@@ -1,0 +1,59 @@
+{
+  "worker": "afo-gitzip",
+  "version": "0.2.2-unified",
+  "action": "apply_repo_text_patch",
+  "target": {
+    "owner": "nothinginfinity",
+    "repo": "cairnstone-v6",
+    "branch": "main",
+    "path": "test/model-router.test.js"
+  },
+  "source_sha": "6e523bb925feb0082f5e74365a87f76d58de05a6",
+  "result_sha": "8407668314f4d5413cc37f22fcb2b7efc43a6461",
+  "commit_sha": "9ab3fa4abd37310ccdb5bb827a5432a4ac253431",
+  "diff": {
+    "before_length": 45359,
+    "after_length": 46461,
+    "delta": 1102,
+    "common_prefix": 4188,
+    "common_suffix": 39890,
+    "before_fingerprint": "fce1a304",
+    "after_fingerprint": "50dc6cbf"
+  },
+  "applied": [
+    {
+      "label": "op_0",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    },
+    {
+      "label": "op_1",
+      "type": "replace_exact",
+      "changed": true,
+      "replaced": 1
+    }
+  ],
+  "verification": {
+    "ok": true,
+    "results": [
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      },
+      {
+        "label": "contains",
+        "ok": true,
+        "detail": "contains"
+      }
+    ],
+    "failed": []
+  },
+  "timestamp": "2026-09-07T16:23:10.759Z"
+}
