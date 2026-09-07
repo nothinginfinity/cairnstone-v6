@@ -101,8 +101,10 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   // surface (19 -> 20). V7.7.4a adds five mailbox control-plane entries:
   // get_inbox/list_threads/get_thread are scoped reads, mailbox policy preview
   // is automatic read-only, and read_message remains scoped mutation because
-  // it advances only mutable delivery read state (20 -> 25).
-  assert.equal(result.total, 25);
+  // it advances only mutable delivery read state (20 -> 25). Actor-local
+  // notes over AC1 add cairnstone_get_notes (scoped read) and
+  // cairnstone_note_self (scoped mutation) (25 -> 27).
+  assert.equal(result.total, 27);
 
   const health = result.tools.find(item => item.tool_id === "cairnstone_health");
   assert.equal(health.risk_class, "read");

@@ -6,8 +6,10 @@ const ALLOWED_STATUSES = new Set(["queued", "delivered", "read", "acked", "archi
 const ALLOWED_MAILBOX_LABELS = new Set([
   "needs-response", "decision-needed", "review-request", "blocked", "informational",
   "handoff", "task-open", "task-result", "ack", "urgent",
-  "chat-plane", "work-plane", "scope-bound"
+  "chat-plane", "work-plane", "scope-bound", "actor-local-note"
 ]);
+const NOTE_LABEL = "actor-local-note";
+const NOTE_SCHEMA = "cairnstone-actor-note-v1";
 const ALLOWED_SCOPE_MODES = new Set(["single_chain", "repo", "multi", "vault"]);
 const MAX_MESSAGE_BYTES = 900000;
 const MAX_RECIPIENTS = 25;
@@ -116,6 +118,67 @@ export const MAILBOX_POLICY_PREVIEW_TOOL_DEFINITION = {
       from: { type: "string" },
       to: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 25 },
       intent: { type: "string", enum: [...ALLOWED_INTENTS] }
+    },
+    additionalProperties: false
+  }
+};
+
+export const NOTE_SELF_TOOL_DEFINITION = {
+  name: "cairnstone_note_self",
+  description: "Actor-local continuity note over AC1: create one immutable self-addressed correspondence Stone (from==to==actor_id) labeled actor-local-note under notes/<id>.txt. Grants no execution, mutation, accepted-state, or scope authority and never moves chain/path HEAD. Notes are excluded from the shared inbox/thread views by default; use cairnstone_get_notes to read them back.",
+  inputSchema: {
+    type: "object",
+    required: ["actor_id", "content"],
+    properties: {
+      actor_id: { type: "string" },
+      content: { type: "string" },
+      from: { type: "string", description: "If provided, must equal actor_id; otherwise note_owner_mismatch." },
+      to: { type: "array", items: { type: "string" }, maxItems: 25, description: "If provided, must be exactly [actor_id]; any other actor is note_redirect_forbidden." },
+      note_id: { type: "string" },
+      message_id: { type: "string" },
+      thread_id: { type: "string" },
+      subject: { type: "string" },
+      priority: { type: "string", enum: ["low", "normal", "high", "urgent"] },
+      labels: { type: "array", items: { type: "string", enum: [...ALLOWED_MAILBOX_LABELS] }, maxItems: 20 },
+      scope: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: [...ALLOWED_SCOPE_MODES] },
+          repos: { type: "array", items: { type: "string" }, maxItems: 25 },
+          chains: { type: "array", items: { type: "string" }, maxItems: 50 },
+          max_chains: { type: "integer", minimum: 1, maximum: 500 }
+        },
+        required: ["mode"],
+        additionalProperties: false
+      }
+    },
+    additionalProperties: false
+  }
+};
+
+export const GET_NOTES_TOOL_DEFINITION = {
+  name: "cairnstone_get_notes",
+  description: "Read one actor's own actor-local-note Stones (created via cairnstone_note_self) with a bounded exclusive cursor. Never mutates state and never appears in the shared inbox/thread views. Optional scope filter is a transport hint only, not an authority or access-control boundary.",
+  inputSchema: {
+    type: "object",
+    required: ["actor_id"],
+    properties: {
+      actor_id: { type: "string" },
+      after_cursor: { type: "string" },
+      limit: { type: "number", minimum: 1, maximum: 200 },
+      thread_id: { type: "string" },
+      labels: { type: "array", items: { type: "string", enum: [...ALLOWED_MAILBOX_LABELS] }, maxItems: 20 },
+      scope: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: [...ALLOWED_SCOPE_MODES] },
+          repos: { type: "array", items: { type: "string" }, maxItems: 25 },
+          chains: { type: "array", items: { type: "string" }, maxItems: 50 },
+          max_chains: { type: "integer", minimum: 1, maximum: 500 }
+        },
+        required: ["mode"],
+        additionalProperties: false
+      }
     },
     additionalProperties: false
   }
@@ -251,6 +314,9 @@ export function createCorrespondenceService({
       const subject = optionalText(body.subject, "subject", 500);
       const explicitLabels = normalizeMailboxLabels(body.labels);
       const scope = normalizeScopeHint(body.scope);
+      if (explicitLabels.includes(NOTE_LABEL) && (recipients.length !== 1 || recipients[0] !== senderId)) {
+        return { ok: false, error: "note_redirect_forbidden", from: senderId, to: recipients };
+      }
       const policyPreview = mailboxPolicyPreviewFromBody({ from: senderId, to: recipients, intent });
       if (!policyPreview.ok || policyPreview.decision === "deny") {
         return { ok: false, error: "mailbox_policy_denied", policy: policyPreview };
@@ -440,7 +506,7 @@ export function createCorrespondenceService({
       if (afterCursor && afterCursor.error) return afterCursor;
       const labels = normalizeMailboxLabels(body.labels);
       const requestedLimit = clamp(Number(body.limit || 50), 1, 200);
-      const scanLimit = labels.length ? 200 : requestedLimit;
+      const scanLimit = 200;
       const rows = await store.listInbox(recipientId, {
         status,
         limit: scanLimit,
@@ -448,7 +514,7 @@ export function createCorrespondenceService({
         thread_id: threadId,
         after_cursor: afterCursor
       });
-      const cards = rows.map(inboxCard);
+      const cards = rows.map(inboxCard).filter(card => !card.labels.includes(NOTE_LABEL));
       const filtered = labels.length ? cards.filter(card => labels.every(label => card.labels.includes(label))) : cards;
       const messages = filtered.slice(0, requestedLimit);
       const cursorRow = rows.length ? (afterCursor ? rows[rows.length - 1] : rows[0]) : null;
@@ -475,7 +541,7 @@ export function createCorrespondenceService({
       const afterCursor = parseMailboxCursor(body.after_cursor);
       if (afterCursor && afterCursor.error) return afterCursor;
       const rows = await store.listInbox(recipientId, { status, limit: 200, after_cursor: afterCursor });
-      const cards = rows.map(inboxCard);
+      const cards = rows.map(inboxCard).filter(card => !card.labels.includes(NOTE_LABEL));
       const grouped = new Map();
       for (const card of cards) {
         if (!grouped.has(card.thread_id)) grouped.set(card.thread_id, []);
@@ -503,8 +569,8 @@ export function createCorrespondenceService({
       const recipientId = actorId(body.recipient_id, "recipient_id");
       const threadId = opaqueId(body.thread_id, "thread_id");
       const rows = await store.listInbox(recipientId, { thread_id: threadId, limit: clamp(Number(body.limit || 200), 1, 200) });
-      if (!rows.length) return { ok: false, error: "thread_not_found", recipient_id: recipientId, thread_id: threadId };
-      const messages = rows.map(inboxCard).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.delivery_id || "").localeCompare(String(b.delivery_id || "")));
+      const messages = rows.map(inboxCard).filter(card => !card.labels.includes(NOTE_LABEL)).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.delivery_id || "").localeCompare(String(b.delivery_id || "")));
+      if (!messages.length) return { ok: false, error: "thread_not_found", recipient_id: recipientId, thread_id: threadId };
       return {
         ok: true,
         schema: "cairnstone-mailbox-thread-v1",
@@ -548,6 +614,176 @@ export function createCorrespondenceService({
         immutable_message_stone: true,
         mutation_scope: "delivery_state_only"
       };
+    },
+
+    async noteSelf(body = {}) {
+      const actorIdValue = actorId(body.actor_id, "actor_id");
+      if (body.from !== undefined && body.from !== null && body.from !== "") {
+        let fromValue;
+        try { fromValue = actorId(body.from, "from"); }
+        catch (error) { return { ok: false, error: "invalid_from", detail: String(error?.message || error) }; }
+        if (fromValue !== actorIdValue) {
+          return { ok: false, error: "note_owner_mismatch", actor_id: actorIdValue, from: fromValue };
+        }
+      }
+      if (body.to !== undefined && body.to !== null) {
+        let toValues;
+        try { toValues = recipientIds(body.to); }
+        catch (error) { return { ok: false, error: "invalid_to", detail: String(error?.message || error) }; }
+        if (toValues.length !== 1 || toValues[0] !== actorIdValue) {
+          return { ok: false, error: "note_redirect_forbidden", actor_id: actorIdValue, to: toValues };
+        }
+      }
+      const intent = body.intent === undefined ? "message" : String(body.intent);
+      if (intent !== "message") return { ok: false, error: "note_intent_forbidden", intent };
+
+      const content = messageContent(body.content);
+      const noteId = opaqueId(body.note_id || body.message_id || `note:${randomUUID()}`, "note_id");
+      const messageId = opaqueId(body.message_id || noteId, "message_id");
+      const threadId = opaqueId(body.thread_id || messageId, "thread_id");
+      const priority = body.priority === undefined ? "normal" : String(body.priority);
+      if (!ALLOWED_PRIORITIES.has(priority)) return { ok: false, error: "invalid_priority", allowed: [...ALLOWED_PRIORITIES] };
+      const subject = optionalText(body.subject, "subject", 500);
+      const explicitLabels = normalizeMailboxLabels(body.labels);
+      const scope = normalizeScopeHint(body.scope);
+      const labels = [...new Set([...explicitLabels, NOTE_LABEL])].sort();
+
+      const contract = {
+        type: MESSAGE_TYPE,
+        schema: MESSAGE_SCHEMA,
+        message_id: messageId,
+        from: actorIdValue,
+        to: [actorIdValue],
+        thread_id: threadId,
+        intent: "message",
+        priority,
+        subject,
+        labels,
+        scope,
+        plane: { sender: classifyMailboxPlane(actorIdValue), recipients: [{ recipient_id: actorIdValue, plane: classifyMailboxPlane(actorIdValue) }] },
+        policy: notePolicy()
+      };
+      const fingerprint = await hash(stableJson({ ...contract, content }));
+      const existing = await store.findByMessage(actorIdValue, messageId);
+
+      if (existing.length) {
+        const hashes = [...new Set(existing.map(row => row.stone_hash))];
+        const fingerprints = [...new Set(existing.map(row => row.message_fingerprint))];
+        const existingRecipients = [...new Set(existing.map(row => row.recipient_id))].sort();
+        if (hashes.length !== 1 || fingerprints.length !== 1 || fingerprints[0] !== fingerprint || !sameStrings(existingRecipients, [actorIdValue])) {
+          return {
+            ok: false,
+            error: "idempotency_conflict",
+            message_id: messageId,
+            actor_id: actorIdValue,
+            detail: "message_id already exists with different content, metadata, or stone identity"
+          };
+        }
+        return {
+          ok: true,
+          idempotent_replay: true,
+          note_id: noteId,
+          message_id: messageId,
+          thread_id: threadId,
+          stone_hash: hashes[0],
+          actor_id: actorIdValue,
+          policy: notePolicy()
+        };
+      }
+
+      const created = await createStone({
+        title: subject || `Note by ${actorIdValue}`,
+        author: actorIdValue,
+        content,
+        path: `notes/${safePathSegment(noteId)}.txt`,
+        metadata: {
+          type: MESSAGE_TYPE,
+          schema: MESSAGE_SCHEMA,
+          correspondence: {
+            ...contract,
+            message_fingerprint: fingerprint,
+            note: {
+              schema: NOTE_SCHEMA,
+              owner_actor: actorIdValue,
+              authority: "actor_local_continuity_only"
+            }
+          }
+        },
+        set_as_head: false
+      });
+      if (!created?.ok) return created || { ok: false, error: "note_stone_create_failed" };
+
+      const createdAt = now();
+      const row = {
+        id: await hash(`delivery:${created.stone_hash}:${actorIdValue}`),
+        stone_hash: created.stone_hash,
+        message_id: messageId,
+        message_fingerprint: fingerprint,
+        recipient_id: actorIdValue,
+        sender_id: actorIdValue,
+        thread_id: threadId,
+        status: "delivered",
+        created_at: createdAt,
+        delivered_at: createdAt,
+        read_at: null,
+        acked_at: null,
+        archived_at: null,
+        claimed_by: null,
+        claimed_at: null
+      };
+      await store.insertDeliveries([row]);
+      return {
+        ok: true,
+        idempotent_replay: false,
+        note_id: noteId,
+        message_id: messageId,
+        thread_id: threadId,
+        stone_hash: created.stone_hash,
+        actor_id: actorIdValue,
+        immutable_note_stone: true,
+        policy: notePolicy()
+      };
+    },
+
+    async getNotes(body = {}) {
+      const actorIdValue = actorId(body.actor_id, "actor_id");
+      let threadId = null;
+      if (body.thread_id !== undefined && body.thread_id !== null && body.thread_id !== "") {
+        try { threadId = opaqueId(body.thread_id, "thread_id"); }
+        catch { return { ok: false, error: "invalid_thread_id" }; }
+      }
+      const afterCursor = parseMailboxCursor(body.after_cursor);
+      if (afterCursor && afterCursor.error) return afterCursor;
+      let labels;
+      try { labels = normalizeMailboxLabels(body.labels); }
+      catch (error) { return { ok: false, error: "invalid_labels", detail: String(error?.message || error) }; }
+      let scope;
+      try { scope = normalizeScopeHint(body.scope); }
+      catch (error) { return { ok: false, error: "invalid_scope", detail: String(error?.message || error) }; }
+      const requestedLimit = clamp(Number(body.limit || 50), 1, 200);
+      const rows = await store.listInbox(actorIdValue, {
+        limit: 200,
+        thread_id: threadId,
+        after_cursor: afterCursor
+      });
+      const cards = rows.map(inboxCard).filter(card => card.labels.includes(NOTE_LABEL));
+      const labelFiltered = labels.length ? cards.filter(card => labels.every(label => card.labels.includes(label))) : cards;
+      const scopeFiltered = scope ? labelFiltered.filter(card => matchesScopeHint(card.scope, scope)) : labelFiltered;
+      const notes = scopeFiltered.slice(0, requestedLimit);
+      const cursorRow = rows.length ? (afterCursor ? rows[rows.length - 1] : rows[0]) : null;
+      return {
+        ok: true,
+        actor_id: actorIdValue,
+        ...(afterCursor ? { after_cursor: body.after_cursor, cursor_inclusive: false } : {}),
+        ...(threadId ? { thread_id: threadId } : {}),
+        ...(labels.length ? { labels } : {}),
+        ...(scope ? { scope } : {}),
+        total: notes.length,
+        scanned: rows.length,
+        next_cursor: cursorRow ? buildMailboxCursor(cursorRow.created_at, cursorRow.id) : (body.after_cursor || null),
+        notes,
+        policy: notePolicy()
+      };
     }
   };
 }
@@ -580,6 +816,16 @@ export async function listThreadsFromBody(body, env, deps = {}) {
 export async function getThreadFromBody(body, env, deps = {}) {
   const service = createRuntimeService(env, deps);
   return service.getThread(body);
+}
+
+export async function noteSelfFromBody(body, env, deps = {}) {
+  const service = createRuntimeService(env, deps);
+  return service.noteSelf(body);
+}
+
+export async function getNotesFromBody(body, env, deps = {}) {
+  const service = createRuntimeService(env, deps);
+  return service.getNotes(body);
 }
 
 function createRuntimeService(env, deps) {
@@ -890,6 +1136,33 @@ function mailboxReadPolicy() {
     execution_authority: false,
     mutation_authority: false
   };
+}
+
+function notePolicy() {
+  return {
+    execution_authority: false,
+    mutation_authority: false,
+    accepted_state_authority: false,
+    scope_hint_authority: false,
+    inbox_excluded_by_default: true,
+    chain_head_written: false,
+    path_head_written: false
+  };
+}
+
+function matchesScopeHint(cardScope, filterScope) {
+  if (!filterScope) return true;
+  if (!cardScope) return false;
+  if (cardScope.mode !== filterScope.mode) return false;
+  if (Array.isArray(filterScope.chains) && filterScope.chains.length) {
+    const cardChains = Array.isArray(cardScope.chains) ? cardScope.chains : [];
+    if (!filterScope.chains.some(chain => cardChains.includes(chain))) return false;
+  }
+  if (Array.isArray(filterScope.repos) && filterScope.repos.length) {
+    const cardRepos = Array.isArray(cardScope.repos) ? cardScope.repos : [];
+    if (!filterScope.repos.some(repo => cardRepos.includes(repo))) return false;
+  }
+  return true;
 }
 
 function buildMailboxCursor(createdAt, id) {
