@@ -213,6 +213,15 @@ jobs:
           const allScopes = ["diff", "ls", "propose", "read", "write_draft"];
           const env = { CAIRNSTONE_WORKSPACE_CAPABILITY_SECRET: secret };
 
+          const reportFatal = error => {
+            const raw = String(error?.stack || error?.message || error || "unknown V7.7.5 acceptance failure");
+            const escaped = raw.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+            console.log(`::error title=V7.7.5 live acceptance::${escaped}`);
+            process.exit(1);
+          };
+          process.on("uncaughtException", reportFatal);
+          process.on("unhandledRejection", reportFatal);
+
           const assert = (condition, message) => {
             if (!condition) throw new Error(message);
           };
