@@ -924,8 +924,17 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_workspace_ls") return lsWorkspaceFromBody(args, env);
   if (name === "cairnstone_workspace_read") return readWorkspaceFromBody(args, env);
   if (name === "cairnstone_workspace_write_draft") return writeDraftFromBody(args, env);
-  if (name === "cairnstone_workspace_diff") return diffWorkspaceFromBody(args, env);
-  if (name === "cairnstone_workspace_propose_accept") return proposeAcceptWorkspaceFromBody(args, env);
+  if (name === "cairnstone_workspace_diff") {
+    return diffWorkspaceFromBody(args, env, {
+      resolveGitHubCommit: (owner, repo, ref) => resolveGitHubCommit(owner, repo, ref, env)
+    });
+  }
+  if (name === "cairnstone_workspace_propose_accept") {
+    return proposeAcceptWorkspaceFromBody(args, env, {
+      createStone: body => createStoneFromBody(body, env),
+      resolveGitHubCommit: (owner, repo, ref) => resolveGitHubCommit(owner, repo, ref, env)
+    });
+  }
   return { ok: false, error: "unknown_tool", name };
 }
 

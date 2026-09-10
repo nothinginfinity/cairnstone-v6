@@ -60,8 +60,7 @@ CREATE TABLE IF NOT EXISTS workspace_tips (
 CREATE INDEX IF NOT EXISTS idx_workspace_tips_revision
   ON workspace_tips (revision_id);
 
--- Optional immutable tip-vector freeze for propose_accept (schema stub in 5a;
--- full snapshot/propose path lands in V7.7.5c).
+-- Immutable tip-vector freeze for propose_accept (V7.7.5c).
 CREATE TABLE IF NOT EXISTS workspace_snapshots (
   snapshot_id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,

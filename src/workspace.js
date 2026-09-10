@@ -1,20 +1,25 @@
-// V7.7.5 Shared Agent Workspace (5a foundation + 5b MCP handlers).
+// V7.7.5 Shared Agent Workspace (5a foundation + 5b MCP + 5c snapshot/propose).
 //
 // Contract + capability + path hardening + revision CAS storage + MCP tools:
-// create/list/stat/ls/read/write_draft/diff. ChatGPT baseline (B/A-hybrid):
-// content-addressed R2 blobs + D1 tips. Draft revisions do NOT enter ordinary
-// Stones / search / Scope / HEADs.
-//
-// Snapshot / propose_accept / optional GitHub bind are deferred to V7.7.5c.
+// create/list/stat/ls/read/write_draft/diff/propose_accept + optional GitHub bind.
+// ChatGPT baseline (B/A-hybrid): content-addressed R2 blobs + D1 tips.
+// Draft revisions do NOT enter ordinary Stones / search / Scope / HEADs.
+// propose_accept freezes an immutable snapshot and may emit a proposal Stone
+// with accepted_state_authority:false; it NEVER moves chain_heads/path_heads.
 
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
 
 export const WORKSPACE_CAPABILITY_SCHEMA = "cairnstone-workspace-capability-v1";
 export const WORKSPACE_REVISION_SCHEMA = "cairnstone-workspace-revision-v1";
+export const WORKSPACE_SNAPSHOT_SCHEMA = "cairnstone-workspace-snapshot-v1";
+export const WORKSPACE_TIP_VECTOR_SCHEMA = "cairnstone-workspace-tip-vector-v1";
+export const WORKSPACE_PROPOSAL_SCHEMA = "cairnstone-workspace-proposal-v1";
 export const WORKSPACE_CAPABILITY_PURPOSE = "workspace";
 export const WORKSPACE_CAPABILITY_MAX_TTL_SECONDS = 3600;
 export const WORKSPACE_CAPABILITY_DEFAULT_TTL_SECONDS = 900;
 export const WORKSPACE_MAX_CONTENT_BYTES = 262144; // 256 KiB UTF-8 text v1 bound
+const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
+const GITHUB_NAME_RE = /^[A-Za-z0-9_.-]+$/;
 
 export const WORKSPACE_CAPABILITY_SCOPES = Object.freeze([
   "diff",
@@ -487,6 +492,256 @@ export function capabilityHasExactScopes(scopes, requiredScopes = []) {
   return (Array.isArray(requiredScopes) ? requiredScopes : []).every(scope => have.has(String(scope)));
 }
 
+/**
+ * Optional GitHub bind: transport/backing only. Branch refs are not authority.
+ * root_path (if set) must be a canonical relative POSIX path (sandboxed).
+ */
+export function normalizeGithubBind(input) {
+  if (input === undefined || input === null) return { ok: true, github_bind: null };
+  if (!isObject(input)) return { ok: false, error: "invalid_workspace_github_bind", detail: "object_required" };
+  const owner = String(input.owner || "").trim();
+  const repo = String(input.repo || input.repository || "").trim();
+  if (!owner || !repo || !GITHUB_NAME_RE.test(owner) || !GITHUB_NAME_RE.test(repo)) {
+    return { ok: false, error: "invalid_workspace_github_bind", detail: "owner_repo" };
+  }
+  const ref = String(input.ref || input.branch || input.sha || "main").trim();
+  if (!ref || ref.length > 256 || ref.includes("\0") || ref.includes("..")) {
+    return { ok: false, error: "invalid_workspace_github_bind", detail: "ref" };
+  }
+  let rootPath = null;
+  if (input.root_path !== undefined && input.root_path !== null && input.root_path !== "") {
+    const pathResult = canonicalizeWorkspacePath(input.root_path);
+    if (!pathResult.ok) {
+      return { ok: false, error: "invalid_workspace_github_bind_root_path", detail: pathResult };
+    }
+    rootPath = pathResult.path;
+  }
+  return {
+    ok: true,
+    github_bind: {
+      owner,
+      repo,
+      ref,
+      root_path: rootPath
+    }
+  };
+}
+
+export function parseGithubBindJson(githubBindJson) {
+  if (githubBindJson === undefined || githubBindJson === null || githubBindJson === "") {
+    return { ok: true, github_bind: null };
+  }
+  try {
+    const parsed = typeof githubBindJson === "string" ? JSON.parse(githubBindJson) : githubBindJson;
+    return normalizeGithubBind(parsed);
+  } catch {
+    return { ok: false, error: "invalid_workspace_github_bind_json" };
+  }
+}
+
+/**
+ * Resolve a mutable branch/tag ref to an immutable 40-hex commit SHA.
+ * Full SHAs short-circuit with no network call. Fail closed on unresolved refs.
+ */
+export async function resolveGitHubCommitSha(owner, repo, ref, env = {}) {
+  const requestedRef = String(ref || "").trim();
+  if (FULL_SHA_RE.test(requestedRef)) {
+    return {
+      ok: true,
+      requested_ref: requestedRef,
+      observed_commit_sha: requestedRef.toLowerCase(),
+      already_resolved: true
+    };
+  }
+  if (!owner || !repo || !requestedRef) {
+    return { ok: false, error: "github_commit_resolution_failed", detail: "owner_repo_ref_required" };
+  }
+  const apiUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(requestedRef)}`;
+  const headers = {
+    "User-Agent": "cairnstone-v6-worker",
+    Accept: "application/vnd.github+json"
+  };
+  if (env.GITHUB_TOKEN) headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`;
+  try {
+    const response = await fetch(apiUrl, { headers });
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: "github_commit_resolution_failed",
+        detail: `github_commit_lookup_failed:${response.status}`,
+        requested_ref: requestedRef
+      };
+    }
+    const data = await response.json();
+    if (data && typeof data.sha === "string" && FULL_SHA_RE.test(data.sha)) {
+      return {
+        ok: true,
+        requested_ref: requestedRef,
+        observed_commit_sha: data.sha.toLowerCase(),
+        already_resolved: false
+      };
+    }
+    return {
+      ok: false,
+      error: "github_commit_resolution_failed",
+      detail: "github_commit_lookup_malformed_response",
+      requested_ref: requestedRef
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: "github_commit_resolution_failed",
+      detail: `github_commit_lookup_exception:${String(error && error.message ? error.message : error)}`,
+      requested_ref: requestedRef
+    };
+  }
+}
+
+export function buildTipVector(tips = []) {
+  const list = Array.isArray(tips) ? tips : [];
+  return list
+    .map(tip => ({
+      path: String(tip.path),
+      revision_id: String(tip.revision_id),
+      content_hash: String(tip.content_hash)
+    }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+export function tipVectorDigestPayload(workspaceId, tipVector) {
+  return {
+    schema: WORKSPACE_TIP_VECTOR_SCHEMA,
+    workspace_id: workspaceId,
+    tips: tipVector
+  };
+}
+
+export async function computeTipVectorDigest(workspaceId, tipVector) {
+  return sha256Text(stableJson(tipVectorDigestPayload(workspaceId, tipVector)));
+}
+
+export function tipVectorsEqual(left, right) {
+  const a = buildTipVector(left);
+  const b = buildTipVector(right);
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i].path !== b[i].path) return false;
+    if (a[i].revision_id !== b[i].revision_id) return false;
+    if (a[i].content_hash !== b[i].content_hash) return false;
+  }
+  return true;
+}
+
+async function selectTipsForSnapshot(db, workspaceId, { paths = null, prefix = null } = {}) {
+  if (Array.isArray(paths) && paths.length) {
+    const selected = [];
+    for (const rawPath of paths) {
+      const pathResult = canonicalizeWorkspacePath(rawPath);
+      if (!pathResult.ok) return pathResult;
+      const tip = await getWorkspaceTip(db, workspaceId, pathResult.path);
+      if (!tip) {
+        return { ok: false, error: "workspace_path_not_found", path: pathResult.path };
+      }
+      selected.push(tip);
+    }
+    return { ok: true, tips: selected };
+  }
+  const listed = await listWorkspaceTips(db, workspaceId, prefix);
+  if (!listed.ok) return listed;
+  return { ok: true, tips: listed.tips };
+}
+
+/**
+ * Freeze an immutable workspace_snapshot over the selected path-tip vector.
+ * Re-reads tips before commit; fail closed with workspace_snapshot_race on change.
+ * Does not mutate chain_heads / path_heads / workspace_tips.
+ */
+export async function freezeWorkspaceSnapshot(db, {
+  workspace_id,
+  created_by,
+  paths = null,
+  prefix = null
+} = {}) {
+  let wsId;
+  let creator;
+  try {
+    wsId = workspaceId(workspace_id);
+    creator = actorId(created_by, "created_by");
+  } catch (error) {
+    return { ok: false, error: "invalid_workspace_snapshot", detail: String(error.message || error) };
+  }
+
+  const first = await selectTipsForSnapshot(db, wsId, { paths, prefix });
+  if (!first.ok) return first;
+  if (!first.tips.length) {
+    return { ok: false, error: "workspace_snapshot_empty", workspace_id: wsId };
+  }
+
+  const tipVector = buildTipVector(first.tips);
+  const tipVectorDigest = await computeTipVectorDigest(wsId, tipVector);
+  const snapshotId = await sha256Text(stableJson({
+    schema: WORKSPACE_SNAPSHOT_SCHEMA,
+    workspace_id: wsId,
+    tip_vector_digest: tipVectorDigest
+  }));
+
+  // Authority-first recheck: tips must still match the compiled vector.
+  const second = await selectTipsForSnapshot(db, wsId, { paths, prefix });
+  if (!second.ok) return second;
+  if (!tipVectorsEqual(tipVector, second.tips)) {
+    return {
+      ok: false,
+      error: "workspace_snapshot_race",
+      workspace_id: wsId,
+      expected_tip_vector_digest: tipVectorDigest,
+      accepted_state_authority: false
+    };
+  }
+
+  const now = new Date().toISOString();
+  const tipVectorJson = stableJson(tipVectorDigestPayload(wsId, tipVector));
+  await db.prepare(
+    `INSERT OR IGNORE INTO workspace_snapshots
+      (snapshot_id, workspace_id, tip_vector_json, tip_vector_digest, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).bind(snapshotId, wsId, tipVectorJson, tipVectorDigest, creator, now).run();
+
+  // Final closed re-read before returning the frozen id.
+  const third = await selectTipsForSnapshot(db, wsId, { paths, prefix });
+  if (!third.ok) return third;
+  if (!tipVectorsEqual(tipVector, third.tips)) {
+    return {
+      ok: false,
+      error: "workspace_snapshot_race",
+      workspace_id: wsId,
+      workspace_snapshot_id: snapshotId,
+      tip_vector_digest: tipVectorDigest,
+      accepted_state_authority: false
+    };
+  }
+
+  return {
+    ok: true,
+    workspace_id: wsId,
+    workspace_snapshot_id: snapshotId,
+    tip_vector: tipVector,
+    tip_vector_digest: tipVectorDigest,
+    created_by: creator,
+    created_at: now,
+    accepted_state_authority: false,
+    chain_heads_mutated: false,
+    path_heads_mutated: false
+  };
+}
+
+export async function getWorkspaceSnapshot(db, snapshot_id) {
+  if (!isNonEmptyString(snapshot_id)) return null;
+  return await db.prepare(
+    `SELECT snapshot_id, workspace_id, tip_vector_json, tip_vector_digest, created_by, created_at
+     FROM workspace_snapshots WHERE snapshot_id = ?`
+  ).bind(String(snapshot_id).trim()).first() || null;
+}
+
 export async function createWorkspace(db, {
   workspace_id,
   name,
@@ -523,6 +778,7 @@ export async function createWorkspace(db, {
     created_by: creator,
     created_at: now,
     status: "active",
+    github_bind: github_bind || null,
     accepted_state_authority: false
   };
 }
@@ -826,12 +1082,16 @@ function lineDiff(beforeText, afterText) {
 
 /**
  * Diff tip (or path content) against a prior revision. V1: UTF-8 text only.
- * GitHub bind diffs are deferred to V7.7.5c.
+ * When the workspace has an optional GitHub bind, resolve branch → immutable
+ * commit SHA and return observed_commit_sha (transport only, not authority).
  */
 export async function diffDraft(db, r2, {
   workspace_id,
   path,
-  against_revision = null
+  against_revision = null,
+  github_bind = null,
+  env = {},
+  resolveGitHubCommit = null
 } = {}) {
   let wsId;
   try { wsId = workspaceId(workspace_id); }
@@ -871,6 +1131,51 @@ export async function diffDraft(db, r2, {
   }
 
   const diff = lineDiff(beforeContent, tipBlob.content);
+
+  let githubBindResult = null;
+  let observedCommitSha = null;
+  let requestedRef = null;
+  if (github_bind) {
+    const resolver = typeof resolveGitHubCommit === "function"
+      ? resolveGitHubCommit
+      : (owner, repo, ref) => resolveGitHubCommitSha(owner, repo, ref, env);
+    const resolved = await resolver(github_bind.owner, github_bind.repo, github_bind.ref);
+    if (!resolved?.ok && !resolved?.observed_commit_sha && !resolved?.sha) {
+      return {
+        ok: false,
+        error: resolved?.error || "github_commit_resolution_failed",
+        detail: resolved?.detail || null,
+        requested_ref: github_bind.ref,
+        github_bind: {
+          owner: github_bind.owner,
+          repo: github_bind.repo,
+          ref: github_bind.ref,
+          root_path: github_bind.root_path || null
+        },
+        accepted_state_authority: false
+      };
+    }
+    observedCommitSha = (resolved.observed_commit_sha || resolved.sha || "").toLowerCase();
+    requestedRef = resolved.requested_ref || github_bind.ref;
+    if (!FULL_SHA_RE.test(observedCommitSha)) {
+      return {
+        ok: false,
+        error: "github_commit_resolution_failed",
+        detail: "immutable_commit_sha_required",
+        requested_ref: requestedRef,
+        accepted_state_authority: false
+      };
+    }
+    githubBindResult = {
+      owner: github_bind.owner,
+      repo: github_bind.repo,
+      requested_ref: requestedRef,
+      observed_commit_sha: observedCommitSha,
+      root_path: github_bind.root_path || null,
+      transport_only: true
+    };
+  }
+
   return {
     ok: true,
     workspace_id: wsId,
@@ -884,8 +1189,8 @@ export async function diffDraft(db, r2, {
       : null,
     changed: tip.content_hash !== beforeHash,
     diff,
-    github_bind: null,
-    github_bind_deferred_to_5c: true,
+    github_bind: githubBindResult,
+    observed_commit_sha: observedCommitSha,
     accepted_state_authority: false
   };
 }
@@ -979,9 +1284,8 @@ export async function createWorkspaceFromBody(body = {}, env = {}) {
   const bindings = workspaceEnvBindings(env);
   if (!bindings.ok) return bindings;
 
-  if (body.github_bind !== undefined && body.github_bind !== null) {
-    return { ok: false, error: "workspace_github_bind_deferred_to_5c" };
-  }
+  const bindNorm = normalizeGithubBind(body.github_bind);
+  if (!bindNorm.ok) return bindNorm;
 
   const creator = requireActorField(body, "created_by");
   if (!creator.ok) return creator;
@@ -1017,7 +1321,7 @@ export async function createWorkspaceFromBody(body = {}, env = {}) {
     workspace_id: auth.workspace_id,
     name: body.name,
     created_by: creator.value,
-    github_bind: null
+    github_bind: bindNorm.github_bind
   });
 }
 
@@ -1074,6 +1378,8 @@ export async function statWorkspaceFromBody(body = {}, env = {}) {
   const members = await listWorkspaceMembers(bindings.db, auth.workspace_id);
   const tips = await listWorkspaceTips(bindings.db, auth.workspace_id);
   if (!tips.ok) return tips;
+  const bindParsed = parseGithubBindJson(workspace.github_bind_json);
+  if (!bindParsed.ok) return bindParsed;
 
   return {
     ok: true,
@@ -1084,7 +1390,7 @@ export async function statWorkspaceFromBody(body = {}, env = {}) {
       created_at: workspace.created_at,
       updated_at: workspace.updated_at,
       status: workspace.status,
-      github_bind: null
+      github_bind: bindParsed.github_bind
     },
     members,
     tips: tips.tips,
@@ -1187,7 +1493,7 @@ export async function writeDraftFromBody(body = {}, env = {}) {
   });
 }
 
-export async function diffWorkspaceFromBody(body = {}, env = {}) {
+export async function diffWorkspaceFromBody(body = {}, env = {}, deps = {}) {
   const bindings = workspaceEnvBindings(env);
   if (!bindings.ok) return bindings;
 
@@ -1210,16 +1516,28 @@ export async function diffWorkspaceFromBody(body = {}, env = {}) {
   });
   if (!auth.ok) return auth;
 
+  const workspace = await getWorkspace(bindings.db, auth.workspace_id);
+  if (!workspace) return { ok: false, error: "workspace_not_found", workspace_id: auth.workspace_id };
+  const bindParsed = parseGithubBindJson(workspace.github_bind_json);
+  if (!bindParsed.ok) return bindParsed;
+
   return diffDraft(bindings.db, bindings.r2, {
     workspace_id: auth.workspace_id,
     path: body.path,
-    against_revision: body.against_revision
+    against_revision: body.against_revision,
+    github_bind: bindParsed.github_bind,
+    env,
+    resolveGitHubCommit: deps.resolveGitHubCommit || null
   });
 }
 
-/** V7.7.5c deferred: snapshot / propose_accept not implemented in 5b. */
-export async function proposeAcceptWorkspaceFromBody(body = {}, env = {}) {
-  // Still fail-closed on capability so write_draft-only tokens cannot "reach" propose.
+/**
+ * V7.7.5c: freeze immutable snapshot + emit proposal packet/Stone for review.
+ * Requires propose-scoped capability. MUST NOT move chain_heads/path_heads.
+ * Proposal references snapshot digest, never a moving tip.
+ * Optional GitHub PR/commit pointers only after immutable commit identity exists.
+ */
+export async function proposeAcceptWorkspaceFromBody(body = {}, env = {}, deps = {}) {
   const bindings = workspaceEnvBindings(env);
   if (!bindings.ok) return bindings;
   const actor = requireActorField(body, "actor_id");
@@ -1227,25 +1545,175 @@ export async function proposeAcceptWorkspaceFromBody(body = {}, env = {}) {
   if (!isNonEmptyString(body.workspace_capability)) {
     return { ok: false, error: "workspace_capability_required" };
   }
+
   const auth = await authorizeWorkspaceRequest(bindings.db, env, {
     workspace_capability: body.workspace_capability,
     actor_id: actor.value,
     workspace_id: body.workspace_id,
     requiredScopes: ["propose"],
+    path: Array.isArray(body.paths) && body.paths[0] ? body.paths[0] : (body.prefix || null),
     requireMembership: true
   });
   if (!auth.ok) return auth;
-  return {
-    ok: false,
-    error: "workspace_propose_accept_deferred_to_5c",
+
+  const workspace = await getWorkspace(bindings.db, auth.workspace_id);
+  if (!workspace) return { ok: false, error: "workspace_not_found", workspace_id: auth.workspace_id };
+
+  const freeze = await freezeWorkspaceSnapshot(bindings.db, {
     workspace_id: auth.workspace_id,
-    accepted_state_authority: false
+    created_by: auth.principal_actor_id,
+    paths: Array.isArray(body.paths) ? body.paths : null,
+    prefix: body.prefix || null
+  });
+  if (!freeze.ok) return freeze;
+
+  const bindParsed = parseGithubBindJson(workspace.github_bind_json);
+  if (!bindParsed.ok) return bindParsed;
+
+  let githubBindObserved = null;
+  let observedCommitSha = null;
+  if (bindParsed.github_bind) {
+    const resolver = typeof deps.resolveGitHubCommit === "function"
+      ? deps.resolveGitHubCommit
+      : (owner, repo, ref) => resolveGitHubCommitSha(owner, repo, ref, env);
+    const resolved = await resolver(
+      bindParsed.github_bind.owner,
+      bindParsed.github_bind.repo,
+      bindParsed.github_bind.ref
+    );
+    observedCommitSha = (resolved?.observed_commit_sha || resolved?.sha || "").toLowerCase();
+    if (!resolved || (!resolved.ok && !FULL_SHA_RE.test(observedCommitSha)) || !FULL_SHA_RE.test(observedCommitSha)) {
+      return {
+        ok: false,
+        error: resolved?.error || "github_commit_resolution_failed",
+        detail: resolved?.detail || "immutable_commit_sha_required_before_propose_github_pointer",
+        workspace_id: auth.workspace_id,
+        workspace_snapshot_id: freeze.workspace_snapshot_id,
+        tip_vector_digest: freeze.tip_vector_digest,
+        accepted_state_authority: false
+      };
+    }
+    githubBindObserved = {
+      owner: bindParsed.github_bind.owner,
+      repo: bindParsed.github_bind.repo,
+      requested_ref: resolved.requested_ref || bindParsed.github_bind.ref,
+      observed_commit_sha: observedCommitSha,
+      root_path: bindParsed.github_bind.root_path || null,
+      transport_only: true
+    };
+  }
+
+  // PR/commit pointers are allowed only after immutable commit identity exists.
+  let githubPr = null;
+  if (body.github_pr !== undefined && body.github_pr !== null) {
+    if (!observedCommitSha) {
+      return {
+        ok: false,
+        error: "workspace_github_pr_requires_immutable_commit",
+        message: "propose_accept may point at a PR/commit only after GitHub bind resolves to an immutable commit SHA.",
+        accepted_state_authority: false
+      };
+    }
+    if (!isObject(body.github_pr)) {
+      return { ok: false, error: "invalid_workspace_github_pr" };
+    }
+    const prNumber = Number(body.github_pr.number || body.github_pr.pr_number);
+    if (!Number.isInteger(prNumber) || prNumber <= 0) {
+      return { ok: false, error: "invalid_workspace_github_pr", detail: "number" };
+    }
+    githubPr = {
+      number: prNumber,
+      url: typeof body.github_pr.url === "string" ? body.github_pr.url : null,
+      observed_commit_sha: observedCommitSha
+    };
+  }
+
+  const createdAt = new Date().toISOString();
+  const proposalPacket = {
+    schema: WORKSPACE_PROPOSAL_SCHEMA,
+    workspace_id: auth.workspace_id,
+    workspace_snapshot_id: freeze.workspace_snapshot_id,
+    tip_vector_digest: freeze.tip_vector_digest,
+    tip_vector: freeze.tip_vector,
+    proposed_by: auth.principal_actor_id,
+    created_at: createdAt,
+    title: isNonEmptyString(body.title) ? String(body.title).trim() : `Workspace proposal ${freeze.workspace_snapshot_id.slice(0, 16)}`,
+    note: isNonEmptyString(body.note) ? String(body.note).trim() : null,
+    github_bind: githubBindObserved,
+    github_pr: githubPr,
+    observed_commit_sha: observedCommitSha,
+    accepted_state_authority: false,
+    propose_implies_accepted_state: false,
+    chain_heads_mutated: false,
+    path_heads_mutated: false
+  };
+
+  let stoneHash = null;
+  let stonePath = isNonEmptyString(body.path)
+    ? String(body.path).trim()
+    : `proposals/workspace/${auth.workspace_id.replace(/^ws:/, "")}/${freeze.workspace_snapshot_id.slice(0, 16)}.json`;
+  const pathCheck = canonicalizeWorkspacePath(stonePath);
+  if (!pathCheck.ok) {
+    // Proposal stone path is vault-side metadata; allow proposals/ prefix as relative.
+    if (!stonePath.startsWith("proposals/")) return pathCheck;
+  }
+
+  if (typeof deps.createStone === "function") {
+    const stoneResult = await deps.createStone({
+      title: proposalPacket.title,
+      author: auth.principal_actor_id,
+      content: stableJson(proposalPacket),
+      path: stonePath,
+      chain: isNonEmptyString(body.chain) ? String(body.chain).trim() : null,
+      repo: githubBindObserved ? `${githubBindObserved.owner}/${githubBindObserved.repo}` : null,
+      commit: observedCommitSha,
+      set_as_head: false,
+      related: Array.isArray(body.related) ? body.related : [],
+      metadata: {
+        kind: "workspace_proposal",
+        schema: WORKSPACE_PROPOSAL_SCHEMA,
+        workspace_id: auth.workspace_id,
+        workspace_snapshot_id: freeze.workspace_snapshot_id,
+        tip_vector_digest: freeze.tip_vector_digest,
+        observed_commit_sha: observedCommitSha,
+        accepted_state_authority: false,
+        slice: "V7.7.5c"
+      }
+    });
+    if (!stoneResult?.ok) {
+      return {
+        ok: false,
+        error: stoneResult?.error || "workspace_proposal_stone_failed",
+        detail: stoneResult || null,
+        workspace_snapshot_id: freeze.workspace_snapshot_id,
+        tip_vector_digest: freeze.tip_vector_digest,
+        proposal_packet: proposalPacket,
+        accepted_state_authority: false
+      };
+    }
+    stoneHash = stoneResult.stone_hash || stoneResult.hash || null;
+  }
+
+  return {
+    ok: true,
+    workspace_id: auth.workspace_id,
+    workspace_snapshot_id: freeze.workspace_snapshot_id,
+    tip_vector_digest: freeze.tip_vector_digest,
+    tip_vector: freeze.tip_vector,
+    proposal_packet: proposalPacket,
+    proposal_stone_hash: stoneHash,
+    observed_commit_sha: observedCommitSha,
+    github_bind: githubBindObserved,
+    accepted_state_authority: false,
+    stones_written: stoneHash ? 1 : 0,
+    chain_heads_mutated: false,
+    path_heads_mutated: false
   };
 }
 
 export const WORKSPACE_CREATE_TOOL_DEFINITION = Object.freeze({
   name: WORKSPACE_BROKER_TOOL_IDS.create,
-  description: "V7.7.5b: create a shared agent workspace (draft plane). Requires signed workspace_capability with owner + write_draft for the new workspace_id. Never accepted-state authority; GitHub bind deferred to 5c.",
+  description: "V7.7.5c: create a shared agent workspace (draft plane). Requires signed workspace_capability with owner + write_draft for the new workspace_id. Optional github_bind is transport/backing only. Never accepted-state authority.",
   inputSchema: {
     type: "object",
     required: ["name", "created_by", "workspace_id", "workspace_capability"],
@@ -1253,7 +1721,18 @@ export const WORKSPACE_CREATE_TOOL_DEFINITION = Object.freeze({
       name: { type: "string" },
       created_by: { type: "string" },
       workspace_id: { type: "string" },
-      workspace_capability: { type: "string" }
+      workspace_capability: { type: "string" },
+      github_bind: {
+        type: "object",
+        required: ["owner", "repo"],
+        properties: {
+          owner: { type: "string" },
+          repo: { type: "string" },
+          ref: { type: "string" },
+          root_path: { type: "string" }
+        },
+        additionalProperties: false
+      }
     },
     additionalProperties: false
   }
@@ -1261,7 +1740,7 @@ export const WORKSPACE_CREATE_TOOL_DEFINITION = Object.freeze({
 
 export const WORKSPACE_LIST_TOOL_DEFINITION = Object.freeze({
   name: WORKSPACE_BROKER_TOOL_IDS.list,
-  description: "V7.7.5b: list workspaces visible to the capability principal (membership + signed workspace_capability). Never automatic for models.",
+  description: "V7.7.5: list workspaces visible to the capability principal (membership + signed workspace_capability). Never automatic for models.",
   inputSchema: {
     type: "object",
     required: ["actor_id", "workspace_capability"],
@@ -1276,7 +1755,7 @@ export const WORKSPACE_LIST_TOOL_DEFINITION = Object.freeze({
 
 export const WORKSPACE_STAT_TOOL_DEFINITION = Object.freeze({
   name: WORKSPACE_BROKER_TOOL_IDS.stat,
-  description: "V7.7.5b: workspace metadata, members, and draft tips. Requires membership + scoped workspace_capability (ls).",
+  description: "V7.7.5: workspace metadata, members, draft tips, and optional github_bind. Requires membership + scoped workspace_capability (ls).",
   inputSchema: {
     type: "object",
     required: ["workspace_id", "actor_id", "workspace_capability"],
@@ -1291,7 +1770,7 @@ export const WORKSPACE_STAT_TOOL_DEFINITION = Object.freeze({
 
 export const WORKSPACE_LS_TOOL_DEFINITION = Object.freeze({
   name: WORKSPACE_BROKER_TOOL_IDS.ls,
-  description: "V7.7.5b: list draft paths under an optional prefix. Requires membership + scoped workspace_capability (ls).",
+  description: "V7.7.5: list draft paths under an optional prefix. Requires membership + scoped workspace_capability (ls).",
   inputSchema: {
     type: "object",
     required: ["workspace_id", "actor_id", "workspace_capability"],
@@ -1307,7 +1786,7 @@ export const WORKSPACE_LS_TOOL_DEFINITION = Object.freeze({
 
 export const WORKSPACE_READ_TOOL_DEFINITION = Object.freeze({
   name: WORKSPACE_BROKER_TOOL_IDS.read,
-  description: "V7.7.5b: read one UTF-8 draft path + content hash/revision. Requires membership + scoped workspace_capability (read). Bounded text only.",
+  description: "V7.7.5: read one UTF-8 draft path + content hash/revision. Requires membership + scoped workspace_capability (read). Bounded text only.",
   inputSchema: {
     type: "object",
     required: ["workspace_id", "path", "actor_id", "workspace_capability"],
@@ -1323,7 +1802,7 @@ export const WORKSPACE_READ_TOOL_DEFINITION = Object.freeze({
 
 export const WORKSPACE_WRITE_DRAFT_TOOL_DEFINITION = Object.freeze({
   name: WORKSPACE_BROKER_TOOL_IDS.write_draft,
-  description: "V7.7.5b: CAS write_draft mutation. base_revision null only on create; stale tip → workspace_conflict. write_draft scope does not imply propose. Never automatic-read; never moves HEADs.",
+  description: "V7.7.5: CAS write_draft mutation. base_revision null only on create; stale tip → workspace_conflict. write_draft scope does not imply propose. Never automatic-read; never moves HEADs.",
   inputSchema: {
     type: "object",
     required: ["workspace_id", "path", "content", "actor_id", "workspace_capability"],
@@ -1341,7 +1820,7 @@ export const WORKSPACE_WRITE_DRAFT_TOOL_DEFINITION = Object.freeze({
 
 export const WORKSPACE_DIFF_TOOL_DEFINITION = Object.freeze({
   name: WORKSPACE_BROKER_TOOL_IDS.diff,
-  description: "V7.7.5b: diff one draft path vs prior/against_revision (UTF-8 text). GitHub bind diffs deferred to 5c. Requires membership + scoped workspace_capability (diff).",
+  description: "V7.7.5c: diff one draft path vs prior/against_revision (UTF-8 text). Optional GitHub bind resolves branch → immutable observed_commit_sha. Requires membership + scoped workspace_capability (diff).",
   inputSchema: {
     type: "object",
     required: ["workspace_id", "path", "actor_id", "workspace_capability"],
@@ -1356,6 +1835,35 @@ export const WORKSPACE_DIFF_TOOL_DEFINITION = Object.freeze({
   }
 });
 
+export const WORKSPACE_PROPOSE_ACCEPT_TOOL_DEFINITION = Object.freeze({
+  name: WORKSPACE_BROKER_TOOL_IDS.propose_accept,
+  description: "V7.7.5c: freeze immutable workspace_snapshot over selected tips, emit proposal packet/Stone for review. Requires propose scope. Never moves chain_heads/path_heads; accepted_state_authority always false. write_draft does not imply propose.",
+  inputSchema: {
+    type: "object",
+    required: ["workspace_id", "actor_id", "workspace_capability"],
+    properties: {
+      workspace_id: { type: "string" },
+      actor_id: { type: "string" },
+      workspace_capability: { type: "string" },
+      paths: { type: "array", items: { type: "string" }, maxItems: 200 },
+      prefix: { type: "string" },
+      title: { type: "string" },
+      note: { type: "string" },
+      path: { type: "string" },
+      chain: { type: "string" },
+      github_pr: {
+        type: "object",
+        properties: {
+          number: { type: "number" },
+          url: { type: "string" }
+        },
+        additionalProperties: false
+      }
+    },
+    additionalProperties: false
+  }
+});
+
 export const WORKSPACE_MCP_TOOL_DEFINITIONS = Object.freeze([
   WORKSPACE_CREATE_TOOL_DEFINITION,
   WORKSPACE_LIST_TOOL_DEFINITION,
@@ -1363,5 +1871,6 @@ export const WORKSPACE_MCP_TOOL_DEFINITIONS = Object.freeze([
   WORKSPACE_LS_TOOL_DEFINITION,
   WORKSPACE_READ_TOOL_DEFINITION,
   WORKSPACE_WRITE_DRAFT_TOOL_DEFINITION,
-  WORKSPACE_DIFF_TOOL_DEFINITION
+  WORKSPACE_DIFF_TOOL_DEFINITION,
+  WORKSPACE_PROPOSE_ACCEPT_TOOL_DEFINITION
 ]);
