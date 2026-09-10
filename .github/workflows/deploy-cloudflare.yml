@@ -268,7 +268,7 @@ jobs:
             const response = await fetch(`${BASE}/v2/chains/cairnstone-v6-project-memory/resume?detail=start_here`);
             if (!response.ok) throw new Error(`resume HTTP ${response.status}`);
             const data = await response.json();
-            return data?.canonical_head?.hash || data?.head?.hash || data?.head || null;
+            return data?.start_here?.stone_hash || data?.canonical_head?.hash || data?.head?.hash || data?.head || null;
           }
 
           let health = null;
