@@ -4,28 +4,39 @@ import {
   WORKSPACE_BROKER_TOOL_IDS,
   WORKSPACE_MUTATION_TOOL_IDS,
   WORKSPACE_READ_TOOL_IDS,
+  WORKSPACE_MCP_TOOL_DEFINITIONS,
   WORKSPACE_ROLE_SCOPES,
   canonicalizeWorkspacePath,
   capabilityHasExactScopes,
   createWorkspace,
+  createWorkspaceFromBody,
+  diffWorkspaceFromBody,
   issueWorkspaceCapabilityFromBody,
+  listWorkspacesFromBody,
+  lsWorkspaceFromBody,
   narrowScopesToMembership,
+  proposeAcceptWorkspaceFromBody,
   readDraft,
+  readWorkspaceFromBody,
+  statWorkspaceFromBody,
   upsertWorkspaceMember,
   verifyWorkspaceCapability,
   workspaceCapabilitySecret,
-  writeDraft
+  writeDraft,
+  writeDraftFromBody
 } from "../src/workspace.js";
 import {
   DEFAULT_TOOL_BROKER_REGISTRY,
   toolRegistryFromBody
 } from "../src/model-router.js";
 import { listAutomaticReadToolIds } from "../src/delegate-loop.js";
+import { mcpToolsForProfile } from "../src/index.js";
 
-const TEST_ENV = { CAIRNSTONE_WORKSPACE_CAPABILITY_SECRET: "workspace-test-secret-v775a" };
+const TEST_ENV_SECRET = { CAIRNSTONE_WORKSPACE_CAPABILITY_SECRET: "workspace-test-secret-v775b" };
 const ACTOR_A = "chatgpt:cairnstone-v6";
 const ACTOR_B = "claude:cairnstone-v6";
-const WS_ID = "ws:v775a-demo";
+const ACTOR_C = "grok-bot:cairnstone-v6";
+const WS_ID = "ws:v775b-demo";
 
 class FakeR2 {
   constructor() {
@@ -64,7 +75,7 @@ class FakeWorkspaceD1 {
     const db = this;
     return {
       bind(...args) {
-        return {
+        const bound = {
           async run() {
             if (sql.includes("INSERT INTO workspaces")) {
               const [workspaceId, name, createdBy, createdAt, updatedAt, githubBind] = args;
@@ -157,7 +168,11 @@ class FakeWorkspaceD1 {
             throw new Error(`Unexpected run SQL: ${sql}`);
           },
           async first() {
-            if (sql.includes("FROM workspace_members")) {
+            if (sql.includes("FROM workspaces WHERE workspace_id")) {
+              const [workspaceId] = args;
+              return db.workspaces.get(workspaceId) || null;
+            }
+            if (sql.includes("FROM workspace_members WHERE workspace_id = ? AND actor_id = ?")) {
               const [workspaceId, actorId] = args;
               return db.members.get(db._memberKey(workspaceId, actorId)) || null;
             }
@@ -165,12 +180,81 @@ class FakeWorkspaceD1 {
               const [workspaceId, path] = args;
               return db.tips.get(db._tipKey(workspaceId, path)) || null;
             }
+            if (sql.includes("FROM workspace_revisions WHERE revision_id")) {
+              const [revisionId] = args;
+              return db.revisions.get(revisionId) || null;
+            }
             throw new Error(`Unexpected first SQL: ${sql}`);
+          },
+          async all() {
+            if (sql.includes("FROM workspace_members WHERE workspace_id = ?") && sql.includes("ORDER BY actor_id")) {
+              const [workspaceId] = args;
+              const rows = [...db.members.values()]
+                .filter(row => row.workspace_id === workspaceId)
+                .sort((a, b) => a.actor_id.localeCompare(b.actor_id));
+              return { results: rows };
+            }
+            if (sql.includes("FROM workspace_tips WHERE workspace_id = ?")) {
+              const [workspaceId, exactOrNull, likeOrUndefined] = args;
+              let rows = [...db.tips.values()].filter(row => row.workspace_id === workspaceId);
+              if (sql.includes("path = ? OR path LIKE ?")) {
+                const exact = exactOrNull;
+                const prefix = String(exactOrNull || "");
+                rows = rows.filter(row => row.path === exact || row.path.startsWith(`${prefix}/`));
+              }
+              rows.sort((a, b) => a.path.localeCompare(b.path));
+              return { results: rows };
+            }
+            if (sql.includes("FROM workspace_members m") && sql.includes("INNER JOIN workspaces")) {
+              const [actorId, limit] = args;
+              const rows = [...db.members.values()]
+                .filter(row => row.actor_id === actorId)
+                .map(row => {
+                  const ws = db.workspaces.get(row.workspace_id);
+                  return ws
+                    ? {
+                      workspace_id: ws.workspace_id,
+                      name: ws.name,
+                      created_by: ws.created_by,
+                      created_at: ws.created_at,
+                      updated_at: ws.updated_at,
+                      status: ws.status,
+                      membership_role: row.role
+                    }
+                    : null;
+                })
+                .filter(Boolean)
+                .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)) || a.workspace_id.localeCompare(b.workspace_id))
+                .slice(0, limit);
+              return { results: rows };
+            }
+            throw new Error(`Unexpected all SQL: ${sql}`);
           }
         };
+        return bound;
       }
     };
   }
+}
+
+function testEnv(db, r2) {
+  return {
+    ...TEST_ENV_SECRET,
+    CAIRNSTONE_DB: db,
+    CAIRNSTONE_RAW: r2
+  };
+}
+
+async function mintCapability(actorId, role, scopes, workspaceId = WS_ID, extra = {}) {
+  const issued = await issueWorkspaceCapabilityFromBody({
+    principal_actor_id: actorId,
+    workspace_id: workspaceId,
+    membership_role: role,
+    scopes,
+    ...extra
+  }, TEST_ENV_SECRET);
+  assert.equal(issued.ok, true, issued.error);
+  return issued.workspace_capability;
 }
 
 async function seedWorkspace() {
@@ -178,12 +262,12 @@ async function seedWorkspace() {
   const r2 = new FakeR2();
   const created = await createWorkspace(db, {
     workspace_id: WS_ID,
-    name: "V775a demo",
+    name: "V775b demo",
     created_by: ACTOR_A
   });
   assert.equal(created.ok, true);
   await upsertWorkspaceMember(db, { workspace_id: WS_ID, actor_id: ACTOR_B, role: "drafter" });
-  return { db, r2 };
+  return { db, r2, env: testEnv(db, r2) };
 }
 
 test("workspace capability secret fails closed and never falls back to mailbox/operator secrets", () => {
@@ -192,7 +276,7 @@ test("workspace capability secret fails closed and never falls back to mailbox/o
     CAIRNSTONE_MAILBOX_CAPABILITY_SECRET: "mailbox",
     CAIRNSTONE_OPERATOR_TOKEN: "operator"
   }), null);
-  assert.equal(workspaceCapabilitySecret(TEST_ENV), "workspace-test-secret-v775a");
+  assert.equal(workspaceCapabilitySecret(TEST_ENV_SECRET), "workspace-test-secret-v775b");
 });
 
 test("verifyWorkspaceCapability fails closed when secret missing", async () => {
@@ -201,7 +285,7 @@ test("verifyWorkspaceCapability fails closed when secret missing", async () => {
     workspace_id: WS_ID,
     membership_role: "drafter",
     scopes: ["read", "write_draft"]
-  }, TEST_ENV);
+  }, TEST_ENV_SECRET);
   assert.equal(issued.ok, true);
 
   const missing = await verifyWorkspaceCapability(issued.workspace_capability, {
@@ -229,7 +313,7 @@ test("capability mint/verify binds actor, workspace, purpose, and exact scopes",
     membership_role: "proposer",
     scopes: ["ls", "read", "write_draft"],
     path_prefix: "drafts"
-  }, TEST_ENV);
+  }, TEST_ENV_SECRET);
   assert.equal(issued.ok, true);
   assert.equal(issued.policy.write_draft_implies_propose, false);
 
@@ -238,7 +322,7 @@ test("capability mint/verify binds actor, workspace, purpose, and exact scopes",
     expectedWorkspaceId: WS_ID,
     requiredScopes: ["write_draft"],
     path: "drafts/a.md"
-  }, TEST_ENV);
+  }, TEST_ENV_SECRET);
   assert.equal(ok.ok, true);
   assert.equal(ok.workspace_id, WS_ID);
   assert.deepEqual(ok.scopes, ["ls", "read", "write_draft"]);
@@ -247,14 +331,14 @@ test("capability mint/verify binds actor, workspace, purpose, and exact scopes",
     expectedActorId: ACTOR_B,
     expectedWorkspaceId: WS_ID,
     requiredScopes: ["read"]
-  }, TEST_ENV);
+  }, TEST_ENV_SECRET);
   assert.equal(wrongActor.error, "workspace_capability_principal_mismatch");
 
   const wrongWs = await verifyWorkspaceCapability(issued.workspace_capability, {
     expectedActorId: ACTOR_A,
     expectedWorkspaceId: "ws:other",
     requiredScopes: ["read"]
-  }, TEST_ENV);
+  }, TEST_ENV_SECRET);
   assert.equal(wrongWs.error, "workspace_capability_workspace_mismatch");
 
   const outsidePrefix = await verifyWorkspaceCapability(issued.workspace_capability, {
@@ -262,7 +346,7 @@ test("capability mint/verify binds actor, workspace, purpose, and exact scopes",
     expectedWorkspaceId: WS_ID,
     requiredScopes: ["read"],
     path: "other/a.md"
-  }, TEST_ENV);
+  }, TEST_ENV_SECRET);
   assert.equal(outsidePrefix.error, "workspace_path_outside_capability_prefix");
 });
 
@@ -276,7 +360,7 @@ test("write_draft scope does not imply propose (exact scope separation)", async 
     workspace_id: WS_ID,
     membership_role: "drafter",
     scopes: ["write_draft", "read"]
-  }, TEST_ENV);
+  }, TEST_ENV_SECRET);
   assert.equal(issued.ok, true);
   assert.equal(capabilityHasExactScopes(issued.scopes, ["write_draft"]), true);
   assert.equal(capabilityHasExactScopes(issued.scopes, ["propose"]), false);
@@ -285,7 +369,7 @@ test("write_draft scope does not imply propose (exact scope separation)", async 
     expectedActorId: ACTOR_A,
     expectedWorkspaceId: WS_ID,
     requiredScopes: ["propose"]
-  }, TEST_ENV);
+  }, TEST_ENV_SECRET);
   assert.equal(proposeDenied.ok, false);
   assert.equal(proposeDenied.error, "workspace_capability_scope_missing");
   assert.deepEqual(proposeDenied.missing, ["propose"]);
@@ -367,7 +451,6 @@ test("writeDraft CAS: create then conflict on stale base_revision (no LWW)", asy
 test("broker registry: workspace mutations are never automatic-read", () => {
   const registry = toolRegistryFromBody({});
   assert.equal(registry.ok, true);
-  // 27 prior + 8 workspace stubs
   assert.equal(registry.total, 35);
 
   for (const toolId of WORKSPACE_MUTATION_TOOL_IDS) {
@@ -383,8 +466,244 @@ test("broker registry: workspace mutations are never automatic-read", () => {
     assert.equal(entry.authorization, "scoped_grant");
   }
 
+  const create = registry.tools.find(item => item.tool_id === WORKSPACE_BROKER_TOOL_IDS.create);
+  assert.deepEqual(create.input_schema.required, ["name", "created_by", "workspace_id", "workspace_capability"]);
+
   const automatic = listAutomaticReadToolIds(DEFAULT_TOOL_BROKER_REGISTRY);
   for (const toolId of Object.values(WORKSPACE_BROKER_TOOL_IDS)) {
     assert.ok(!automatic.includes(toolId), `${toolId} must not be automatic-read`);
   }
+});
+
+test("MCP tools/list advertises 5b workspace tools (not propose_accept)", () => {
+  const names = mcpToolsForProfile(false).map(tool => tool.name);
+  for (const def of WORKSPACE_MCP_TOOL_DEFINITIONS) {
+    assert.ok(names.includes(def.name), `${def.name} must be in MCP catalog`);
+  }
+  assert.equal(names.includes(WORKSPACE_BROKER_TOOL_IDS.propose_accept), false);
+});
+
+test("MCP create requires owner capability; github_bind deferred", async () => {
+  const db = new FakeWorkspaceD1();
+  const r2 = new FakeR2();
+  const env = testEnv(db, r2);
+  const wsId = "ws:v775b-create";
+
+  const ownerCap = await mintCapability(ACTOR_A, "owner", ["write_draft", "ls", "read"], wsId);
+  const created = await createWorkspaceFromBody({
+    name: "Create demo",
+    created_by: ACTOR_A,
+    workspace_id: wsId,
+    workspace_capability: ownerCap
+  }, env);
+  assert.equal(created.ok, true);
+  assert.equal(created.workspace_id, wsId);
+  assert.equal(created.accepted_state_authority, false);
+
+  const drafterCap = await mintCapability(ACTOR_B, "drafter", ["write_draft"], "ws:v775b-create-2");
+  const deniedRole = await createWorkspaceFromBody({
+    name: "Nope",
+    created_by: ACTOR_B,
+    workspace_id: "ws:v775b-create-2",
+    workspace_capability: drafterCap
+  }, env);
+  assert.equal(deniedRole.error, "workspace_create_requires_owner_capability");
+
+  const bindDenied = await createWorkspaceFromBody({
+    name: "Bind",
+    created_by: ACTOR_A,
+    workspace_id: "ws:v775b-create-3",
+    workspace_capability: await mintCapability(ACTOR_A, "owner", ["write_draft"], "ws:v775b-create-3"),
+    github_bind: { owner: "o", repo: "r" }
+  }, env);
+  assert.equal(bindDenied.error, "workspace_github_bind_deferred_to_5c");
+});
+
+test("cross-actor: two members share draft; third without grant denied; CAS conflict via MCP", async () => {
+  const { env } = await seedWorkspace();
+
+  const capAWrite = await mintCapability(ACTOR_A, "owner", ["ls", "read", "write_draft", "diff"]);
+  const capBWrite = await mintCapability(ACTOR_B, "drafter", ["ls", "read", "write_draft", "diff"]);
+  const capBRead = await mintCapability(ACTOR_B, "drafter", ["ls", "read", "diff"]);
+
+  const written = await writeDraftFromBody({
+    workspace_id: WS_ID,
+    path: "shared/plan.md",
+    content: "shared draft v1",
+    base_revision: null,
+    actor_id: ACTOR_A,
+    workspace_capability: capAWrite
+  }, env);
+  assert.equal(written.ok, true);
+  assert.equal(written.stones_written, 0);
+  assert.equal(written.chain_heads_mutated, false);
+
+  const readB = await readWorkspaceFromBody({
+    workspace_id: WS_ID,
+    path: "shared/plan.md",
+    actor_id: ACTOR_B,
+    workspace_capability: capBRead
+  }, env);
+  assert.equal(readB.ok, true);
+  assert.equal(readB.content, "shared draft v1");
+  assert.equal(readB.revision_id, written.revision_id);
+
+  const lsB = await lsWorkspaceFromBody({
+    workspace_id: WS_ID,
+    actor_id: ACTOR_B,
+    workspace_capability: capBRead,
+    prefix: "shared"
+  }, env);
+  assert.equal(lsB.ok, true);
+  assert.equal(lsB.total, 1);
+  assert.equal(lsB.entries[0].path, "shared/plan.md");
+
+  const listB = await listWorkspacesFromBody({
+    actor_id: ACTOR_B,
+    workspace_capability: capBRead
+  }, env);
+  assert.equal(listB.ok, true);
+  assert.equal(listB.workspaces.some(row => row.workspace_id === WS_ID), true);
+
+  const statA = await statWorkspaceFromBody({
+    workspace_id: WS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: capAWrite
+  }, env);
+  assert.equal(statA.ok, true);
+  assert.equal(statA.tip_count, 1);
+  assert.equal(statA.members.length, 2);
+
+  // Third actor: semantic actor string alone is not enough.
+  const noCap = await readWorkspaceFromBody({
+    workspace_id: WS_ID,
+    path: "shared/plan.md",
+    actor_id: ACTOR_C,
+    workspace_capability: ""
+  }, env);
+  assert.equal(noCap.error, "workspace_capability_required");
+
+  // Capability minted for C but no membership grant → denied.
+  const capC = await mintCapability(ACTOR_C, "reader", ["ls", "read", "diff"]);
+  const deniedMember = await readWorkspaceFromBody({
+    workspace_id: WS_ID,
+    path: "shared/plan.md",
+    actor_id: ACTOR_C,
+    workspace_capability: capC
+  }, env);
+  assert.equal(deniedMember.error, "workspace_membership_required");
+
+  // Wrong principal using A's capability.
+  const wrongPrincipal = await readWorkspaceFromBody({
+    workspace_id: WS_ID,
+    path: "shared/plan.md",
+    actor_id: ACTOR_C,
+    workspace_capability: capAWrite
+  }, env);
+  assert.equal(wrongPrincipal.error, "workspace_capability_principal_mismatch");
+
+  // Wrong workspace id.
+  const wrongWs = await readWorkspaceFromBody({
+    workspace_id: "ws:other",
+    path: "shared/plan.md",
+    actor_id: ACTOR_A,
+    workspace_capability: capAWrite
+  }, env);
+  assert.equal(wrongWs.error, "workspace_capability_workspace_mismatch");
+
+  // Stale CAS via MCP.
+  const conflict = await writeDraftFromBody({
+    workspace_id: WS_ID,
+    path: "shared/plan.md",
+    content: "stale",
+    base_revision: null,
+    actor_id: ACTOR_B,
+    workspace_capability: capBWrite
+  }, env);
+  assert.equal(conflict.error, "workspace_conflict");
+  assert.equal(conflict.current_tip.revision_id, written.revision_id);
+
+  const updated = await writeDraftFromBody({
+    workspace_id: WS_ID,
+    path: "shared/plan.md",
+    content: "shared draft v2",
+    base_revision: written.revision_id,
+    actor_id: ACTOR_B,
+    workspace_capability: capBWrite
+  }, env);
+  assert.equal(updated.ok, true);
+
+  const diff = await diffWorkspaceFromBody({
+    workspace_id: WS_ID,
+    path: "shared/plan.md",
+    actor_id: ACTOR_A,
+    workspace_capability: capAWrite,
+    against_revision: written.revision_id
+  }, env);
+  assert.equal(diff.ok, true);
+  assert.equal(diff.changed, true);
+  assert.equal(diff.github_bind_deferred_to_5c, true);
+  assert.match(diff.diff.unified, /shared draft v2/);
+});
+
+test("MCP path deny + write_draft capability cannot call propose_accept", async () => {
+  const { env } = await seedWorkspace();
+  const capWrite = await mintCapability(ACTOR_A, "owner", ["ls", "read", "write_draft", "diff"]);
+
+  const pathDenied = await writeDraftFromBody({
+    workspace_id: WS_ID,
+    path: "../etc/passwd",
+    content: "nope",
+    base_revision: null,
+    actor_id: ACTOR_A,
+    workspace_capability: capWrite
+  }, env);
+  assert.equal(pathDenied.error, "workspace_path_invalid");
+
+  const secretDenied = await writeDraftFromBody({
+    workspace_id: WS_ID,
+    path: ".env",
+    content: "SECRET=1",
+    base_revision: null,
+    actor_id: ACTOR_A,
+    workspace_capability: capWrite
+  }, env);
+  assert.equal(secretDenied.error, "workspace_path_denied_secret");
+
+  const proposeDenied = await proposeAcceptWorkspaceFromBody({
+    workspace_id: WS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: capWrite,
+    snapshot_id: "snap:fake"
+  }, env);
+  assert.equal(proposeDenied.error, "workspace_capability_scope_missing");
+  assert.deepEqual(proposeDenied.missing, ["propose"]);
+
+  const capPropose = await mintCapability(ACTOR_A, "owner", ["propose", "ls", "read", "write_draft"]);
+  const deferred = await proposeAcceptWorkspaceFromBody({
+    workspace_id: WS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: capPropose,
+    snapshot_id: "snap:fake"
+  }, env);
+  assert.equal(deferred.error, "workspace_propose_accept_deferred_to_5c");
+  assert.equal(deferred.accepted_state_authority, false);
+});
+
+test("MCP handlers fail closed without workspace secret (no mailbox/operator fallback)", async () => {
+  const { db, r2 } = await seedWorkspace();
+  const cap = await mintCapability(ACTOR_A, "owner", ["read", "ls"]);
+  const env = {
+    CAIRNSTONE_DB: db,
+    CAIRNSTONE_RAW: r2,
+    CAIRNSTONE_MAILBOX_CAPABILITY_SECRET: "mailbox",
+    CAIRNSTONE_OPERATOR_TOKEN: "operator"
+  };
+  const result = await readWorkspaceFromBody({
+    workspace_id: WS_ID,
+    path: "shared/plan.md",
+    actor_id: ACTOR_A,
+    workspace_capability: cap
+  }, env);
+  assert.equal(result.error, "workspace_capability_not_configured");
 });

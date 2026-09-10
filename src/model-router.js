@@ -604,11 +604,11 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       additionalProperties: false
     }
   }),
-  // V7.7.5a Shared Agent Workspace broker classifications (ChatGPT baseline).
+  // V7.7.5 Shared Agent Workspace broker classifications (ChatGPT baseline).
   // Reads are scoped_grant (never automatic model reads). write_draft / create /
   // propose_accept are mutation + scoped_grant and must never enter
-  // cairnstone_delegate automatic-read allowlists. Handlers land in 5b/5c;
-  // registry entries exist now so policy cannot misclassify mutations as reads.
+  // cairnstone_delegate automatic-read allowlists. 5b wires create/list/stat/
+  // ls/read/write_draft/diff handlers; propose_accept remains deferred to 5c.
   Object.freeze({
     tool_id: "cairnstone_workspace_create",
     connector: "cairnstone",
@@ -616,16 +616,15 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "mutation",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.5a stub classification: create a shared agent workspace; never automatic-read; never accepted-state authority.",
+    description: "V7.7.5b: create a shared agent workspace; never automatic-read; never accepted-state authority; GitHub bind deferred to 5c.",
     input_schema: {
       type: "object",
-      required: ["name", "created_by"],
+      required: ["name", "created_by", "workspace_id", "workspace_capability"],
       properties: {
         name: { type: "string" },
         created_by: { type: "string" },
         workspace_id: { type: "string" },
-        workspace_capability: { type: "string" },
-        github_bind: { type: "object" }
+        workspace_capability: { type: "string" }
       },
       additionalProperties: false
     }
@@ -637,7 +636,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "read",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.5a stub classification: list workspaces visible to the capability principal; never automatic for models.",
+    description: "V7.7.5b: list workspaces visible to the capability principal; never automatic for models.",
     input_schema: {
       type: "object",
       required: ["actor_id", "workspace_capability"],
@@ -656,7 +655,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "read",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.5a stub classification: workspace metadata/members/tips; scoped_grant only.",
+    description: "V7.7.5b: workspace metadata/members/tips; scoped_grant only.",
     input_schema: {
       type: "object",
       required: ["workspace_id", "actor_id", "workspace_capability"],
@@ -675,7 +674,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "read",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.5a stub classification: list draft paths under a prefix; scoped_grant only.",
+    description: "V7.7.5b: list draft paths under a prefix; scoped_grant only.",
     input_schema: {
       type: "object",
       required: ["workspace_id", "actor_id", "workspace_capability"],
@@ -695,7 +694,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "read",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.5a stub classification: read one draft path + content hash; scoped_grant only.",
+    description: "V7.7.5b: read one draft path + content hash; scoped_grant only; UTF-8 text v1.",
     input_schema: {
       type: "object",
       required: ["workspace_id", "path", "actor_id", "workspace_capability"],
@@ -715,7 +714,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "mutation",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.5a stub classification: CAS write_draft mutation; never automatic-read; write_draft scope does not imply propose.",
+    description: "V7.7.5b: CAS write_draft mutation; never automatic-read; write_draft scope does not imply propose.",
     input_schema: {
       type: "object",
       required: ["workspace_id", "path", "content", "actor_id", "workspace_capability"],
@@ -737,10 +736,10 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "read",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.5a stub classification: diff draft path/tree vs prior revision or GitHub commit; scoped_grant only.",
+    description: "V7.7.5b: diff draft path vs prior/against_revision (UTF-8); GitHub bind deferred to 5c; scoped_grant only.",
     input_schema: {
       type: "object",
-      required: ["workspace_id", "actor_id", "workspace_capability"],
+      required: ["workspace_id", "path", "actor_id", "workspace_capability"],
       properties: {
         workspace_id: { type: "string" },
         path: { type: "string" },
@@ -758,7 +757,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "mutation",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.5a stub classification: emit propose packet from immutable snapshot only; never sets chain/path HEAD; never automatic-read.",
+    description: "V7.7.5c deferred: emit propose packet from immutable snapshot only; never sets chain/path HEAD; never automatic-read. 5b handler fail-closed / deferred.",
     input_schema: {
       type: "object",
       required: ["workspace_id", "actor_id", "workspace_capability", "snapshot_id"],

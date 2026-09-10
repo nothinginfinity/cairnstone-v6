@@ -102,6 +102,17 @@ import {
   SCOPE_FIND_TOOL_DEFINITION,
   SCOPE_ASK_TOOL_DEFINITION
 } from "./vault-catalog.js";
+import {
+  createWorkspaceFromBody,
+  listWorkspacesFromBody,
+  statWorkspaceFromBody,
+  lsWorkspaceFromBody,
+  readWorkspaceFromBody,
+  writeDraftFromBody,
+  diffWorkspaceFromBody,
+  proposeAcceptWorkspaceFromBody,
+  WORKSPACE_MCP_TOOL_DEFINITIONS
+} from "./workspace.js";
 
 const VERSION = "0.5.30";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
@@ -907,6 +918,14 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_resolve_scope") return resolveScopeFromBody(args, env);
   if (name === "cairnstone_find_scope") return findScopeFromBody(args, env);
   if (name === "cairnstone_ask_scope") return askScopeFromBody(args, env);
+  if (name === "cairnstone_workspace_create") return createWorkspaceFromBody(args, env);
+  if (name === "cairnstone_workspace_list") return listWorkspacesFromBody(args, env);
+  if (name === "cairnstone_workspace_stat") return statWorkspaceFromBody(args, env);
+  if (name === "cairnstone_workspace_ls") return lsWorkspaceFromBody(args, env);
+  if (name === "cairnstone_workspace_read") return readWorkspaceFromBody(args, env);
+  if (name === "cairnstone_workspace_write_draft") return writeDraftFromBody(args, env);
+  if (name === "cairnstone_workspace_diff") return diffWorkspaceFromBody(args, env);
+  if (name === "cairnstone_workspace_propose_accept") return proposeAcceptWorkspaceFromBody(args, env);
   return { ok: false, error: "unknown_tool", name };
 }
 
@@ -1103,6 +1122,7 @@ function mcpTools() {
     },
     NOTE_SELF_TOOL_DEFINITION,
     GET_NOTES_TOOL_DEFINITION,
+    ...WORKSPACE_MCP_TOOL_DEFINITIONS,
     {
       name: "cairnstone_create_stone",
       description: "Create a CairnStone from either inline content or server-side GitHub fetch input. For scale, pass owner, repo, path, and ref instead of content.",

@@ -1,11 +1,11 @@
-// V7.7.5a Shared Agent Workspace foundation.
+// V7.7.5 Shared Agent Workspace (5a foundation + 5b MCP handlers).
 //
-// Contract + capability + path hardening + revision CAS storage.
-// ChatGPT baseline (B/A-hybrid): content-addressed R2 blobs + D1 tips.
-// Draft revisions do NOT enter ordinary Stones / search / Scope / HEADs.
+// Contract + capability + path hardening + revision CAS storage + MCP tools:
+// create/list/stat/ls/read/write_draft/diff. ChatGPT baseline (B/A-hybrid):
+// content-addressed R2 blobs + D1 tips. Draft revisions do NOT enter ordinary
+// Stones / search / Scope / HEADs.
 //
-// Full MCP tool surface (create/list/stat/ls/read/diff/propose_accept) is
-// deferred to V7.7.5b/5c. This module proves capability fail-closed and CAS.
+// Snapshot / propose_accept / optional GitHub bind are deferred to V7.7.5c.
 
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
 
@@ -513,8 +513,8 @@ export async function createWorkspace(db, {
 
   await db.prepare(
     `INSERT INTO workspace_members (workspace_id, actor_id, role, created_at)
-     VALUES (?, ?, 'owner', ?)`
-  ).bind(wsId, creator, now).run();
+     VALUES (?, ?, ?, ?)`
+  ).bind(wsId, creator, "owner", now).run();
 
   return {
     ok: true,
@@ -734,3 +734,634 @@ export async function readDraft(db, r2, { workspace_id, path } = {}) {
     accepted_state_authority: false
   };
 }
+
+export async function getWorkspace(db, workspace_id) {
+  let wsId;
+  try { wsId = workspaceId(workspace_id); }
+  catch (error) { return null; }
+  return await db.prepare(
+    `SELECT workspace_id, name, created_by, created_at, updated_at, status, github_bind_json
+     FROM workspaces WHERE workspace_id = ?`
+  ).bind(wsId).first() || null;
+}
+
+export async function listWorkspaceMembers(db, workspace_id) {
+  const result = await db.prepare(
+    `SELECT workspace_id, actor_id, role, created_at
+     FROM workspace_members WHERE workspace_id = ?
+     ORDER BY actor_id ASC`
+  ).bind(workspace_id).all();
+  return result?.results || [];
+}
+
+export async function listWorkspaceTips(db, workspace_id, prefix = null) {
+  let sql = `SELECT workspace_id, path, revision_id, content_hash, updated_at
+             FROM workspace_tips WHERE workspace_id = ?`;
+  const binds = [workspace_id];
+  if (prefix !== undefined && prefix !== null && prefix !== "") {
+    const prefixResult = canonicalizeWorkspacePath(prefix);
+    if (!prefixResult.ok) return prefixResult;
+    sql += ` AND (path = ? OR path LIKE ?)`;
+    binds.push(prefixResult.path, `${prefixResult.path}/%`);
+  }
+  sql += ` ORDER BY path ASC`;
+  const result = await db.prepare(sql).bind(...binds).all();
+  return { ok: true, tips: result?.results || [] };
+}
+
+export async function listWorkspacesForActor(db, actor_id, limit = 50) {
+  const capped = clampInt(limit, 1, 100, 50);
+  const result = await db.prepare(
+    `SELECT w.workspace_id, w.name, w.created_by, w.created_at, w.updated_at, w.status,
+            m.role AS membership_role
+     FROM workspace_members m
+     INNER JOIN workspaces w ON w.workspace_id = m.workspace_id
+     WHERE m.actor_id = ?
+     ORDER BY w.updated_at DESC, w.workspace_id ASC
+     LIMIT ?`
+  ).bind(actor_id, capped).all();
+  return result?.results || [];
+}
+
+export async function getWorkspaceRevision(db, revision_id) {
+  if (!isNonEmptyString(revision_id)) return null;
+  return await db.prepare(
+    `SELECT revision_id, workspace_id, path, parent_revision_id, content_hash, content_bytes, actor_id, created_at
+     FROM workspace_revisions WHERE revision_id = ?`
+  ).bind(String(revision_id).trim()).first() || null;
+}
+
+async function readBlobText(r2, contentHash) {
+  const key = workspaceBlobKey(contentHash);
+  const obj = await r2.get(key);
+  if (!obj) return { ok: false, error: "workspace_blob_missing", content_hash: contentHash, raw_key: key };
+  return { ok: true, content: await obj.text(), raw_key: key };
+}
+
+function lineDiff(beforeText, afterText) {
+  const beforeLines = String(beforeText ?? "").split("\n");
+  const afterLines = String(afterText ?? "").split("\n");
+  const max = Math.max(beforeLines.length, afterLines.length);
+  const hunks = [];
+  for (let i = 0; i < max; i += 1) {
+    const left = i < beforeLines.length ? beforeLines[i] : null;
+    const right = i < afterLines.length ? afterLines[i] : null;
+    if (left === right) {
+      if (left !== null) hunks.push({ op: "equal", line: left, n: i + 1 });
+      continue;
+    }
+    if (left !== null) hunks.push({ op: "remove", line: left, n: i + 1 });
+    if (right !== null) hunks.push({ op: "add", line: right, n: i + 1 });
+  }
+  const unified = hunks
+    .filter(h => h.op !== "equal")
+    .map(h => `${h.op === "remove" ? "-" : "+"}${h.line}`)
+    .join("\n");
+  return {
+    changed: Boolean(unified),
+    unified,
+    hunks: hunks.filter(h => h.op !== "equal").slice(0, 500)
+  };
+}
+
+/**
+ * Diff tip (or path content) against a prior revision. V1: UTF-8 text only.
+ * GitHub bind diffs are deferred to V7.7.5c.
+ */
+export async function diffDraft(db, r2, {
+  workspace_id,
+  path,
+  against_revision = null
+} = {}) {
+  let wsId;
+  try { wsId = workspaceId(workspace_id); }
+  catch (error) { return { ok: false, error: "invalid_workspace_diff", detail: String(error.message || error) }; }
+
+  const pathResult = canonicalizeWorkspacePath(path);
+  if (!pathResult.ok) return pathResult;
+  const tip = await getWorkspaceTip(db, wsId, pathResult.path);
+  if (!tip) return { ok: false, error: "workspace_path_not_found", path: pathResult.path };
+
+  const tipBlob = await readBlobText(r2, tip.content_hash);
+  if (!tipBlob.ok) return tipBlob;
+
+  let baseRevisionId = against_revision === undefined || against_revision === null || against_revision === ""
+    ? null
+    : String(against_revision).trim();
+
+  let baseRow = null;
+  if (baseRevisionId) {
+    baseRow = await getWorkspaceRevision(db, baseRevisionId);
+    if (!baseRow || baseRow.workspace_id !== wsId || baseRow.path !== pathResult.path) {
+      return { ok: false, error: "workspace_against_revision_not_found", against_revision: baseRevisionId };
+    }
+  } else {
+    const tipRow = await getWorkspaceRevision(db, tip.revision_id);
+    baseRevisionId = tipRow?.parent_revision_id || null;
+    if (baseRevisionId) baseRow = await getWorkspaceRevision(db, baseRevisionId);
+  }
+
+  let beforeContent = "";
+  let beforeHash = null;
+  if (baseRow) {
+    const baseBlob = await readBlobText(r2, baseRow.content_hash);
+    if (!baseBlob.ok) return baseBlob;
+    beforeContent = baseBlob.content;
+    beforeHash = baseRow.content_hash;
+  }
+
+  const diff = lineDiff(beforeContent, tipBlob.content);
+  return {
+    ok: true,
+    workspace_id: wsId,
+    path: pathResult.path,
+    tip: {
+      revision_id: tip.revision_id,
+      content_hash: tip.content_hash
+    },
+    against: baseRow
+      ? { revision_id: baseRow.revision_id, content_hash: beforeHash, parent_revision_id: baseRow.parent_revision_id || null }
+      : null,
+    changed: tip.content_hash !== beforeHash,
+    diff,
+    github_bind: null,
+    github_bind_deferred_to_5c: true,
+    accepted_state_authority: false
+  };
+}
+
+/**
+ * Capability + membership gate for every workspace MCP mutation/read.
+ * Fail closed. No mailbox/operator-token fallback.
+ * Capability may narrow membership, never widen (re-checked against live role).
+ */
+export async function authorizeWorkspaceRequest(db, env, {
+  workspace_capability,
+  actor_id,
+  workspace_id = null,
+  requiredScopes = [],
+  path = null,
+  requireMembership = true
+} = {}) {
+  const verified = await verifyWorkspaceCapability(
+    workspace_capability,
+    {
+      expectedActorId: actor_id,
+      expectedWorkspaceId: workspace_id || undefined,
+      requiredScopes,
+      path
+    },
+    env
+  );
+  if (!verified.ok) return verified;
+
+  if (!requireMembership) {
+    return {
+      ...verified,
+      membership: null,
+      accepted_state_authority: false
+    };
+  }
+
+  const member = await getWorkspaceMember(db, verified.workspace_id, verified.principal_actor_id);
+  if (!member) {
+    return {
+      ok: false,
+      error: "workspace_membership_required",
+      workspace_id: verified.workspace_id,
+      actor_id: verified.principal_actor_id
+    };
+  }
+
+  const roleScopes = new Set(scopesAllowedForRole(member.role));
+  const capabilityExceeds = verified.scopes.filter(scope => !roleScopes.has(scope));
+  if (capabilityExceeds.length) {
+    return {
+      ok: false,
+      error: "workspace_capability_exceeds_membership",
+      exceeded: capabilityExceeds,
+      membership_role: member.role,
+      role_scopes: [...roleScopes].sort()
+    };
+  }
+  const missingVsRole = (Array.isArray(requiredScopes) ? requiredScopes : [])
+    .filter(scope => !roleScopes.has(String(scope)));
+  if (missingVsRole.length) {
+    return {
+      ok: false,
+      error: "workspace_membership_scope_denied",
+      missing: missingVsRole,
+      membership_role: member.role,
+      role_scopes: [...roleScopes].sort()
+    };
+  }
+
+  return {
+    ...verified,
+    membership_role: member.role,
+    membership: member,
+    accepted_state_authority: false
+  };
+}
+
+function workspaceEnvBindings(env) {
+  if (!env?.CAIRNSTONE_DB) return { ok: false, error: "missing_d1_binding", binding: "CAIRNSTONE_DB" };
+  if (!env?.CAIRNSTONE_RAW) return { ok: false, error: "missing_r2_binding", binding: "CAIRNSTONE_RAW" };
+  return { ok: true, db: env.CAIRNSTONE_DB, r2: env.CAIRNSTONE_RAW };
+}
+
+function requireActorField(body, field) {
+  try { return { ok: true, value: actorId(body?.[field], field) }; }
+  catch (error) { return { ok: false, error: "invalid_workspace_actor", detail: String(error.message || error), field }; }
+}
+
+export async function createWorkspaceFromBody(body = {}, env = {}) {
+  const bindings = workspaceEnvBindings(env);
+  if (!bindings.ok) return bindings;
+
+  if (body.github_bind !== undefined && body.github_bind !== null) {
+    return { ok: false, error: "workspace_github_bind_deferred_to_5c" };
+  }
+
+  const creator = requireActorField(body, "created_by");
+  if (!creator.ok) return creator;
+  if (!isNonEmptyString(body.workspace_id)) {
+    return { ok: false, error: "workspace_id_required_for_create" };
+  }
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+
+  const auth = await authorizeWorkspaceRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: creator.value,
+    workspace_id: body.workspace_id,
+    requiredScopes: ["write_draft"],
+    requireMembership: false
+  });
+  if (!auth.ok) return auth;
+  if (auth.membership_role !== "owner") {
+    return {
+      ok: false,
+      error: "workspace_create_requires_owner_capability",
+      membership_role: auth.membership_role
+    };
+  }
+
+  const existing = await getWorkspace(bindings.db, auth.workspace_id);
+  if (existing) {
+    return { ok: false, error: "workspace_already_exists", workspace_id: auth.workspace_id };
+  }
+
+  return createWorkspace(bindings.db, {
+    workspace_id: auth.workspace_id,
+    name: body.name,
+    created_by: creator.value,
+    github_bind: null
+  });
+}
+
+export async function listWorkspacesFromBody(body = {}, env = {}) {
+  const bindings = workspaceEnvBindings(env);
+  if (!bindings.ok) return bindings;
+
+  const actor = requireActorField(body, "actor_id");
+  if (!actor.ok) return actor;
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+
+  const auth = await authorizeWorkspaceRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: actor.value,
+    requiredScopes: ["ls"],
+    requireMembership: true
+  });
+  if (!auth.ok) return auth;
+
+  const workspaces = await listWorkspacesForActor(bindings.db, auth.principal_actor_id, body.limit);
+  return {
+    ok: true,
+    actor_id: auth.principal_actor_id,
+    workspaces,
+    total: workspaces.length,
+    capability_workspace_id: auth.workspace_id,
+    accepted_state_authority: false
+  };
+}
+
+export async function statWorkspaceFromBody(body = {}, env = {}) {
+  const bindings = workspaceEnvBindings(env);
+  if (!bindings.ok) return bindings;
+
+  const actor = requireActorField(body, "actor_id");
+  if (!actor.ok) return actor;
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+
+  const auth = await authorizeWorkspaceRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: actor.value,
+    workspace_id: body.workspace_id,
+    requiredScopes: ["ls"],
+    requireMembership: true
+  });
+  if (!auth.ok) return auth;
+
+  const workspace = await getWorkspace(bindings.db, auth.workspace_id);
+  if (!workspace) return { ok: false, error: "workspace_not_found", workspace_id: auth.workspace_id };
+  const members = await listWorkspaceMembers(bindings.db, auth.workspace_id);
+  const tips = await listWorkspaceTips(bindings.db, auth.workspace_id);
+  if (!tips.ok) return tips;
+
+  return {
+    ok: true,
+    workspace: {
+      workspace_id: workspace.workspace_id,
+      name: workspace.name,
+      created_by: workspace.created_by,
+      created_at: workspace.created_at,
+      updated_at: workspace.updated_at,
+      status: workspace.status,
+      github_bind: null
+    },
+    members,
+    tips: tips.tips,
+    tip_count: tips.tips.length,
+    membership_role: auth.membership_role,
+    accepted_state_authority: false
+  };
+}
+
+export async function lsWorkspaceFromBody(body = {}, env = {}) {
+  const bindings = workspaceEnvBindings(env);
+  if (!bindings.ok) return bindings;
+
+  const actor = requireActorField(body, "actor_id");
+  if (!actor.ok) return actor;
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+
+  const auth = await authorizeWorkspaceRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: actor.value,
+    workspace_id: body.workspace_id,
+    requiredScopes: ["ls"],
+    path: body.prefix || null,
+    requireMembership: true
+  });
+  if (!auth.ok) return auth;
+
+  const tips = await listWorkspaceTips(bindings.db, auth.workspace_id, body.prefix);
+  if (!tips.ok) return tips;
+
+  return {
+    ok: true,
+    workspace_id: auth.workspace_id,
+    prefix: body.prefix || null,
+    entries: tips.tips.map(tip => ({
+      path: tip.path,
+      revision_id: tip.revision_id,
+      content_hash: tip.content_hash,
+      updated_at: tip.updated_at
+    })),
+    total: tips.tips.length,
+    accepted_state_authority: false
+  };
+}
+
+export async function readWorkspaceFromBody(body = {}, env = {}) {
+  const bindings = workspaceEnvBindings(env);
+  if (!bindings.ok) return bindings;
+
+  const actor = requireActorField(body, "actor_id");
+  if (!actor.ok) return actor;
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+
+  const auth = await authorizeWorkspaceRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: actor.value,
+    workspace_id: body.workspace_id,
+    requiredScopes: ["read"],
+    path: body.path,
+    requireMembership: true
+  });
+  if (!auth.ok) return auth;
+
+  return readDraft(bindings.db, bindings.r2, {
+    workspace_id: auth.workspace_id,
+    path: body.path
+  });
+}
+
+export async function writeDraftFromBody(body = {}, env = {}) {
+  const bindings = workspaceEnvBindings(env);
+  if (!bindings.ok) return bindings;
+
+  const actor = requireActorField(body, "actor_id");
+  if (!actor.ok) return actor;
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+
+  const auth = await authorizeWorkspaceRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: actor.value,
+    workspace_id: body.workspace_id,
+    requiredScopes: ["write_draft"],
+    path: body.path,
+    requireMembership: true
+  });
+  if (!auth.ok) return auth;
+
+  return writeDraft(bindings.db, bindings.r2, {
+    workspace_id: auth.workspace_id,
+    path: body.path,
+    content: body.content,
+    base_revision: body.base_revision === undefined ? null : body.base_revision,
+    actor_id: auth.principal_actor_id
+  });
+}
+
+export async function diffWorkspaceFromBody(body = {}, env = {}) {
+  const bindings = workspaceEnvBindings(env);
+  if (!bindings.ok) return bindings;
+
+  const actor = requireActorField(body, "actor_id");
+  if (!actor.ok) return actor;
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+  if (!isNonEmptyString(body.path)) {
+    return { ok: false, error: "workspace_path_required_for_diff" };
+  }
+
+  const auth = await authorizeWorkspaceRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: actor.value,
+    workspace_id: body.workspace_id,
+    requiredScopes: ["diff"],
+    path: body.path,
+    requireMembership: true
+  });
+  if (!auth.ok) return auth;
+
+  return diffDraft(bindings.db, bindings.r2, {
+    workspace_id: auth.workspace_id,
+    path: body.path,
+    against_revision: body.against_revision
+  });
+}
+
+/** V7.7.5c deferred: snapshot / propose_accept not implemented in 5b. */
+export async function proposeAcceptWorkspaceFromBody(body = {}, env = {}) {
+  // Still fail-closed on capability so write_draft-only tokens cannot "reach" propose.
+  const bindings = workspaceEnvBindings(env);
+  if (!bindings.ok) return bindings;
+  const actor = requireActorField(body, "actor_id");
+  if (!actor.ok) return actor;
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+  const auth = await authorizeWorkspaceRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: actor.value,
+    workspace_id: body.workspace_id,
+    requiredScopes: ["propose"],
+    requireMembership: true
+  });
+  if (!auth.ok) return auth;
+  return {
+    ok: false,
+    error: "workspace_propose_accept_deferred_to_5c",
+    workspace_id: auth.workspace_id,
+    accepted_state_authority: false
+  };
+}
+
+export const WORKSPACE_CREATE_TOOL_DEFINITION = Object.freeze({
+  name: WORKSPACE_BROKER_TOOL_IDS.create,
+  description: "V7.7.5b: create a shared agent workspace (draft plane). Requires signed workspace_capability with owner + write_draft for the new workspace_id. Never accepted-state authority; GitHub bind deferred to 5c.",
+  inputSchema: {
+    type: "object",
+    required: ["name", "created_by", "workspace_id", "workspace_capability"],
+    properties: {
+      name: { type: "string" },
+      created_by: { type: "string" },
+      workspace_id: { type: "string" },
+      workspace_capability: { type: "string" }
+    },
+    additionalProperties: false
+  }
+});
+
+export const WORKSPACE_LIST_TOOL_DEFINITION = Object.freeze({
+  name: WORKSPACE_BROKER_TOOL_IDS.list,
+  description: "V7.7.5b: list workspaces visible to the capability principal (membership + signed workspace_capability). Never automatic for models.",
+  inputSchema: {
+    type: "object",
+    required: ["actor_id", "workspace_capability"],
+    properties: {
+      actor_id: { type: "string" },
+      workspace_capability: { type: "string" },
+      limit: { type: "number", minimum: 1, maximum: 100 }
+    },
+    additionalProperties: false
+  }
+});
+
+export const WORKSPACE_STAT_TOOL_DEFINITION = Object.freeze({
+  name: WORKSPACE_BROKER_TOOL_IDS.stat,
+  description: "V7.7.5b: workspace metadata, members, and draft tips. Requires membership + scoped workspace_capability (ls).",
+  inputSchema: {
+    type: "object",
+    required: ["workspace_id", "actor_id", "workspace_capability"],
+    properties: {
+      workspace_id: { type: "string" },
+      actor_id: { type: "string" },
+      workspace_capability: { type: "string" }
+    },
+    additionalProperties: false
+  }
+});
+
+export const WORKSPACE_LS_TOOL_DEFINITION = Object.freeze({
+  name: WORKSPACE_BROKER_TOOL_IDS.ls,
+  description: "V7.7.5b: list draft paths under an optional prefix. Requires membership + scoped workspace_capability (ls).",
+  inputSchema: {
+    type: "object",
+    required: ["workspace_id", "actor_id", "workspace_capability"],
+    properties: {
+      workspace_id: { type: "string" },
+      actor_id: { type: "string" },
+      workspace_capability: { type: "string" },
+      prefix: { type: "string" }
+    },
+    additionalProperties: false
+  }
+});
+
+export const WORKSPACE_READ_TOOL_DEFINITION = Object.freeze({
+  name: WORKSPACE_BROKER_TOOL_IDS.read,
+  description: "V7.7.5b: read one UTF-8 draft path + content hash/revision. Requires membership + scoped workspace_capability (read). Bounded text only.",
+  inputSchema: {
+    type: "object",
+    required: ["workspace_id", "path", "actor_id", "workspace_capability"],
+    properties: {
+      workspace_id: { type: "string" },
+      path: { type: "string" },
+      actor_id: { type: "string" },
+      workspace_capability: { type: "string" }
+    },
+    additionalProperties: false
+  }
+});
+
+export const WORKSPACE_WRITE_DRAFT_TOOL_DEFINITION = Object.freeze({
+  name: WORKSPACE_BROKER_TOOL_IDS.write_draft,
+  description: "V7.7.5b: CAS write_draft mutation. base_revision null only on create; stale tip → workspace_conflict. write_draft scope does not imply propose. Never automatic-read; never moves HEADs.",
+  inputSchema: {
+    type: "object",
+    required: ["workspace_id", "path", "content", "actor_id", "workspace_capability"],
+    properties: {
+      workspace_id: { type: "string" },
+      path: { type: "string" },
+      content: { type: "string" },
+      base_revision: { type: ["string", "null"] },
+      actor_id: { type: "string" },
+      workspace_capability: { type: "string" }
+    },
+    additionalProperties: false
+  }
+});
+
+export const WORKSPACE_DIFF_TOOL_DEFINITION = Object.freeze({
+  name: WORKSPACE_BROKER_TOOL_IDS.diff,
+  description: "V7.7.5b: diff one draft path vs prior/against_revision (UTF-8 text). GitHub bind diffs deferred to 5c. Requires membership + scoped workspace_capability (diff).",
+  inputSchema: {
+    type: "object",
+    required: ["workspace_id", "path", "actor_id", "workspace_capability"],
+    properties: {
+      workspace_id: { type: "string" },
+      path: { type: "string" },
+      actor_id: { type: "string" },
+      workspace_capability: { type: "string" },
+      against_revision: { type: "string" }
+    },
+    additionalProperties: false
+  }
+});
+
+export const WORKSPACE_MCP_TOOL_DEFINITIONS = Object.freeze([
+  WORKSPACE_CREATE_TOOL_DEFINITION,
+  WORKSPACE_LIST_TOOL_DEFINITION,
+  WORKSPACE_STAT_TOOL_DEFINITION,
+  WORKSPACE_LS_TOOL_DEFINITION,
+  WORKSPACE_READ_TOOL_DEFINITION,
+  WORKSPACE_WRITE_DRAFT_TOOL_DEFINITION,
+  WORKSPACE_DIFF_TOOL_DEFINITION
+]);
