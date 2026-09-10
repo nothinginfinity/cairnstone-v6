@@ -604,6 +604,173 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       additionalProperties: false
     }
   }),
+  // V7.7.5a Shared Agent Workspace broker classifications (ChatGPT baseline).
+  // Reads are scoped_grant (never automatic model reads). write_draft / create /
+  // propose_accept are mutation + scoped_grant and must never enter
+  // cairnstone_delegate automatic-read allowlists. Handlers land in 5b/5c;
+  // registry entries exist now so policy cannot misclassify mutations as reads.
+  Object.freeze({
+    tool_id: "cairnstone_workspace_create",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_create",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.5a stub classification: create a shared agent workspace; never automatic-read; never accepted-state authority.",
+    input_schema: {
+      type: "object",
+      required: ["name", "created_by"],
+      properties: {
+        name: { type: "string" },
+        created_by: { type: "string" },
+        workspace_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        github_bind: { type: "object" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_list",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_list",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.5a stub classification: list workspaces visible to the capability principal; never automatic for models.",
+    input_schema: {
+      type: "object",
+      required: ["actor_id", "workspace_capability"],
+      properties: {
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        limit: { type: "number", minimum: 1, maximum: 100 }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_stat",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_stat",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.5a stub classification: workspace metadata/members/tips; scoped_grant only.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "actor_id", "workspace_capability"],
+      properties: {
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_ls",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_ls",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.5a stub classification: list draft paths under a prefix; scoped_grant only.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "actor_id", "workspace_capability"],
+      properties: {
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        prefix: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_read",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_read",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.5a stub classification: read one draft path + content hash; scoped_grant only.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "path", "actor_id", "workspace_capability"],
+      properties: {
+        workspace_id: { type: "string" },
+        path: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_write_draft",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_write_draft",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.5a stub classification: CAS write_draft mutation; never automatic-read; write_draft scope does not imply propose.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "path", "content", "actor_id", "workspace_capability"],
+      properties: {
+        workspace_id: { type: "string" },
+        path: { type: "string" },
+        content: { type: "string" },
+        base_revision: { type: ["string", "null"] },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_diff",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_diff",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.5a stub classification: diff draft path/tree vs prior revision or GitHub commit; scoped_grant only.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "actor_id", "workspace_capability"],
+      properties: {
+        workspace_id: { type: "string" },
+        path: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        against_revision: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_propose_accept",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_propose_accept",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.5a stub classification: emit propose packet from immutable snapshot only; never sets chain/path HEAD; never automatic-read.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "actor_id", "workspace_capability", "snapshot_id"],
+      properties: {
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        snapshot_id: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
   Object.freeze({
     tool_id: "cairnstone_send_message",
     connector: "cairnstone",

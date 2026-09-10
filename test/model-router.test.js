@@ -104,7 +104,9 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   // it advances only mutable delivery read state (20 -> 25). Actor-local
   // notes over AC1 add cairnstone_get_notes (scoped read) and
   // cairnstone_note_self (scoped mutation) (25 -> 27).
-  assert.equal(result.total, 27);
+  // V7.7.5a registers eight Shared Agent Workspace broker stubs (27 -> 35):
+  // five scoped reads + three scoped mutations (create/write_draft/propose_accept).
+  assert.equal(result.total, 35);
 
   const health = result.tools.find(item => item.tool_id === "cairnstone_health");
   assert.equal(health.risk_class, "read");
@@ -144,6 +146,29 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   assert.ok(readMessage);
   assert.equal(readMessage.risk_class, "mutation");
   assert.equal(readMessage.authorization, "scoped_grant");
+
+  for (const toolId of [
+    "cairnstone_workspace_list",
+    "cairnstone_workspace_stat",
+    "cairnstone_workspace_ls",
+    "cairnstone_workspace_read",
+    "cairnstone_workspace_diff"
+  ]) {
+    const workspaceRead = result.tools.find(item => item.tool_id === toolId);
+    assert.ok(workspaceRead, `${toolId} must be broker-classified`);
+    assert.equal(workspaceRead.risk_class, "read");
+    assert.equal(workspaceRead.authorization, "scoped_grant");
+  }
+  for (const toolId of [
+    "cairnstone_workspace_create",
+    "cairnstone_workspace_write_draft",
+    "cairnstone_workspace_propose_accept"
+  ]) {
+    const workspaceMutation = result.tools.find(item => item.tool_id === toolId);
+    assert.ok(workspaceMutation, `${toolId} must be broker-classified`);
+    assert.equal(workspaceMutation.risk_class, "mutation");
+    assert.equal(workspaceMutation.authorization, "scoped_grant");
+  }
 });
 
 test("V7.3.0 automatic read policy can allow an intent but remains preview-only and unexecuted", async () => {
