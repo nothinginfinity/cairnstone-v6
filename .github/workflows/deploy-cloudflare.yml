@@ -139,6 +139,14 @@ on:
         options:
           - "false"
           - "true"
+      run_v775_acceptance:
+        description: "Run V7.7.5 Shared Agent Workspace live acceptance (provisions/rotates dedicated workspace capability secret)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   deploy:
@@ -167,12 +175,210 @@ jobs:
       - name: Show Wrangler version
         run: npx wrangler --version
 
+      - name: Provision V7.7.5 workspace capability secret
+        if: github.event.inputs.run_v775_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          secret="$(openssl rand -hex 32)"
+          echo "::add-mask::$secret"
+          printf '%s' "$secret" | npx wrangler secret put CAIRNSTONE_WORKSPACE_CAPABILITY_SECRET --config wrangler.toml
+          echo "CAIRNSTONE_WORKSPACE_CAPABILITY_SECRET=$secret" >> "$GITHUB_ENV"
+
       - name: Apply D1 migrations
         if: github.event.inputs.apply_migrations == 'true'
         run: npx wrangler d1 migrations apply cairnstone-v6 --remote --config wrangler.toml
 
       - name: Deploy Worker
         run: npx wrangler deploy --config wrangler.toml
+
+      - name: V7.7.5 Shared Agent Workspace live acceptance
+        if: github.event.inputs.run_v775_acceptance == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process";
+          import { issueWorkspaceCapabilityFromBody } from "./src/workspace.js";
+
+          const BASE = "https://cairnstone-v6.jaredtechfit.workers.dev";
+          const RPC = `${BASE}/mcp`;
+          const secret = process.env.CAIRNSTONE_WORKSPACE_CAPABILITY_SECRET;
+          if (!secret) throw new Error("missing acceptance workspace secret");
+
+          const workspaceId = `ws:v775-live-${process.env.GITHUB_RUN_ID}`;
+          const actorA = "github-actions:v775-a";
+          const actorB = "github-actions:v775-b";
+          const actorC = "github-actions:v775-c";
+          const allScopes = ["diff", "ls", "propose", "read", "write_draft"];
+          const env = { CAIRNSTONE_WORKSPACE_CAPABILITY_SECRET: secret };
+
+          const assert = (condition, message) => {
+            if (!condition) throw new Error(message);
+          };
+
+          async function mint(actor, role, scopes) {
+            const out = await issueWorkspaceCapabilityFromBody({
+              principal_actor_id: actor,
+              workspace_id: workspaceId,
+              membership_role: role,
+              scopes,
+              ttl_seconds: 900
+            }, env);
+            assert(out.ok, `capability mint failed: ${JSON.stringify(out)}`);
+            return out.workspace_capability;
+          }
+
+          function parseRpcText(text) {
+            const trimmed = text.trim();
+            if (!trimmed) throw new Error("empty MCP response");
+            if (trimmed.startsWith("data:")) {
+              const line = trimmed.split("\n").find(v => v.startsWith("data:"));
+              return JSON.parse(line.slice(5).trim());
+            }
+            return JSON.parse(trimmed);
+          }
+
+          async function callTool(name, args) {
+            const response = await fetch(RPC, {
+              method: "POST",
+              headers: { "content-type": "application/json", accept: "application/json" },
+              body: JSON.stringify({ jsonrpc: "2.0", id: Math.floor(Math.random() * 1e9), method: "tools/call", params: { name, arguments: args } })
+            });
+            const text = await response.text();
+            if (!response.ok) throw new Error(`${name} HTTP ${response.status}: ${text}`);
+            const payload = parseRpcText(text);
+            if (payload.error) throw new Error(`${name} RPC error: ${JSON.stringify(payload.error)}`);
+            const result = payload.result || {};
+            const contentText = Array.isArray(result.content) ? result.content.find(v => v?.type === "text")?.text : null;
+            const decoded = contentText ? JSON.parse(contentText) : (result.structuredContent || result);
+            return decoded;
+          }
+
+          async function getStartHereHead() {
+            const response = await fetch(`${BASE}/v2/chains/cairnstone-v6-project-memory/resume?detail=start_here`);
+            if (!response.ok) throw new Error(`resume HTTP ${response.status}`);
+            const data = await response.json();
+            return data?.canonical_head?.hash || data?.head?.hash || data?.head || null;
+          }
+
+          let health = null;
+          for (let attempt = 0; attempt < 30; attempt += 1) {
+            const response = await fetch(`${BASE}/health`);
+            if (response.ok) {
+              health = await response.json();
+              const tools = health?.mcp_tools || [];
+              if ([
+                "cairnstone_workspace_create",
+                "cairnstone_workspace_list",
+                "cairnstone_workspace_stat",
+                "cairnstone_workspace_ls",
+                "cairnstone_workspace_read",
+                "cairnstone_workspace_write_draft",
+                "cairnstone_workspace_diff",
+                "cairnstone_workspace_propose_accept"
+              ].every(name => tools.includes(name))) break;
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+          assert(health?.mcp_tools?.filter(name => name.startsWith("cairnstone_workspace_")).length === 8, "workspace tool catalog did not converge to 8 tools");
+
+          const beforeHead = await getStartHereHead();
+          assert(beforeHead, "missing project-memory HEAD before workspace smoke");
+
+          const capA = await mint(actorA, "owner", allScopes);
+          const created = await callTool("cairnstone_workspace_create", {
+            name: `V7.7.5 live acceptance ${process.env.GITHUB_RUN_ID}`,
+            created_by: actorA,
+            workspace_id: workspaceId,
+            workspace_capability: capA
+          });
+          assert(created.ok && created.workspace_id === workspaceId && created.accepted_state_authority === false, `workspace create failed: ${JSON.stringify(created)}`);
+
+          const writeA = await callTool("cairnstone_workspace_write_draft", {
+            workspace_id: workspaceId,
+            path: "shared/live.txt",
+            content: "actor-a\n",
+            base_revision: null,
+            actor_id: actorA,
+            workspace_capability: capA
+          });
+          assert(writeA.ok && writeA.accepted_state_authority === false && writeA.chain_heads_mutated === false && writeA.path_heads_mutated === false, `actor A write failed: ${JSON.stringify(writeA)}`);
+
+          const sql = `INSERT INTO workspace_members (workspace_id, actor_id, role, created_at) VALUES ('${workspaceId}', '${actorB}', 'proposer', '${new Date().toISOString()}') ON CONFLICT(workspace_id, actor_id) DO UPDATE SET role='proposer'`;
+          execFileSync("npx", ["wrangler", "d1", "execute", "cairnstone-v6", "--remote", "--config", "wrangler.toml", "--command", sql], { env: process.env, stdio: "pipe" });
+
+          const capB = await mint(actorB, "proposer", allScopes);
+          const readB = await callTool("cairnstone_workspace_read", {
+            workspace_id: workspaceId,
+            path: "shared/live.txt",
+            actor_id: actorB,
+            workspace_capability: capB
+          });
+          assert(readB.ok && readB.content === "actor-a\n" && readB.revision_id === writeA.revision_id, `cross-actor read failed: ${JSON.stringify(readB)}`);
+
+          const writeB = await callTool("cairnstone_workspace_write_draft", {
+            workspace_id: workspaceId,
+            path: "shared/live.txt",
+            content: "actor-b\n",
+            base_revision: writeA.revision_id,
+            actor_id: actorB,
+            workspace_capability: capB
+          });
+          assert(writeB.ok && writeB.parent_revision_id === writeA.revision_id, `cross-actor CAS write failed: ${JSON.stringify(writeB)}`);
+
+          const diffB = await callTool("cairnstone_workspace_diff", {
+            workspace_id: workspaceId,
+            path: "shared/live.txt",
+            actor_id: actorB,
+            workspace_capability: capB,
+            against_revision: writeA.revision_id
+          });
+          assert(diffB.ok && diffB.changed === true && diffB.accepted_state_authority === false, `workspace diff failed: ${JSON.stringify(diffB)}`);
+
+          const capC = await mint(actorC, "reader", ["read"]);
+          const deniedC = await callTool("cairnstone_workspace_read", {
+            workspace_id: workspaceId,
+            path: "shared/live.txt",
+            actor_id: actorC,
+            workspace_capability: capC
+          });
+          assert(deniedC.ok === false && deniedC.error === "workspace_membership_required", `non-member denial failed: ${JSON.stringify(deniedC)}`);
+
+          const proposed = await callTool("cairnstone_workspace_propose_accept", {
+            workspace_id: workspaceId,
+            actor_id: actorB,
+            workspace_capability: capB,
+            paths: ["shared/live.txt"],
+            title: `V7.7.5 live acceptance ${process.env.GITHUB_RUN_ID}`,
+            note: "Live smoke only; proposal is non-authoritative and must not move accepted state."
+          });
+          assert(proposed.ok && proposed.workspace_snapshot_id && proposed.tip_vector_digest, `propose_accept failed: ${JSON.stringify(proposed)}`);
+          assert(proposed.accepted_state_authority === false && proposed.chain_heads_mutated === false && proposed.path_heads_mutated === false, `propose_accept authority invariant failed: ${JSON.stringify(proposed)}`);
+
+          const afterHead = await getStartHereHead();
+          assert(afterHead === beforeHead, `project-memory HEAD moved during workspace smoke: ${beforeHead} -> ${afterHead}`);
+
+          console.log(JSON.stringify({
+            ok: true,
+            schema: "v775-workspace-live-acceptance-v1",
+            workspace_id: workspaceId,
+            catalog_total: health.mcp_tools.length,
+            workspace_tool_count: 8,
+            actor_a_revision: writeA.revision_id,
+            actor_b_revision: writeB.revision_id,
+            cross_actor_read: true,
+            cross_actor_cas_write: true,
+            non_member_denied: true,
+            diff_changed: true,
+            workspace_snapshot_id: proposed.workspace_snapshot_id,
+            tip_vector_digest: proposed.tip_vector_digest,
+            proposal_stone_hash: proposed.proposal_stone_hash || null,
+            accepted_state_authority: false,
+            project_memory_head_before: beforeHead,
+            project_memory_head_after: afterHead
+          }, null, 2));
+          NODE
 
       - name: V7.7.2 cross-chain grounded Q&A live acceptance
         if: github.event.inputs.run_v772_acceptance == 'true'
