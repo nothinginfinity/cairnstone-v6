@@ -11,6 +11,7 @@ import {
   createWorkspace,
   createWorkspaceFromBody,
   diffWorkspaceFromBody,
+  freezeWorkspaceSnapshot,
   issueWorkspaceCapabilityFromBody,
   listWorkspacesFromBody,
   lsWorkspaceFromBody,
@@ -32,11 +33,12 @@ import {
 import { listAutomaticReadToolIds } from "../src/delegate-loop.js";
 import { mcpToolsForProfile } from "../src/index.js";
 
-const TEST_ENV_SECRET = { CAIRNSTONE_WORKSPACE_CAPABILITY_SECRET: "workspace-test-secret-v775b" };
+const TEST_ENV_SECRET = { CAIRNSTONE_WORKSPACE_CAPABILITY_SECRET: "workspace-test-secret-v775c" };
 const ACTOR_A = "chatgpt:cairnstone-v6";
 const ACTOR_B = "claude:cairnstone-v6";
 const ACTOR_C = "grok-bot:cairnstone-v6";
-const WS_ID = "ws:v775b-demo";
+const WS_ID = "ws:v775c-demo";
+const OBSERVED_SHA = "05e6f0e40c95d7f217fa1550bdb098923b300c81";
 
 class FakeR2 {
   constructor() {
@@ -61,6 +63,9 @@ class FakeWorkspaceD1 {
     this.members = new Map();
     this.revisions = new Map();
     this.tips = new Map();
+    this.snapshots = new Map();
+    this.chainHeads = new Map();
+    this.pathHeads = new Map();
   }
 
   _memberKey(ws, actor) {
@@ -144,6 +149,20 @@ class FakeWorkspaceD1 {
               });
               return { success: true, meta: { changes: 1 } };
             }
+            if (sql.includes("INSERT OR IGNORE INTO workspace_snapshots")) {
+              const [snapshotId, workspaceId, tipVectorJson, tipVectorDigest, createdBy, createdAt] = args;
+              if (!db.snapshots.has(snapshotId)) {
+                db.snapshots.set(snapshotId, {
+                  snapshot_id: snapshotId,
+                  workspace_id: workspaceId,
+                  tip_vector_json: tipVectorJson,
+                  tip_vector_digest: tipVectorDigest,
+                  created_by: createdBy,
+                  created_at: createdAt
+                });
+              }
+              return { success: true, meta: { changes: 1 } };
+            }
             if (sql.includes("UPDATE workspace_tips")) {
               const [revisionId, contentHash, updatedAt, workspaceId, path, baseRevision] = args;
               const key = db._tipKey(workspaceId, path);
@@ -183,6 +202,10 @@ class FakeWorkspaceD1 {
             if (sql.includes("FROM workspace_revisions WHERE revision_id")) {
               const [revisionId] = args;
               return db.revisions.get(revisionId) || null;
+            }
+            if (sql.includes("FROM workspace_snapshots WHERE snapshot_id")) {
+              const [snapshotId] = args;
+              return db.snapshots.get(snapshotId) || null;
             }
             throw new Error(`Unexpected first SQL: ${sql}`);
           },
@@ -262,7 +285,7 @@ async function seedWorkspace() {
   const r2 = new FakeR2();
   const created = await createWorkspace(db, {
     workspace_id: WS_ID,
-    name: "V775b demo",
+    name: "V775c demo",
     created_by: ACTOR_A
   });
   assert.equal(created.ok, true);
@@ -276,7 +299,7 @@ test("workspace capability secret fails closed and never falls back to mailbox/o
     CAIRNSTONE_MAILBOX_CAPABILITY_SECRET: "mailbox",
     CAIRNSTONE_OPERATOR_TOKEN: "operator"
   }), null);
-  assert.equal(workspaceCapabilitySecret(TEST_ENV_SECRET), "workspace-test-secret-v775b");
+  assert.equal(workspaceCapabilitySecret(TEST_ENV_SECRET), "workspace-test-secret-v775c");
 });
 
 test("verifyWorkspaceCapability fails closed when secret missing", async () => {
@@ -475,19 +498,19 @@ test("broker registry: workspace mutations are never automatic-read", () => {
   }
 });
 
-test("MCP tools/list advertises 5b workspace tools (not propose_accept)", () => {
+test("MCP tools/list advertises 5c workspace tools including propose_accept", () => {
   const names = mcpToolsForProfile(false).map(tool => tool.name);
   for (const def of WORKSPACE_MCP_TOOL_DEFINITIONS) {
     assert.ok(names.includes(def.name), `${def.name} must be in MCP catalog`);
   }
-  assert.equal(names.includes(WORKSPACE_BROKER_TOOL_IDS.propose_accept), false);
+  assert.equal(names.includes(WORKSPACE_BROKER_TOOL_IDS.propose_accept), true);
 });
 
-test("MCP create requires owner capability; github_bind deferred", async () => {
+test("MCP create requires owner capability; optional github_bind accepted", async () => {
   const db = new FakeWorkspaceD1();
   const r2 = new FakeR2();
   const env = testEnv(db, r2);
-  const wsId = "ws:v775b-create";
+  const wsId = "ws:v775c-create";
 
   const ownerCap = await mintCapability(ACTOR_A, "owner", ["write_draft", "ls", "read"], wsId);
   const created = await createWorkspaceFromBody({
@@ -500,23 +523,35 @@ test("MCP create requires owner capability; github_bind deferred", async () => {
   assert.equal(created.workspace_id, wsId);
   assert.equal(created.accepted_state_authority, false);
 
-  const drafterCap = await mintCapability(ACTOR_B, "drafter", ["write_draft"], "ws:v775b-create-2");
+  const drafterCap = await mintCapability(ACTOR_B, "drafter", ["write_draft"], "ws:v775c-create-2");
   const deniedRole = await createWorkspaceFromBody({
     name: "Nope",
     created_by: ACTOR_B,
-    workspace_id: "ws:v775b-create-2",
+    workspace_id: "ws:v775c-create-2",
     workspace_capability: drafterCap
   }, env);
   assert.equal(deniedRole.error, "workspace_create_requires_owner_capability");
 
-  const bindDenied = await createWorkspaceFromBody({
+  const bindWs = "ws:v775c-create-3";
+  const bindCreated = await createWorkspaceFromBody({
     name: "Bind",
     created_by: ACTOR_A,
-    workspace_id: "ws:v775b-create-3",
-    workspace_capability: await mintCapability(ACTOR_A, "owner", ["write_draft"], "ws:v775b-create-3"),
-    github_bind: { owner: "o", repo: "r" }
+    workspace_id: bindWs,
+    workspace_capability: await mintCapability(ACTOR_A, "owner", ["write_draft"], bindWs),
+    github_bind: { owner: "nothinginfinity", repo: "cairnstone-v6", ref: "main", root_path: "src" }
   }, env);
-  assert.equal(bindDenied.error, "workspace_github_bind_deferred_to_5c");
+  assert.equal(bindCreated.ok, true);
+  assert.equal(bindCreated.github_bind.owner, "nothinginfinity");
+  assert.equal(bindCreated.github_bind.root_path, "src");
+
+  const badRoot = await createWorkspaceFromBody({
+    name: "Bad root",
+    created_by: ACTOR_A,
+    workspace_id: "ws:v775c-create-4",
+    workspace_capability: await mintCapability(ACTOR_A, "owner", ["write_draft"], "ws:v775c-create-4"),
+    github_bind: { owner: "o", repo: "r", root_path: "../etc" }
+  }, env);
+  assert.equal(badRoot.error, "invalid_workspace_github_bind_root_path");
 });
 
 test("cross-actor: two members share draft; third without grant denied; CAS conflict via MCP", async () => {
@@ -642,7 +677,8 @@ test("cross-actor: two members share draft; third without grant denied; CAS conf
   }, env);
   assert.equal(diff.ok, true);
   assert.equal(diff.changed, true);
-  assert.equal(diff.github_bind_deferred_to_5c, true);
+  assert.equal(diff.github_bind, null);
+  assert.equal(diff.observed_commit_sha, null);
   assert.match(diff.diff.unified, /shared draft v2/);
 });
 
@@ -673,21 +709,199 @@ test("MCP path deny + write_draft capability cannot call propose_accept", async 
   const proposeDenied = await proposeAcceptWorkspaceFromBody({
     workspace_id: WS_ID,
     actor_id: ACTOR_A,
-    workspace_capability: capWrite,
-    snapshot_id: "snap:fake"
+    workspace_capability: capWrite
   }, env);
   assert.equal(proposeDenied.error, "workspace_capability_scope_missing");
   assert.deepEqual(proposeDenied.missing, ["propose"]);
+});
 
-  const capPropose = await mintCapability(ACTOR_A, "owner", ["propose", "ls", "read", "write_draft"]);
-  const deferred = await proposeAcceptWorkspaceFromBody({
+test("propose_accept freezes immutable snapshot digest; write/propose never move HEADs; race fails closed", async () => {
+  const { db, r2, env } = await seedWorkspace();
+  const capWrite = await mintCapability(ACTOR_A, "owner", ["ls", "read", "write_draft", "diff", "propose"]);
+
+  const written = await writeDraftFromBody({
+    workspace_id: WS_ID,
+    path: "proposal/note.md",
+    content: "ready for review",
+    base_revision: null,
+    actor_id: ACTOR_A,
+    workspace_capability: capWrite
+  }, env);
+  assert.equal(written.ok, true);
+  assert.equal(written.chain_heads_mutated, false);
+  assert.equal(written.path_heads_mutated, false);
+  assert.equal(written.stones_written, 0);
+
+  const chainHeadsBefore = db.chainHeads.size;
+  const pathHeadsBefore = db.pathHeads.size;
+
+  let createdStoneBody = null;
+  const proposed = await proposeAcceptWorkspaceFromBody({
     workspace_id: WS_ID,
     actor_id: ACTOR_A,
-    workspace_capability: capPropose,
-    snapshot_id: "snap:fake"
+    workspace_capability: capWrite,
+    title: "Review packet",
+    paths: ["proposal/note.md"]
+  }, env, {
+    createStone: async body => {
+      createdStoneBody = body;
+      assert.equal(body.set_as_head, false);
+      assert.equal(body.metadata.accepted_state_authority, false);
+      assert.match(body.content, /tip_vector_digest/);
+      return { ok: true, stone_hash: "a".repeat(64) };
+    }
+  });
+  assert.equal(proposed.ok, true, proposed.error);
+  assert.ok(proposed.workspace_snapshot_id);
+  assert.ok(proposed.tip_vector_digest);
+  assert.equal(proposed.accepted_state_authority, false);
+  assert.equal(proposed.chain_heads_mutated, false);
+  assert.equal(proposed.path_heads_mutated, false);
+  assert.equal(proposed.stones_written, 1);
+  assert.equal(proposed.proposal_packet.workspace_snapshot_id, proposed.workspace_snapshot_id);
+  assert.equal(proposed.proposal_packet.tip_vector_digest, proposed.tip_vector_digest);
+  assert.equal(proposed.proposal_packet.accepted_state_authority, false);
+  assert.equal(createdStoneBody.metadata.workspace_snapshot_id, proposed.workspace_snapshot_id);
+  assert.equal(db.snapshots.has(proposed.workspace_snapshot_id), true);
+  assert.equal(db.chainHeads.size, chainHeadsBefore);
+  assert.equal(db.pathHeads.size, pathHeadsBefore);
+
+  // Snapshot race: mutate tip between compile reads via instrumented freeze path.
+  const tipKey = db._tipKey(WS_ID, "proposal/note.md");
+  const originalTip = { ...db.tips.get(tipKey) };
+  let reads = 0;
+  const racingDb = {
+    prepare(sql) {
+      if (sql.includes("FROM workspace_tips WHERE workspace_id = ? AND path = ?")) {
+        return {
+          bind(...args) {
+            return {
+              async first() {
+                reads += 1;
+                if (reads === 2) {
+                  // Second read during freeze recheck sees a different tip.
+                  return {
+                    ...originalTip,
+                    revision_id: "raced-revision",
+                    content_hash: "raced-hash"
+                  };
+                }
+                return db.prepare(sql).bind(...args).first();
+              }
+            };
+          }
+        };
+      }
+      return db.prepare(sql);
+    }
+  };
+  const raced = await freezeWorkspaceSnapshot(racingDb, {
+    workspace_id: WS_ID,
+    created_by: ACTOR_A,
+    paths: ["proposal/note.md"]
+  });
+  assert.equal(raced.error, "workspace_snapshot_race");
+  assert.equal(raced.accepted_state_authority, false);
+
+  // Direct race through propose_accept after concurrent write.
+  const updated = await writeDraft(db, r2, {
+    workspace_id: WS_ID,
+    path: "proposal/note.md",
+    content: "changed during propose",
+    base_revision: written.revision_id,
+    actor_id: ACTOR_A
+  });
+  assert.equal(updated.ok, true);
+
+  // Re-propose after change succeeds with new digest (immutable prior snapshot retained).
+  const proposed2 = await proposeAcceptWorkspaceFromBody({
+    workspace_id: WS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: capWrite,
+    paths: ["proposal/note.md"]
+  }, env, {
+    createStone: async () => ({ ok: true, stone_hash: "b".repeat(64) })
+  });
+  assert.equal(proposed2.ok, true);
+  assert.notEqual(proposed2.tip_vector_digest, proposed.tip_vector_digest);
+  assert.notEqual(proposed2.workspace_snapshot_id, proposed.workspace_snapshot_id);
+  assert.equal(proposed2.chain_heads_mutated, false);
+  assert.equal(proposed2.path_heads_mutated, false);
+});
+
+test("optional GitHub diff/propose reports immutable observed commit SHA", async () => {
+  const db = new FakeWorkspaceD1();
+  const r2 = new FakeR2();
+  const env = testEnv(db, r2);
+  const wsId = "ws:v775c-gh";
+  const ownerCap = await mintCapability(ACTOR_A, "owner", ["write_draft", "ls", "read", "diff", "propose"], wsId);
+
+  const created = await createWorkspaceFromBody({
+    name: "GH bind",
+    created_by: ACTOR_A,
+    workspace_id: wsId,
+    workspace_capability: ownerCap,
+    github_bind: { owner: "nothinginfinity", repo: "cairnstone-v6", ref: "main" }
   }, env);
-  assert.equal(deferred.error, "workspace_propose_accept_deferred_to_5c");
-  assert.equal(deferred.accepted_state_authority, false);
+  assert.equal(created.ok, true);
+
+  const written = await writeDraftFromBody({
+    workspace_id: wsId,
+    path: "src/workspace.js",
+    content: "export const x = 1;\n",
+    base_revision: null,
+    actor_id: ACTOR_A,
+    workspace_capability: ownerCap
+  }, env);
+  assert.equal(written.ok, true);
+
+  const resolveOk = async (owner, repo, ref) => ({
+    ok: true,
+    requested_ref: ref,
+    observed_commit_sha: OBSERVED_SHA,
+    already_resolved: false
+  });
+
+  const diff = await diffWorkspaceFromBody({
+    workspace_id: wsId,
+    path: "src/workspace.js",
+    actor_id: ACTOR_A,
+    workspace_capability: ownerCap
+  }, env, { resolveGitHubCommit: resolveOk });
+  assert.equal(diff.ok, true);
+  assert.equal(diff.observed_commit_sha, OBSERVED_SHA);
+  assert.equal(diff.github_bind.observed_commit_sha, OBSERVED_SHA);
+  assert.equal(diff.github_bind.requested_ref, "main");
+  assert.equal(diff.github_bind.transport_only, true);
+
+  const proposed = await proposeAcceptWorkspaceFromBody({
+    workspace_id: wsId,
+    actor_id: ACTOR_A,
+    workspace_capability: ownerCap,
+    github_pr: { number: 8, url: "https://github.com/nothinginfinity/cairnstone-v6/pull/8" }
+  }, env, {
+    resolveGitHubCommit: resolveOk,
+    createStone: async body => {
+      assert.equal(body.commit, OBSERVED_SHA);
+      assert.equal(body.metadata.observed_commit_sha, OBSERVED_SHA);
+      return { ok: true, stone_hash: "c".repeat(64) };
+    }
+  });
+  assert.equal(proposed.ok, true);
+  assert.equal(proposed.observed_commit_sha, OBSERVED_SHA);
+  assert.equal(proposed.proposal_packet.github_pr.number, 8);
+  assert.equal(proposed.proposal_packet.github_pr.observed_commit_sha, OBSERVED_SHA);
+  assert.equal(proposed.accepted_state_authority, false);
+
+  const unresolved = await diffWorkspaceFromBody({
+    workspace_id: wsId,
+    path: "src/workspace.js",
+    actor_id: ACTOR_A,
+    workspace_capability: ownerCap
+  }, env, {
+    resolveGitHubCommit: async () => ({ ok: false, error: "github_commit_resolution_failed", detail: "404" })
+  });
+  assert.equal(unresolved.error, "github_commit_resolution_failed");
 });
 
 test("MCP handlers fail closed without workspace secret (no mailbox/operator fallback)", async () => {

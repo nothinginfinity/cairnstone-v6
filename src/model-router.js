@@ -607,8 +607,8 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
   // V7.7.5 Shared Agent Workspace broker classifications (ChatGPT baseline).
   // Reads are scoped_grant (never automatic model reads). write_draft / create /
   // propose_accept are mutation + scoped_grant and must never enter
-  // cairnstone_delegate automatic-read allowlists. 5b wires create/list/stat/
-  // ls/read/write_draft/diff handlers; propose_accept remains deferred to 5c.
+  // cairnstone_delegate automatic-read allowlists. 5c wires snapshot freeze +
+  // propose_accept + optional GitHub bind (immutable observed commit SHA).
   Object.freeze({
     tool_id: "cairnstone_workspace_create",
     connector: "cairnstone",
@@ -616,7 +616,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "mutation",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.5b: create a shared agent workspace; never automatic-read; never accepted-state authority; GitHub bind deferred to 5c.",
+    description: "V7.7.5c: create a shared agent workspace; optional github_bind is transport only; never automatic-read; never accepted-state authority.",
     input_schema: {
       type: "object",
       required: ["name", "created_by", "workspace_id", "workspace_capability"],
@@ -624,7 +624,18 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
         name: { type: "string" },
         created_by: { type: "string" },
         workspace_id: { type: "string" },
-        workspace_capability: { type: "string" }
+        workspace_capability: { type: "string" },
+        github_bind: {
+          type: "object",
+          required: ["owner", "repo"],
+          properties: {
+            owner: { type: "string" },
+            repo: { type: "string" },
+            ref: { type: "string" },
+            root_path: { type: "string" }
+          },
+          additionalProperties: false
+        }
       },
       additionalProperties: false
     }
@@ -736,7 +747,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "read",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.5b: diff draft path vs prior/against_revision (UTF-8); GitHub bind deferred to 5c; scoped_grant only.",
+    description: "V7.7.5c: diff draft path vs prior/against_revision (UTF-8); optional GitHub bind returns immutable observed_commit_sha; scoped_grant only.",
     input_schema: {
       type: "object",
       required: ["workspace_id", "path", "actor_id", "workspace_capability"],
@@ -757,15 +768,28 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "mutation",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.5c deferred: emit propose packet from immutable snapshot only; never sets chain/path HEAD; never automatic-read. 5b handler fail-closed / deferred.",
+    description: "V7.7.5c: freeze immutable workspace_snapshot + emit proposal packet/Stone; never sets chain/path HEAD; never automatic-read; propose does not imply accepted-state mutation.",
     input_schema: {
       type: "object",
-      required: ["workspace_id", "actor_id", "workspace_capability", "snapshot_id"],
+      required: ["workspace_id", "actor_id", "workspace_capability"],
       properties: {
         workspace_id: { type: "string" },
         actor_id: { type: "string" },
         workspace_capability: { type: "string" },
-        snapshot_id: { type: "string" }
+        paths: { type: "array", items: { type: "string" }, maxItems: 200 },
+        prefix: { type: "string" },
+        title: { type: "string" },
+        note: { type: "string" },
+        path: { type: "string" },
+        chain: { type: "string" },
+        github_pr: {
+          type: "object",
+          properties: {
+            number: { type: "number" },
+            url: { type: "string" }
+          },
+          additionalProperties: false
+        }
       },
       additionalProperties: false
     }
