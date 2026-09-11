@@ -359,6 +359,7 @@ export async function issueWorkspaceCapabilityFromBody(body = {}, env = {}) {
     iat: issuedAt,
     exp: issuedAt + ttlSeconds,
     nonce: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${issuedAt}:${Math.random()}`,
+    invite_id: typeof body.invite_id === "string" && body.invite_id.trim() ? body.invite_id.trim() : null,
     policy: {
       accepted_state_authority: false,
       execution_authority: false,
@@ -380,6 +381,8 @@ export async function issueWorkspaceCapabilityFromBody(body = {}, env = {}) {
     path_prefix: pathPrefix,
     issued_at: new Date(payload.iat * 1000).toISOString(),
     expires_at: new Date(payload.exp * 1000).toISOString(),
+    invite_id: payload.invite_id,
+    nonce: payload.nonce,
     policy: payload.policy
   };
 }
@@ -482,6 +485,8 @@ export async function verifyWorkspaceCapability(
     membership_role: payload.membership_role || null,
     path_prefix: payload.path_prefix || null,
     expires_at: new Date(payload.exp * 1000).toISOString(),
+    invite_id: payload.invite_id || null,
+    nonce: payload.nonce || null,
     policy: payload.policy || null
   };
 }
@@ -1219,6 +1224,15 @@ export async function authorizeWorkspaceRequest(db, env, {
     env
   );
   if (!verified.ok) return verified;
+
+  if (verified.nonce && db) {
+    const denied = await db.prepare(
+      `SELECT grant_nonce FROM workspace_capability_denylist WHERE grant_nonce = ?`
+    ).bind(verified.nonce).first();
+    if (denied) {
+      return { ok: false, error: "workspace_capability_revoked", nonce: verified.nonce };
+    }
+  }
 
   if (!requireMembership) {
     return {
