@@ -795,6 +795,26 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     }
   }),
   Object.freeze({
+    tool_id: "cairnstone_workspace_invite_claim",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_invite_claim",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.6a: recipient-authenticated workspace invite claim; requires mailbox capability proving the intended principal; never automatic-read; never accepted-state authority.",
+    input_schema: {
+      type: "object",
+      required: ["invite_id", "actor_id", "mailbox_capability"],
+      properties: {
+        invite_id: { type: "string" },
+        actor_id: { type: "string" },
+        mailbox_capability: { type: "string" },
+        capability_ttl_seconds: { type: "number", minimum: 30, maximum: 3600 }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
     tool_id: "cairnstone_send_message",
     connector: "cairnstone",
     handler: "cairnstone_send_message",

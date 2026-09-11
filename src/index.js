@@ -113,6 +113,13 @@ import {
   proposeAcceptWorkspaceFromBody,
   WORKSPACE_MCP_TOOL_DEFINITIONS
 } from "./workspace.js";
+import {
+  mintWorkspaceInviteFromBody,
+  revokeWorkspaceInviteFromBody,
+  claimWorkspaceInviteFromBody,
+  getWorkspaceInviteFromBody,
+  WORKSPACE_INVITE_CLAIM_TOOL_DEFINITION
+} from "./workspace-invite.js";
 
 const VERSION = "0.5.30";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
@@ -186,6 +193,26 @@ export default {
         if (!auth.ok) return json(auth, auth.status || 401);
         const capabilityBody = await request.json();
         return json(await issueMailboxCapabilityFromBody({ ...capabilityBody, issued_by: auth.subject }, env));
+      }
+      if (url.pathname === "/v1/workspace-invites" && request.method === "POST") {
+        const auth = await requireOperatorAuthorization(request, env);
+        if (!auth.ok) return json(auth, auth.status || 401);
+        const inviteBody = await request.json();
+        return json(await mintWorkspaceInviteFromBody(inviteBody, env, auth.subject));
+      }
+      const workspaceInviteMatch = url.pathname.match(/^\/v1\/workspace-invites\/([^/]+)$/);
+      if (workspaceInviteMatch && request.method === "GET") {
+        const auth = await requireOperatorAuthorization(request, env);
+        if (!auth.ok) return json(auth, auth.status || 401);
+        return json(await getWorkspaceInviteFromBody({ invite_id: decodeURIComponent(workspaceInviteMatch[1]) }, env));
+      }
+      const workspaceInviteRevokeMatch = url.pathname.match(/^\/v1\/workspace-invites\/([^/]+)\/revoke$/);
+      if (workspaceInviteRevokeMatch && request.method === "POST") {
+        const auth = await requireOperatorAuthorization(request, env);
+        if (!auth.ok) return json(auth, auth.status || 401);
+        return json(await revokeWorkspaceInviteFromBody({
+          invite_id: decodeURIComponent(workspaceInviteRevokeMatch[1])
+        }, env, auth.subject));
       }
       const authorizationMatch = url.pathname.match(/^\/v1\/tool-authorizations\/([^/]+)$/);
       if (authorizationMatch && request.method === "GET") {
@@ -345,6 +372,9 @@ function routes() {
     "POST /v1/set-path-head",
     "GET /v1/tool-authorizations",
     "POST /v1/mailbox-capabilities",
+    "POST /v1/workspace-invites",
+    "GET /v1/workspace-invites/:invite_id",
+    "POST /v1/workspace-invites/:invite_id/revoke",
     "GET /v1/tool-authorizations/:authorization_request_id",
     "POST /v1/tool-authorizations/:authorization_request_id/decision",
     "POST /v1/tool-authorizations/:authorization_request_id/execute",
@@ -929,6 +959,7 @@ async function callMcpTool(name, args, env) {
       resolveGitHubCommit: (owner, repo, ref) => resolveGitHubCommit(owner, repo, ref, env)
     });
   }
+  if (name === "cairnstone_workspace_invite_claim") return claimWorkspaceInviteFromBody(args, env);
   if (name === "cairnstone_workspace_propose_accept") {
     return proposeAcceptWorkspaceFromBody(args, env, {
       createStone: body => createStoneFromBody(body, env),
@@ -1132,6 +1163,7 @@ function mcpTools() {
     NOTE_SELF_TOOL_DEFINITION,
     GET_NOTES_TOOL_DEFINITION,
     ...WORKSPACE_MCP_TOOL_DEFINITIONS,
+    WORKSPACE_INVITE_CLAIM_TOOL_DEFINITION,
     {
       name: "cairnstone_create_stone",
       description: "Create a CairnStone from either inline content or server-side GitHub fetch input. For scale, pass owner, repo, path, and ref instead of content.",

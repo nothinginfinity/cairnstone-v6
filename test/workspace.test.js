@@ -207,6 +207,9 @@ class FakeWorkspaceD1 {
               const [snapshotId] = args;
               return db.snapshots.get(snapshotId) || null;
             }
+            if (sql.includes("FROM workspace_capability_denylist")) {
+              return null;
+            }
             throw new Error(`Unexpected first SQL: ${sql}`);
           },
           async all() {
@@ -474,7 +477,7 @@ test("writeDraft CAS: create then conflict on stale base_revision (no LWW)", asy
 test("broker registry: workspace mutations are never automatic-read", () => {
   const registry = toolRegistryFromBody({});
   assert.equal(registry.ok, true);
-  assert.equal(registry.total, 35);
+  assert.equal(registry.total, 36);
 
   for (const toolId of WORKSPACE_MUTATION_TOOL_IDS) {
     const entry = registry.tools.find(item => item.tool_id === toolId);
