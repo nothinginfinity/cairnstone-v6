@@ -10,7 +10,7 @@
 
 INSERT INTO workspace_members (workspace_id, actor_id, role, created_at)
 VALUES
-  ('ws:v775-multi-actor-workplane', 'grok:coairnstone-v6', 'drafter', datetime('now')),
+  ('ws:v775-multi-actor-workplane', 'grok:cairnstone-v6', 'drafter', datetime('now')),
   ('ws:v775-multi-actor-workplane', 'chatgpt:cairnstone-v6', 'drafter', datetime('now')),
   ('ws:v775-multi-actor-workplane', 'claude:cairnstone-v6', 'drafter', datetime('now'))
 ON CONFLICT(workspace_id, actor_id) DO UPDATE SET role=excluded.role;
