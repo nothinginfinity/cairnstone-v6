@@ -55,7 +55,7 @@ A fresh model must be able to resume from the latest checkpoint **without** the 
 - changed paths + revision/content identities
 - current task + completed work + next action + blockers
 - test/build/execution receipts + artifact/log refs
-- `active_task_leases` / `known_concurrent_actors` (may be empty stubs until 7.7.7c)
+- `active_task_leases` / `known_concurrent_actors` (hydrated from live **7.7.7c** leases when empty; stubs still accepted)
 - `safe_to_continue` + `known_caveats`
 - `capability_policy_profile_id` (**never** raw bearer)
 
@@ -107,7 +107,7 @@ Broker: mutations = `risk_class:mutation` + `scoped_grant`; reads = `scoped_gran
 
 ## Out of scope (later slices)
 
-- **7.7.7c** task/path leases (active lease enforcement; stubs only here)
+- **7.7.7c** task/path leases — **shipped** in [V7_7_7C_TASK_LEASES.md](./V7_7_7C_TASK_LEASES.md) (this doc previously held stubs only)
 - **7.7.7d** repo-scale tree + GitZip backing
 - **7.7.7e** environment reconstruct / sandbox adapter
 - **7.7.7f** Console Persistent Code Mode UX

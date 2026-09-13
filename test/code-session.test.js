@@ -4,21 +4,27 @@ import {
   CODE_CHECKPOINT_SCHEMA,
   CODE_SESSION_BROKER_TOOL_IDS,
   CODE_SESSION_CONTEXT_SCHEMA,
+  CODE_SESSION_LEASE_SCHEMA,
   CODE_SESSION_MCP_TOOL_DEFINITIONS,
   CODE_SESSION_MUTATION_TOOL_IDS,
   CODE_SESSION_READ_TOOL_IDS,
   CODE_SESSION_SCHEMA,
   CODE_TASK_STATES,
   CODE_TASK_TRANSITIONS,
+  acquireCodeSessionLeaseFromBody,
   compileCodeSessionContextFromBody,
   createCodeCheckpointFromBody,
   createCodeSessionFromBody,
   getCodeCheckpointFromBody,
   getCodeSessionFromBody,
   isLegalTaskTransition,
+  leaseScopesOverlap,
   listCodeCheckpointsFromBody,
+  listCodeSessionLeasesFromBody,
   normalizeBaseCommits,
   pauseCodeSessionFromBody,
+  releaseCodeSessionLeaseFromBody,
+  renewCodeSessionLeaseFromBody,
   resumeCodeSessionFromBody,
   scrubSecretsDeep,
   transitionCodeSessionTaskFromBody
@@ -70,6 +76,7 @@ class FakeCodeSessionD1 {
     this.sessions = new Map();
     this.checkpoints = new Map();
     this.taskEvents = new Map();
+    this.leases = new Map();
     this.chainHeads = new Map();
     this.pathHeads = new Map();
     this.headMutationAttempts = [];
@@ -261,6 +268,110 @@ class FakeCodeSessionD1 {
               });
               return { success: true, meta: { changes: 1 } };
             }
+            if (sql.includes("INSERT INTO code_session_leases")) {
+              const [
+                leaseId, codeSessionId, workspaceId, actorId, taskId, pathPrefixJson,
+                acquiredAt, renewedAt, expiresAt, checkpointId, sessionRevision,
+                createdAt, updatedAt
+              ] = args;
+              if (db.leases.has(leaseId)) {
+                throw new Error("UNIQUE constraint failed: code_session_leases.lease_id");
+              }
+              db.leases.set(leaseId, {
+                lease_id: leaseId,
+                code_session_id: codeSessionId,
+                workspace_id: workspaceId,
+                actor_id: actorId,
+                task_id: taskId,
+                path_prefix_json: pathPrefixJson,
+                acquired_at: acquiredAt,
+                renewed_at: renewedAt,
+                expires_at: expiresAt,
+                checkpoint_id: checkpointId,
+                session_revision: sessionRevision,
+                status: "active",
+                created_at: createdAt,
+                updated_at: updatedAt
+              });
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (sql.includes("UPDATE code_session_leases") && sql.includes("status = 'expired'")
+              && sql.includes("expires_at <=")) {
+              const [updatedAt, codeSessionId, nowIso] = args;
+              let changes = 0;
+              for (const [key, row] of db.leases.entries()) {
+                if (row.code_session_id === codeSessionId && row.status === "active"
+                  && String(row.expires_at) <= String(nowIso)) {
+                  db.leases.set(key, { ...row, status: "expired", updated_at: updatedAt });
+                  changes += 1;
+                }
+              }
+              return { success: true, meta: { changes } };
+            }
+            if (sql.includes("UPDATE code_session_leases") && sql.includes("renewed_at = ?")
+              && sql.includes("path_prefix_json")) {
+              const [
+                taskId, pathPrefixJson, renewedAt, expiresAt, checkpointId,
+                sessionRevision, updatedAt, leaseId, actorId, codeSessionId
+              ] = args;
+              const row = db.leases.get(leaseId);
+              if (!row || row.actor_id !== actorId || row.code_session_id !== codeSessionId
+                || row.status !== "active") {
+                return { success: true, meta: { changes: 0 } };
+              }
+              db.leases.set(leaseId, {
+                ...row,
+                task_id: taskId,
+                path_prefix_json: pathPrefixJson,
+                renewed_at: renewedAt,
+                expires_at: expiresAt,
+                checkpoint_id: checkpointId,
+                session_revision: sessionRevision,
+                status: "active",
+                updated_at: updatedAt
+              });
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (sql.includes("UPDATE code_session_leases") && sql.includes("renewed_at = ?")
+              && sql.includes("expires_at > ?")) {
+              const [
+                renewedAt, expiresAt, sessionRevision, updatedAt,
+                leaseId, actorId, codeSessionId, nowIso
+              ] = args;
+              const row = db.leases.get(leaseId);
+              if (!row || row.actor_id !== actorId || row.code_session_id !== codeSessionId
+                || row.status !== "active" || String(row.expires_at) <= String(nowIso)) {
+                return { success: true, meta: { changes: 0 } };
+              }
+              db.leases.set(leaseId, {
+                ...row,
+                renewed_at: renewedAt,
+                expires_at: expiresAt,
+                session_revision: sessionRevision,
+                status: "active",
+                updated_at: updatedAt
+              });
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (sql.includes("UPDATE code_session_leases") && sql.includes("status = 'released'")) {
+              const [updatedAt, leaseId, actorId, codeSessionId] = args;
+              const row = db.leases.get(leaseId);
+              if (!row || row.actor_id !== actorId || row.code_session_id !== codeSessionId
+                || row.status !== "active") {
+                return { success: true, meta: { changes: 0 } };
+              }
+              db.leases.set(leaseId, { ...row, status: "released", updated_at: updatedAt });
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (sql.includes("UPDATE code_session_leases") && sql.includes("status = 'expired'")) {
+              const [updatedAt, leaseId, codeSessionId] = args;
+              const row = db.leases.get(leaseId);
+              if (!row || row.code_session_id !== codeSessionId) {
+                return { success: true, meta: { changes: 0 } };
+              }
+              db.leases.set(leaseId, { ...row, status: "expired", updated_at: updatedAt });
+              return { success: true, meta: { changes: 1 } };
+            }
             if (sql.includes("UPDATE code_sessions") && sql.includes("lifecycle = ?")) {
               const [lifecycle, sessionRevision, actorsJson, updatedAt, codeSessionId, baseRevision] = args;
               const row = db.sessions.get(codeSessionId);
@@ -355,6 +466,9 @@ class FakeCodeSessionD1 {
             if (sql.includes("FROM code_checkpoints WHERE checkpoint_id")) {
               return db.checkpoints.get(args[0]) || null;
             }
+            if (sql.includes("FROM code_session_leases WHERE lease_id")) {
+              return db.leases.get(args[0]) || null;
+            }
             throw new Error(`Unexpected first SQL: ${sql}`);
           },
           async all() {
@@ -390,6 +504,16 @@ class FakeCodeSessionD1 {
               const rows = [...db.checkpoints.values()]
                 .filter(row => row.code_session_id === sessionId)
                 .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+                .slice(0, limit);
+              return { results: rows };
+            }
+            if (sql.includes("FROM code_session_leases") && sql.includes("WHERE code_session_id")) {
+              const sessionId = args[0];
+              const limit = Number(args[1]) || 50;
+              const rows = [...db.leases.values()]
+                .filter(row => row.code_session_id === sessionId)
+                .sort((a, b) => String(b.expires_at).localeCompare(String(a.expires_at))
+                  || String(b.acquired_at).localeCompare(String(a.acquired_at)))
                 .slice(0, limit);
               return { results: rows };
             }
@@ -500,7 +624,7 @@ test("broker: code-session tools are scoped_grant and never automatic-read", () 
   }
 });
 
-test("MCP catalog advertises V7.7.7a/b code-session and checkpoint tools", () => {
+test("MCP catalog advertises V7.7.7a/b/c code-session, checkpoint, and lease tools", () => {
   const names = mcpToolsForProfile(false).map(tool => tool.name);
   for (const def of CODE_SESSION_MCP_TOOL_DEFINITIONS) {
     assert.ok(names.includes(def.name), `${def.name} must be in MCP catalog`);
@@ -694,7 +818,10 @@ test("compile context is content-identified, race-safe, and answers resume quest
   assert.equal(context.permissions.accepted_state_authority, false);
   assert.equal(context.next_safe_continuation.safe_to_continue, true);
   assert.equal(context.currentness.timestamps_are_informational_only, true);
-  assert.equal(context.currentness.basis, "session_revision+tip_vector_digest+checkpoint_pointer");
+  assert.equal(
+    context.currentness.basis,
+    "session_revision+tip_vector_digest+checkpoint_pointer+lease_id+expires_at"
+  );
   assert.ok(context.content_identity.context_digest);
   assert.equal(context.accepted_state_authority, false);
 
@@ -1014,4 +1141,306 @@ test("V7.7.7b: checkpoint/task ops fail closed without capability; scrub secrets
   assert.equal(scrubbed.nested.token, "[REDACTED]");
   assert.equal(scrubbed.capability_policy_profile_id, "profile:owner");
   assert.equal(scrubbed.nested.note, "ok");
+});
+
+test("V7.7.7c: lease acquire/renew/release happy path with actor attribution", async () => {
+  assert.equal(CODE_SESSION_LEASE_SCHEMA, "cairnstone-code-session-lease-v1");
+  assert.equal(leaseScopesOverlap(
+    { task_id: "task-1", path_prefixes: ["src/"] },
+    { task_id: "task-1", path_prefixes: ["docs/"] }
+  ), true);
+  assert.equal(leaseScopesOverlap(
+    { task_id: "task-1", path_prefixes: ["src/"] },
+    { task_id: "task-2", path_prefixes: ["docs/"] }
+  ), false);
+  assert.equal(leaseScopesOverlap(
+    { task_id: null, path_prefixes: ["src/code-session.js"] },
+    { task_id: "other", path_prefixes: ["src/"] }
+  ), true);
+
+  const db = new FakeCodeSessionD1();
+  const r2 = new FakeR2();
+  const { env } = await seedWorkspace(db, r2, {
+    members: [{ actor_id: ACTOR_B, role: "drafter" }]
+  });
+  const cap = await mintCap(ACTOR_A, "owner", ["write_draft", "ls", "read"]);
+  const created = await createCodeSessionFromBody({
+    ...baseCreateBody(),
+    workspace_capability: cap
+  }, env);
+  assert.equal(created.ok, true);
+
+  const acquired = await acquireCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: cap,
+    task_id: "task-1",
+    path_prefixes: ["src/"],
+    ttl_seconds: 600,
+    base_revision: 1,
+    note: "editing code-session"
+  }, env);
+  assert.equal(acquired.ok, true);
+  assert.equal(acquired.action, "acquired");
+  assert.equal(acquired.lease.schema, CODE_SESSION_LEASE_SCHEMA);
+  assert.ok(String(acquired.lease.lease_id).startsWith("lease:"));
+  assert.equal(acquired.lease.actor_id, ACTOR_A);
+  assert.equal(acquired.lease.task_id, "task-1");
+  assert.deepEqual(acquired.lease.path_prefixes, ["src/"]);
+  assert.equal(acquired.lease.status, "active");
+  assert.equal(acquired.lease.live, true);
+  assert.equal(acquired.lease.accepted_state_authority, false);
+  assert.equal(acquired.lease.coordination_hint_only, true);
+  assert.equal(acquired.accepted_state_authority, false);
+  assert.equal(acquired.chain_heads_mutated, false);
+  assert.equal(acquired.session_revision, 1);
+
+  const renewed = await renewCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: cap,
+    lease_id: acquired.lease.lease_id,
+    ttl_seconds: 900
+  }, env);
+  assert.equal(renewed.ok, true);
+  assert.equal(renewed.action, "renewed");
+  assert.equal(renewed.lease.lease_id, acquired.lease.lease_id);
+  assert.ok(renewed.lease.expires_at > acquired.lease.expires_at
+    || renewed.lease.renewed_at >= acquired.lease.acquired_at);
+
+  const listed = await listCodeSessionLeasesFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_B,
+    workspace_capability: await mintCap(ACTOR_B, "drafter", ["ls", "read"])
+  }, env);
+  assert.equal(listed.ok, true);
+  assert.equal(listed.count, 1);
+  assert.equal(listed.leases[0].actor_id, ACTOR_A);
+
+  const released = await releaseCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: cap,
+    lease_id: acquired.lease.lease_id
+  }, env);
+  assert.equal(released.ok, true);
+  assert.equal(released.action, "released");
+  assert.equal(released.lease.status, "released");
+  assert.equal(released.lease.live, false);
+
+  const afterRelease = await listCodeSessionLeasesFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: await mintCap(ACTOR_A, "owner", ["ls"])
+  }, env);
+  assert.equal(afterRelease.ok, true);
+  assert.equal(afterRelease.count, 0);
+});
+
+test("V7.7.7c: overlapping lease awareness deny without allow_overlap; allow with flag", async () => {
+  const db = new FakeCodeSessionD1();
+  const r2 = new FakeR2();
+  const { env } = await seedWorkspace(db, r2, {
+    members: [{ actor_id: ACTOR_B, role: "drafter" }]
+  });
+  const capA = await mintCap(ACTOR_A, "owner", ["write_draft", "ls", "read"]);
+  const capB = await mintCap(ACTOR_B, "drafter", ["write_draft", "ls", "read"]);
+  await createCodeSessionFromBody({
+    ...baseCreateBody(),
+    workspace_capability: capA
+  }, env);
+
+  const first = await acquireCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: capA,
+    task_id: "task-1",
+    path_prefixes: ["src/"]
+  }, env);
+  assert.equal(first.ok, true);
+
+  const denied = await acquireCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_B,
+    workspace_capability: capB,
+    task_id: "task-1",
+    path_prefixes: ["src/code-session.js"]
+  }, env);
+  assert.equal(denied.ok, false);
+  assert.equal(denied.error, "code_session_lease_conflict");
+  assert.equal(denied.overlapping_leases.length, 1);
+  assert.equal(denied.overlapping_leases[0].actor_id, ACTOR_A);
+  assert.ok(denied.known_concurrent_actors.some(actor => actor.actor_id === ACTOR_A));
+
+  const allowed = await acquireCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_B,
+    workspace_capability: capB,
+    task_id: "task-1",
+    path_prefixes: ["src/"],
+    allow_overlap: true
+  }, env);
+  assert.equal(allowed.ok, true);
+  assert.equal(allowed.overlap_allowed, true);
+  assert.equal(allowed.overlapping_foreign_leases.length, 1);
+  assert.equal(allowed.lease.actor_id, ACTOR_B);
+
+  // Non-overlapping paths/tasks may proceed without allow_overlap.
+  const other = await acquireCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_B,
+    workspace_capability: capB,
+    task_id: "task-docs",
+    path_prefixes: ["docs/"]
+  }, env);
+  assert.equal(other.ok, true);
+  assert.equal(other.action, "acquired");
+  assert.equal(other.lease.task_id, "task-docs");
+});
+
+test("V7.7.7c: expired lease does not block; cannot renew/release another actor's lease", async () => {
+  const db = new FakeCodeSessionD1();
+  const r2 = new FakeR2();
+  const { env } = await seedWorkspace(db, r2, {
+    members: [{ actor_id: ACTOR_B, role: "drafter" }]
+  });
+  const capA = await mintCap(ACTOR_A, "owner", ["write_draft", "ls", "read"]);
+  const capB = await mintCap(ACTOR_B, "drafter", ["write_draft", "ls", "read"]);
+  await createCodeSessionFromBody({
+    ...baseCreateBody(),
+    workspace_capability: capA
+  }, env);
+
+  const first = await acquireCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: capA,
+    task_id: "task-1",
+    path_prefixes: ["src/"],
+    ttl_seconds: 60
+  }, env);
+  assert.equal(first.ok, true);
+
+  // Force expiry in fake store.
+  const row = db.leases.get(first.lease.lease_id);
+  db.leases.set(first.lease.lease_id, {
+    ...row,
+    expires_at: "2000-01-01T00:00:00.000Z"
+  });
+
+  const afterExpiry = await acquireCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_B,
+    workspace_capability: capB,
+    task_id: "task-1",
+    path_prefixes: ["src/"]
+  }, env);
+  assert.equal(afterExpiry.ok, true);
+  assert.equal(afterExpiry.lease.actor_id, ACTOR_B);
+
+  const foreignRenew = await renewCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: capA,
+    lease_id: afterExpiry.lease.lease_id
+  }, env);
+  assert.equal(foreignRenew.ok, false);
+  assert.equal(foreignRenew.error, "code_session_lease_actor_mismatch");
+
+  const foreignRelease = await releaseCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: capA,
+    lease_id: afterExpiry.lease.lease_id
+  }, env);
+  assert.equal(foreignRelease.ok, false);
+  assert.equal(foreignRelease.error, "code_session_lease_actor_mismatch");
+});
+
+test("V7.7.7c: compile-context/get surfaces live leases; no HEAD mutation; fail closed", async () => {
+  const db = new FakeCodeSessionD1();
+  const r2 = new FakeR2();
+  const { env } = await seedWorkspace(db, r2, {
+    members: [{ actor_id: ACTOR_B, role: "drafter" }]
+  });
+  db.chainHeads.set("cairnstone-v6-project-memory", "dddddddddddddddddddddddddddddddddddddddd");
+  const beforeChain = new Map(db.chainHeads);
+  const capA = await mintCap(ACTOR_A, "owner", ["write_draft", "ls", "read"]);
+  const capB = await mintCap(ACTOR_B, "drafter", ["write_draft", "ls", "read"]);
+  await createCodeSessionFromBody({
+    ...baseCreateBody(),
+    workspace_capability: capA
+  }, env);
+
+  const lease = await acquireCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: capA,
+    task_id: "task-1",
+    path_prefixes: ["src/"],
+    base_revision: 1
+  }, env);
+  assert.equal(lease.ok, true);
+
+  const got = await getCodeSessionFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_B,
+    workspace_capability: await mintCap(ACTOR_B, "drafter", ["ls"])
+  }, env);
+  assert.equal(got.ok, true);
+  assert.equal(got.active_task_leases.length, 1);
+  assert.equal(got.active_task_leases[0].lease_id, lease.lease.lease_id);
+  assert.ok(got.known_concurrent_actors.some(actor => actor.actor_id === ACTOR_A));
+
+  const context = await compileCodeSessionContextFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_B,
+    workspace_capability: await mintCap(ACTOR_B, "drafter", ["read", "ls"])
+  }, env);
+  assert.equal(context.ok, true);
+  assert.equal(context.active_task_leases.length, 1);
+  assert.equal(context.multi_agent_awareness.live_lease_count, 1);
+  assert.equal(context.multi_agent_awareness.hard_correctness, "workspace_cas");
+  assert.ok(context.known_concurrent_actors.some(actor => actor.actor_id === ACTOR_A));
+  assert.ok(context.currentness.live_lease_ids.includes(lease.lease.lease_id));
+
+  const conflictCp = await createCodeCheckpointFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: capA,
+    boundary: "conflict_rebase",
+    base_revision: 1,
+    next_action: "Rebase after concurrent edit awareness",
+    known_caveats: ["intentional overlap resolved via new checkpoint"]
+  }, env);
+  assert.equal(conflictCp.ok, true);
+  assert.ok(conflictCp.checkpoint.payload.active_task_leases.length >= 1);
+  assert.equal(conflictCp.session.session_revision, 2);
+
+  const staleCas = await acquireCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_B,
+    workspace_capability: capB,
+    task_id: "task-2",
+    path_prefixes: ["docs/"],
+    base_revision: 1
+  }, env);
+  assert.equal(staleCas.ok, false);
+  assert.equal(staleCas.error, "code_session_conflict");
+
+  const missingCap = await acquireCodeSessionLeaseFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: REDACTED_CAP,
+    task_id: "task-1",
+    path_prefixes: ["src/"]
+  }, env);
+  assert.equal(missingCap.ok, false);
+  assert.ok(String(missingCap.error).includes("workspace_capability"));
+
+  const serialized = JSON.stringify({ lease, got, context, conflictCp });
+  assert.ok(!serialized.includes(SECRET));
+  assert.ok(!serialized.includes("eyJ"));
+  assert.deepEqual([...db.chainHeads.entries()], [...beforeChain.entries()]);
+  assert.equal(db.headMutationAttempts.length, 0);
 });
