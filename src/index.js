@@ -120,8 +120,16 @@ import {
   getWorkspaceInviteFromBody,
   WORKSPACE_INVITE_CLAIM_TOOL_DEFINITION
 } from "./workspace-invite.js";
+import {
+  createCodeSessionFromBody,
+  getCodeSessionFromBody,
+  pauseCodeSessionFromBody,
+  resumeCodeSessionFromBody,
+  compileCodeSessionContextFromBody,
+  CODE_SESSION_MCP_TOOL_DEFINITIONS
+} from "./code-session.js";
 
-const VERSION = "0.5.30";
+const VERSION = "0.5.31";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -213,6 +221,24 @@ export default {
         return json(await revokeWorkspaceInviteFromBody({
           invite_id: decodeURIComponent(workspaceInviteRevokeMatch[1])
         }, env, auth.subject));
+      }
+
+      // V7.7.7a Durable Code Session (capability-gated; same FromBody handlers as MCP).
+      // Operational state only — never accepted-state authority / HEAD mutation.
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions") {
+        return json(await createCodeSessionFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/get") {
+        return json(await getCodeSessionFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/pause") {
+        return json(await pauseCodeSessionFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/resume") {
+        return json(await resumeCodeSessionFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/context") {
+        return json(await compileCodeSessionContextFromBody(await request.json(), env));
       }
       const authorizationMatch = url.pathname.match(/^\/v1\/tool-authorizations\/([^/]+)$/);
       if (authorizationMatch && request.method === "GET") {
@@ -375,6 +401,11 @@ function routes() {
     "POST /v1/workspace-invites",
     "GET /v1/workspace-invites/:invite_id",
     "POST /v1/workspace-invites/:invite_id/revoke",
+    "POST /v1/code-sessions",
+    "POST /v1/code-sessions/get",
+    "POST /v1/code-sessions/pause",
+    "POST /v1/code-sessions/resume",
+    "POST /v1/code-sessions/context",
     "GET /v1/tool-authorizations/:authorization_request_id",
     "POST /v1/tool-authorizations/:authorization_request_id/decision",
     "POST /v1/tool-authorizations/:authorization_request_id/execute",
@@ -966,6 +997,11 @@ async function callMcpTool(name, args, env) {
       resolveGitHubCommit: (owner, repo, ref) => resolveGitHubCommit(owner, repo, ref, env)
     });
   }
+  if (name === "cairnstone_code_session_create") return createCodeSessionFromBody(args, env);
+  if (name === "cairnstone_code_session_get") return getCodeSessionFromBody(args, env);
+  if (name === "cairnstone_code_session_pause") return pauseCodeSessionFromBody(args, env);
+  if (name === "cairnstone_code_session_resume") return resumeCodeSessionFromBody(args, env);
+  if (name === "cairnstone_code_session_compile_context") return compileCodeSessionContextFromBody(args, env);
   return { ok: false, error: "unknown_tool", name };
 }
 
@@ -1164,6 +1200,7 @@ function mcpTools() {
     GET_NOTES_TOOL_DEFINITION,
     ...WORKSPACE_MCP_TOOL_DEFINITIONS,
     WORKSPACE_INVITE_CLAIM_TOOL_DEFINITION,
+    ...CODE_SESSION_MCP_TOOL_DEFINITIONS,
     {
       name: "cairnstone_create_stone",
       description: "Create a CairnStone from either inline content or server-side GitHub fetch input. For scale, pass owner, repo, path, and ref instead of content.",
