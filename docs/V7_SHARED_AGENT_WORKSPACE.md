@@ -6,6 +6,10 @@
 
 **Predecessor:** V7.7.4a mailbox control plane (`mailbox_capability` is the security analogue).
 
+## V7.7.6 mailbox capability lifecycle (host resolution)
+
+Claim remains fail-closed on expired / wrong-principal / invalid-signature mailbox tickets. When a host has multiple `CAIRNSTONE_MAILBOX_CAPABILITY` sources, prefer the unexpired ticket with latest `iat` (tie-break highest `exp`); never retry the same token after `mailbox_capability_expired_or_invalid_time`; never persist workspace/mailbox bearers in AC1, Stones, GitHub, invite rows, logs, or screenshots. Reissue via operator `POST /v1/mailbox-capabilities` (console Reissue). See `project-memory/v776-mailbox-capability-resolution.md` (live incident 2026-09-13). This note does not move project-memory HEADs.
+
 ## What this plane is
 
 A shared **virtual working tree** for product actors — not a shared host filesystem, not another inbox, and not another HEAD registry.
