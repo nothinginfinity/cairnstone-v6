@@ -1,18 +1,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  CODE_CHECKPOINT_SCHEMA,
   CODE_SESSION_BROKER_TOOL_IDS,
   CODE_SESSION_CONTEXT_SCHEMA,
   CODE_SESSION_MCP_TOOL_DEFINITIONS,
   CODE_SESSION_MUTATION_TOOL_IDS,
   CODE_SESSION_READ_TOOL_IDS,
   CODE_SESSION_SCHEMA,
+  CODE_TASK_STATES,
+  CODE_TASK_TRANSITIONS,
   compileCodeSessionContextFromBody,
+  createCodeCheckpointFromBody,
   createCodeSessionFromBody,
+  getCodeCheckpointFromBody,
   getCodeSessionFromBody,
+  isLegalTaskTransition,
+  listCodeCheckpointsFromBody,
   normalizeBaseCommits,
   pauseCodeSessionFromBody,
-  resumeCodeSessionFromBody
+  resumeCodeSessionFromBody,
+  scrubSecretsDeep,
+  transitionCodeSessionTaskFromBody
 } from "../src/code-session.js";
 import {
   createWorkspace,
@@ -59,6 +68,8 @@ class FakeCodeSessionD1 {
     this.revisions = new Map();
     this.tips = new Map();
     this.sessions = new Map();
+    this.checkpoints = new Map();
+    this.taskEvents = new Map();
     this.chainHeads = new Map();
     this.pathHeads = new Map();
     this.headMutationAttempts = [];
@@ -203,6 +214,53 @@ class FakeCodeSessionD1 {
               });
               return { success: true, meta: { changes: 1 } };
             }
+            if (sql.includes("INSERT INTO code_checkpoints")) {
+              const [
+                checkpointId, codeSessionId, workspaceId, actorId, boundary,
+                sessionRevision, tipVectorJson, tipVectorDigest, workspaceSnapshotId,
+                payloadJson, payloadDigest, createdAt
+              ] = args;
+              if (db.checkpoints.has(checkpointId)) {
+                throw new Error("UNIQUE constraint failed: code_checkpoints.checkpoint_id");
+              }
+              db.checkpoints.set(checkpointId, {
+                checkpoint_id: checkpointId,
+                code_session_id: codeSessionId,
+                workspace_id: workspaceId,
+                actor_id: actorId,
+                boundary,
+                session_revision: sessionRevision,
+                tip_vector_json: tipVectorJson,
+                tip_vector_digest: tipVectorDigest,
+                workspace_snapshot_id: workspaceSnapshotId,
+                payload_json: payloadJson,
+                payload_digest: payloadDigest,
+                created_at: createdAt
+              });
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (sql.includes("INSERT INTO code_session_task_ledger_events")) {
+              const [
+                eventId, codeSessionId, taskId, fromState, toState,
+                actorId, authorId, note, sessionRevision, createdAt
+              ] = args;
+              if (db.taskEvents.has(eventId)) {
+                throw new Error("UNIQUE constraint failed: code_session_task_ledger_events.event_id");
+              }
+              db.taskEvents.set(eventId, {
+                event_id: eventId,
+                code_session_id: codeSessionId,
+                task_id: taskId,
+                from_state: fromState,
+                to_state: toState,
+                actor_id: actorId,
+                author_id: authorId,
+                note,
+                session_revision: sessionRevision,
+                created_at: createdAt
+              });
+              return { success: true, meta: { changes: 1 } };
+            }
             if (sql.includes("UPDATE code_sessions") && sql.includes("lifecycle = ?")) {
               const [lifecycle, sessionRevision, actorsJson, updatedAt, codeSessionId, baseRevision] = args;
               const row = db.sessions.get(codeSessionId);
@@ -214,6 +272,42 @@ class FakeCodeSessionD1 {
                 lifecycle,
                 session_revision: sessionRevision,
                 actors_json: actorsJson,
+                updated_at: updatedAt
+              });
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (sql.includes("UPDATE code_sessions") && sql.includes("latest_checkpoint_id = ?")) {
+              const [
+                latestCheckpointId, checkpointTipDigest, tipVectorJson, tipVectorDigest,
+                actorsJson, sessionRevision, updatedAt, codeSessionId, baseRevision
+              ] = args;
+              const row = db.sessions.get(codeSessionId);
+              if (!row || row.session_revision !== baseRevision) {
+                return { success: true, meta: { changes: 0 } };
+              }
+              db.sessions.set(codeSessionId, {
+                ...row,
+                latest_checkpoint_id: latestCheckpointId,
+                checkpoint_tip_vector_digest: checkpointTipDigest,
+                tip_vector_json: tipVectorJson,
+                tip_vector_digest: tipVectorDigest,
+                actors_json: actorsJson,
+                session_revision: sessionRevision,
+                updated_at: updatedAt
+              });
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (sql.includes("UPDATE code_sessions") && sql.includes("task_ledger_json = ?")) {
+              const [taskLedgerJson, actorsJson, sessionRevision, updatedAt, codeSessionId, baseRevision] = args;
+              const row = db.sessions.get(codeSessionId);
+              if (!row || row.session_revision !== baseRevision) {
+                return { success: true, meta: { changes: 0 } };
+              }
+              db.sessions.set(codeSessionId, {
+                ...row,
+                task_ledger_json: taskLedgerJson,
+                actors_json: actorsJson,
+                session_revision: sessionRevision,
                 updated_at: updatedAt
               });
               return { success: true, meta: { changes: 1 } };
@@ -258,6 +352,9 @@ class FakeCodeSessionD1 {
             if (sql.includes("FROM code_sessions WHERE code_session_id")) {
               return db.sessions.get(args[0]) || null;
             }
+            if (sql.includes("FROM code_checkpoints WHERE checkpoint_id")) {
+              return db.checkpoints.get(args[0]) || null;
+            }
             throw new Error(`Unexpected first SQL: ${sql}`);
           },
           async all() {
@@ -286,6 +383,15 @@ class FakeCodeSessionD1 {
                   .filter(member => member.workspace_id === workspaceId)
                   .sort((a, b) => a.actor_id.localeCompare(b.actor_id))
               };
+            }
+            if (sql.includes("FROM code_checkpoints") && sql.includes("WHERE code_session_id")) {
+              const sessionId = args[0];
+              const limit = Number(args[1]) || 20;
+              const rows = [...db.checkpoints.values()]
+                .filter(row => row.code_session_id === sessionId)
+                .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+                .slice(0, limit);
+              return { results: rows };
             }
             return { results: [] };
           }
@@ -362,6 +468,7 @@ function baseCreateBody(overrides = {}) {
 test("code-session schema constants and base commit normalization", () => {
   assert.equal(CODE_SESSION_SCHEMA, "cairnstone-code-session-v1");
   assert.equal(CODE_SESSION_CONTEXT_SCHEMA, "cairnstone-code-session-context-v1");
+  assert.equal(CODE_CHECKPOINT_SCHEMA, "cairnstone-code-checkpoint-v1");
   const ok = normalizeBaseCommits(
     [{ repo: "nothinginfinity/cairnstone-v6", commit_sha: BASE_SHA }],
     ["nothinginfinity/cairnstone-v6"]
@@ -393,7 +500,7 @@ test("broker: code-session tools are scoped_grant and never automatic-read", () 
   }
 });
 
-test("MCP catalog advertises V7.7.7a code-session tools", () => {
+test("MCP catalog advertises V7.7.7a/b code-session and checkpoint tools", () => {
   const names = mcpToolsForProfile(false).map(tool => tool.name);
   for (const def of CODE_SESSION_MCP_TOOL_DEFINITIONS) {
     assert.ok(names.includes(def.name), `${def.name} must be in MCP catalog`);
@@ -644,4 +751,267 @@ test("code-session ops never mutate chain_heads or path_heads", async () => {
   assert.equal(db.headMutationAttempts.length, 0);
   assert.equal(created.synthetic_global_head, false);
   assert.equal(context.synthetic_global_head, false);
+});
+
+test("V7.7.7b: create checkpoint updates session pointers without HEAD mutation", async () => {
+  const db = new FakeCodeSessionD1();
+  const r2 = new FakeR2();
+  const { env } = await seedWorkspace(db, r2);
+  db.chainHeads.set("cairnstone-v6-project-memory", "cccccccccccccccccccccccccccccccccccccccc");
+  const beforeChain = new Map(db.chainHeads);
+  const cap = await mintCap(ACTOR_A, "owner", ["write_draft", "ls", "read"]);
+
+  await writeDraft(db, r2, {
+    workspace_id: WS_ID,
+    path: "src/code-session.js",
+    content: "// checkpoint boundary\n",
+    base_revision: null,
+    actor_id: ACTOR_A
+  });
+
+  const created = await createCodeSessionFromBody({
+    ...baseCreateBody(),
+    workspace_capability: cap
+  }, env);
+  assert.equal(created.ok, true);
+  assert.equal(created.session_revision, 1);
+
+  const checkpoint = await createCodeCheckpointFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: cap,
+    boundary: "handoff",
+    base_revision: 1,
+    next_action: "Continue V7.7.7b task ledger wiring",
+    completed_work: ["Opened session", "Wrote draft path"],
+    known_caveats: ["leases deferred to 7.7.7c"],
+    artifact_refs: [{ ref: "receipt:REDACTED_TEST_RECEIPT", kind: "test" }],
+    active_task_leases: [],
+    known_concurrent_actors: [{ actor_id: ACTOR_B, role: "drafter" }],
+    safe_to_continue: true,
+    note: "meaningful handoff boundary"
+  }, env);
+  assert.equal(checkpoint.ok, true);
+  assert.equal(checkpoint.checkpoint.schema, CODE_CHECKPOINT_SCHEMA);
+  assert.ok(String(checkpoint.checkpoint.checkpoint_id).startsWith("cp:"));
+  assert.equal(checkpoint.session.latest_checkpoint_id, checkpoint.checkpoint.checkpoint_id);
+  assert.equal(checkpoint.session.session_revision, 2);
+  assert.ok(checkpoint.session.checkpoint_tip_vector_digest);
+  assert.equal(checkpoint.accepted_state_authority, false);
+  assert.equal(checkpoint.chain_heads_mutated, false);
+  assert.deepEqual([...db.chainHeads.entries()], [...beforeChain.entries()]);
+  assert.equal(db.headMutationAttempts.length, 0);
+
+  const serialized = JSON.stringify(checkpoint);
+  assert.ok(!serialized.includes(SECRET));
+  assert.ok(!serialized.includes("workspace_capability"));
+  assert.equal(checkpoint.checkpoint.payload.capability_policy_profile_id, "profile:owner");
+  assert.equal(
+    checkpoint.checkpoint.payload.resumability.sufficient_without_predecessor_transcript,
+    true
+  );
+});
+
+test("V7.7.7b: get/list checkpoints + compile-context reflects latest checkpoint", async () => {
+  const db = new FakeCodeSessionD1();
+  const r2 = new FakeR2();
+  const { env } = await seedWorkspace(db, r2, {
+    members: [{ actor_id: ACTOR_B, role: "drafter" }]
+  });
+  const cap = await mintCap(ACTOR_A, "owner", ["write_draft", "ls", "read"]);
+
+  await writeDraft(db, r2, {
+    workspace_id: WS_ID,
+    path: "docs/V7_7_7B_CODE_CHECKPOINT.md",
+    content: "# checkpoint docs\n",
+    base_revision: null,
+    actor_id: ACTOR_A
+  });
+
+  const created = await createCodeSessionFromBody({
+    ...baseCreateBody(),
+    workspace_capability: cap
+  }, env);
+  assert.equal(created.ok, true);
+
+  const first = await createCodeCheckpointFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: cap,
+    boundary: "user_requested",
+    base_revision: 1,
+    next_action: "Transition task to review"
+  }, env);
+  assert.equal(first.ok, true);
+
+  const got = await getCodeCheckpointFromBody({
+    checkpoint_id: first.checkpoint.checkpoint_id,
+    actor_id: ACTOR_B,
+    workspace_capability: await mintCap(ACTOR_B, "drafter", ["ls", "read"])
+  }, env);
+  assert.equal(got.ok, true);
+  assert.equal(got.checkpoint_id, first.checkpoint.checkpoint_id);
+  assert.equal(got.boundary, "user_requested");
+
+  const listed = await listCodeCheckpointsFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: await mintCap(ACTOR_A, "owner", ["ls"]),
+    limit: 10
+  }, env);
+  assert.equal(listed.ok, true);
+  assert.equal(listed.count, 1);
+  assert.equal(listed.checkpoints[0].checkpoint_id, first.checkpoint.checkpoint_id);
+
+  const context = await compileCodeSessionContextFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: await mintCap(ACTOR_A, "owner", ["read"])
+  }, env);
+  assert.equal(context.ok, true);
+  assert.equal(context.latest_checkpoint.checkpoint_id, first.checkpoint.checkpoint_id);
+  assert.equal(context.latest_checkpoint.next_action, "Transition task to review");
+  assert.equal(context.changes_since_last_checkpoint.digest_match, true);
+  assert.deepEqual(context.changes_since_last_checkpoint.paths_changed, []);
+  assert.equal(context.next_safe_continuation.next_action_from_checkpoint, "Transition task to review");
+  assert.ok(context.task_ledger_summary);
+  assert.equal(context.task_ledger_summary.active[0].task_id, "task-1");
+});
+
+test("V7.7.7b: task state machine legal transitions + actor attribution", async () => {
+  assert.equal(isLegalTaskTransition("queued", "claimed"), true);
+  assert.equal(isLegalTaskTransition("active", "done"), true);
+  assert.equal(isLegalTaskTransition("done", "active"), false);
+  assert.deepEqual(CODE_TASK_STATES, [
+    "queued", "claimed", "active", "blocked", "review", "done", "abandoned"
+  ]);
+  assert.ok(CODE_TASK_TRANSITIONS.active.includes("review"));
+
+  const db = new FakeCodeSessionD1();
+  const r2 = new FakeR2();
+  const { env } = await seedWorkspace(db, r2, {
+    members: [{ actor_id: ACTOR_B, role: "drafter" }]
+  });
+  const cap = await mintCap(ACTOR_A, "owner", ["write_draft", "ls", "read"]);
+  const created = await createCodeSessionFromBody({
+    ...baseCreateBody(),
+    workspace_capability: cap
+  }, env);
+  assert.equal(created.ok, true);
+
+  const toReview = await transitionCodeSessionTaskFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_B,
+    workspace_capability: await mintCap(ACTOR_B, "drafter", ["write_draft", "ls"]),
+    task_id: "task-1",
+    to_state: "review",
+    base_revision: 1,
+    note: "ready for human review"
+  }, env);
+  assert.equal(toReview.ok, true);
+  assert.equal(toReview.transition.from_state, "active");
+  assert.equal(toReview.transition.to_state, "review");
+  assert.equal(toReview.transition.actor_id, ACTOR_B);
+  assert.equal(toReview.task.author_id, ACTOR_A);
+  assert.equal(toReview.session_revision, 2);
+  assert.equal(db.taskEvents.size, 1);
+
+  const toDone = await transitionCodeSessionTaskFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: cap,
+    task_id: "task-1",
+    to_state: "done",
+    base_revision: 2,
+    note: "accepted"
+  }, env);
+  assert.equal(toDone.ok, true);
+  assert.equal(toDone.transition.from_state, "review");
+  assert.equal(toDone.transition.to_state, "done");
+  assert.equal(toDone.task_ledger[0].state, "done");
+});
+
+test("V7.7.7b: illegal task transitions and stale CAS fail closed", async () => {
+  const db = new FakeCodeSessionD1();
+  const r2 = new FakeR2();
+  const { env } = await seedWorkspace(db, r2);
+  const cap = await mintCap(ACTOR_A, "owner", ["write_draft", "ls", "read"]);
+  const created = await createCodeSessionFromBody({
+    ...baseCreateBody(),
+    workspace_capability: cap
+  }, env);
+  assert.equal(created.ok, true);
+
+  const illegal = await transitionCodeSessionTaskFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: cap,
+    task_id: "task-1",
+    to_state: "queued",
+    base_revision: 1
+  }, env);
+  assert.equal(illegal.ok, false);
+  assert.equal(illegal.error, "code_session_task_transition_illegal");
+
+  const checkpoint = await createCodeCheckpointFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: cap,
+    boundary: "test_gate",
+    base_revision: 1
+  }, env);
+  assert.equal(checkpoint.ok, true);
+  assert.equal(checkpoint.session.session_revision, 2);
+
+  const staleCheckpoint = await createCodeCheckpointFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: cap,
+    boundary: "pause",
+    base_revision: 1
+  }, env);
+  assert.equal(staleCheckpoint.ok, false);
+  assert.equal(staleCheckpoint.error, "code_session_conflict");
+
+  const staleTip = await createCodeCheckpointFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: cap,
+    boundary: "pause",
+    base_revision: 2,
+    expected_tip_vector_digest: "deadbeef".repeat(8)
+  }, env);
+  assert.equal(staleTip.ok, false);
+  assert.equal(staleTip.error, "code_session_tip_race");
+});
+
+test("V7.7.7b: checkpoint/task ops fail closed without capability; scrub secrets", async () => {
+  const db = new FakeCodeSessionD1();
+  const r2 = new FakeR2();
+  const { env } = await seedWorkspace(db, r2);
+  const cap = await mintCap(ACTOR_A, "owner", ["write_draft", "ls", "read"]);
+  await createCodeSessionFromBody({
+    ...baseCreateBody(),
+    workspace_capability: cap
+  }, env);
+
+  const unauth = await createCodeCheckpointFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: REDACTED_CAP,
+    boundary: "handoff",
+    base_revision: 1
+  }, env);
+  assert.equal(unauth.ok, false);
+  assert.ok(String(unauth.error).includes("workspace_capability"));
+
+  const scrubbed = scrubSecretsDeep({
+    workspace_capability: "eyJhbGciOi.fake.signature",
+    nested: { token: "abc123", note: "ok" },
+    capability_policy_profile_id: "profile:owner"
+  });
+  assert.equal(scrubbed.workspace_capability, "[REDACTED]");
+  assert.equal(scrubbed.nested.token, "[REDACTED]");
+  assert.equal(scrubbed.capability_policy_profile_id, "profile:owner");
+  assert.equal(scrubbed.nested.note, "ok");
 });

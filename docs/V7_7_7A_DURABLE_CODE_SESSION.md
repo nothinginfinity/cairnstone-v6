@@ -84,8 +84,9 @@ A fresh authorized model session receives enough bounded state to answer:
 
 ## Out of scope (later slices)
 
-- **7.7.7b** immutable Code Checkpoint protocol + richer task ledger transitions
+- **7.7.7b** immutable Code Checkpoint protocol + richer task ledger transitions — see [`docs/V7_7_7B_CODE_CHECKPOINT.md`](./V7_7_7B_CODE_CHECKPOINT.md)
 - **7.7.7c** task/path leases
 - **7.7.7d** repo-scale tree + GitZip backing
 - **7.7.7e** environment reconstruct / sandbox adapter
 - **7.7.7f** Console Persistent Code Mode UX
+

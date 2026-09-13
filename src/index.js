@@ -126,10 +126,14 @@ import {
   pauseCodeSessionFromBody,
   resumeCodeSessionFromBody,
   compileCodeSessionContextFromBody,
+  createCodeCheckpointFromBody,
+  getCodeCheckpointFromBody,
+  listCodeCheckpointsFromBody,
+  transitionCodeSessionTaskFromBody,
   CODE_SESSION_MCP_TOOL_DEFINITIONS
 } from "./code-session.js";
 
-const VERSION = "0.5.31";
+const VERSION = "0.5.32";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -223,7 +227,8 @@ export default {
         }, env, auth.subject));
       }
 
-      // V7.7.7a Durable Code Session (capability-gated; same FromBody handlers as MCP).
+      // V7.7.7a Durable Code Session + V7.7.7b Code Checkpoints / task ledger
+      // (capability-gated; same FromBody handlers as MCP).
       // Operational state only — never accepted-state authority / HEAD mutation.
       if (request.method === "POST" && url.pathname === "/v1/code-sessions") {
         return json(await createCodeSessionFromBody(await request.json(), env));
@@ -239,6 +244,18 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/v1/code-sessions/context") {
         return json(await compileCodeSessionContextFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/task-transition") {
+        return json(await transitionCodeSessionTaskFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-checkpoints") {
+        return json(await createCodeCheckpointFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-checkpoints/get") {
+        return json(await getCodeCheckpointFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-checkpoints/list") {
+        return json(await listCodeCheckpointsFromBody(await request.json(), env));
       }
       const authorizationMatch = url.pathname.match(/^\/v1\/tool-authorizations\/([^/]+)$/);
       if (authorizationMatch && request.method === "GET") {
@@ -406,6 +423,10 @@ function routes() {
     "POST /v1/code-sessions/pause",
     "POST /v1/code-sessions/resume",
     "POST /v1/code-sessions/context",
+    "POST /v1/code-sessions/task-transition",
+    "POST /v1/code-checkpoints",
+    "POST /v1/code-checkpoints/get",
+    "POST /v1/code-checkpoints/list",
     "GET /v1/tool-authorizations/:authorization_request_id",
     "POST /v1/tool-authorizations/:authorization_request_id/decision",
     "POST /v1/tool-authorizations/:authorization_request_id/execute",
@@ -1002,6 +1023,10 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_code_session_pause") return pauseCodeSessionFromBody(args, env);
   if (name === "cairnstone_code_session_resume") return resumeCodeSessionFromBody(args, env);
   if (name === "cairnstone_code_session_compile_context") return compileCodeSessionContextFromBody(args, env);
+  if (name === "cairnstone_code_checkpoint_create") return createCodeCheckpointFromBody(args, env);
+  if (name === "cairnstone_code_checkpoint_get") return getCodeCheckpointFromBody(args, env);
+  if (name === "cairnstone_code_checkpoint_list") return listCodeCheckpointsFromBody(args, env);
+  if (name === "cairnstone_code_session_task_transition") return transitionCodeSessionTaskFromBody(args, env);
   return { ok: false, error: "unknown_tool", name };
 }
 

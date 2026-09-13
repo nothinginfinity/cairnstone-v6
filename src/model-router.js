@@ -932,7 +932,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "read",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.7a: compile race-safe cairnstone-code-session-context-v1; scoped_grant only; never automatic-read.",
+    description: "V7.7.7a/b: compile race-safe cairnstone-code-session-context-v1 with checkpoint + task ledger; scoped_grant only; never automatic-read.",
     input_schema: {
       type: "object",
       required: ["code_session_id", "actor_id", "workspace_capability"],
@@ -940,6 +940,108 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
         code_session_id: { type: "string" },
         actor_id: { type: "string" },
         workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  // V7.7.7b Code Checkpoints + task ledger. Reuses workspace_capability.
+  // Mutations are scoped_grant and never automatic-read. Operational only.
+  Object.freeze({
+    tool_id: "cairnstone_code_checkpoint_create",
+    connector: "cairnstone",
+    handler: "cairnstone_code_checkpoint_create",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7b: create immutable cairnstone-code-checkpoint-v1 with CAS; never automatic-read; never HEAD mutation; never stores raw bearers.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability", "boundary", "base_revision"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        boundary: { type: "string" },
+        base_revision: { type: "number", minimum: 1 },
+        expected_tip_vector_digest: { type: "string" },
+        changed_paths: { type: "array", maxItems: 500 },
+        current_task: { type: "object" },
+        completed_work: { type: "array", maxItems: 100 },
+        next_action: { type: "string" },
+        blockers: { type: "array", maxItems: 100 },
+        test_build_execution_receipts: { type: "array", maxItems: 100 },
+        artifact_refs: { type: "array", maxItems: 100 },
+        active_task_leases: { type: "array", maxItems: 50 },
+        known_concurrent_actors: { type: "array", maxItems: 50 },
+        safe_to_continue: { type: "boolean" },
+        known_caveats: { type: "array", maxItems: 50 },
+        workspace_snapshot_id: { type: "string" },
+        note: { type: "string" },
+        observed_commits: { type: "array", maxItems: 32 }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_checkpoint_get",
+    connector: "cairnstone",
+    handler: "cairnstone_code_checkpoint_get",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7b: read immutable code checkpoint; scoped_grant only; never automatic-read.",
+    input_schema: {
+      type: "object",
+      required: ["checkpoint_id", "actor_id", "workspace_capability"],
+      properties: {
+        checkpoint_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_checkpoint_list",
+    connector: "cairnstone",
+    handler: "cairnstone_code_checkpoint_list",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7b: list session checkpoints newest-first; scoped_grant only; never automatic-read.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        limit: { type: "number", minimum: 1, maximum: 100 }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_task_transition",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_task_transition",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7b: durable task ledger transition with actor attribution + CAS; never automatic-read; never HEAD mutation.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability", "task_id", "to_state", "base_revision"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        task_id: { type: "string" },
+        to_state: { type: "string" },
+        base_revision: { type: "number", minimum: 1 },
+        note: { type: "string" },
+        title: { type: "string" },
+        author_id: { type: "string" }
       },
       additionalProperties: false
     }
