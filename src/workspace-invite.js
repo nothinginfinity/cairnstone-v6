@@ -4,6 +4,10 @@
 // mailbox capability proving the intended principal. The issued workspace
 // bearer is returned only on the claim response and is never persisted in
 // invite rows, AC1, or accepted state.
+//
+// Multi-source mailbox ticket preference (latest unexpired iat) is a
+// host/client rule — see project-memory/v776-mailbox-capability-resolution.md.
+// Claim still fail-closes via verifyMailboxCapability only.
 
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
 import { verifyMailboxCapability } from "./worker-session.js";

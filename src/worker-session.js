@@ -150,39 +150,138 @@ export async function issueMailboxCapabilityFromBody(body = {}, env = {}) {
   };
 }
 
-export async function verifyMailboxCapability(token, expectedActorId, requiredScopes = [], env = {}) {
+/**
+ * Signature-verify a mailbox capability and return signed metadata only.
+ * Does not bind an expected actor, does not grant claim/authz authority, and
+ * never echoes the raw bearer. Clients/hosts may use this (plus
+ * preferUnexpiredMailboxCapability) to choose among multiple local sources
+ * before calling claim; claim itself still requires verifyMailboxCapability.
+ */
+export async function inspectMailboxCapabilityMetadata(token, env = {}, options = {}) {
   const secret = mailboxCapabilitySecret(env);
   if (!secret) return { ok: false, error: "mailbox_capability_not_configured" };
   if (!isNonEmptyString(token)) return { ok: false, error: "mailbox_capability_required" };
   const parts = token.trim().split(".");
   if (parts.length !== 2 || !parts[0] || !parts[1]) return { ok: false, error: "mailbox_capability_invalid" };
   const expectedSignature = await hmacSha256Base64Url(secret, parts[0]);
-  if (!constantTimeTextEqual(parts[1], expectedSignature)) return { ok: false, error: "mailbox_capability_invalid_signature" };
+  if (!constantTimeTextEqual(parts[1], expectedSignature)) {
+    return { ok: false, error: "mailbox_capability_invalid_signature" };
+  }
   let payload;
   try { payload = JSON.parse(decodeBase64Url(parts[0])); }
   catch { return { ok: false, error: "mailbox_capability_invalid_payload" }; }
-  if (!isObject(payload) || payload.schema !== MAILBOX_CAPABILITY_SCHEMA) return { ok: false, error: "mailbox_capability_wrong_schema" };
-  const now = Math.floor(Date.now() / 1000);
-  if (!Number.isInteger(payload.iat) || !Number.isInteger(payload.exp) || payload.exp <= now || payload.iat > now + 60) {
-    return { ok: false, error: "mailbox_capability_expired_or_invalid_time" };
+  if (!isObject(payload) || payload.schema !== MAILBOX_CAPABILITY_SCHEMA) {
+    return { ok: false, error: "mailbox_capability_wrong_schema" };
   }
-  if (payload.exp - payload.iat > MAILBOX_CAPABILITY_MAX_TTL_SECONDS) return { ok: false, error: "mailbox_capability_ttl_exceeded" };
+  if (!Number.isInteger(payload.iat) || !Number.isInteger(payload.exp)) {
+    return {
+      ok: false,
+      error: "mailbox_capability_expired_or_invalid_time",
+      reason: "invalid_time"
+    };
+  }
+  if (payload.exp - payload.iat > MAILBOX_CAPABILITY_MAX_TTL_SECONDS) {
+    return { ok: false, error: "mailbox_capability_ttl_exceeded" };
+  }
   let principalActorId;
   try { principalActorId = actorId(payload.principal_actor_id, "principal_actor_id"); }
   catch { return { ok: false, error: "mailbox_capability_invalid_principal" }; }
-  if (principalActorId !== expectedActorId) {
-    return { ok: false, error: "mailbox_capability_principal_mismatch", principal_actor_id: principalActorId, requested_actor_id: expectedActorId };
-  }
   const scopes = Array.isArray(payload.scopes) ? [...new Set(payload.scopes.map(String))] : [];
-  const missing = requiredScopes.filter(scope => !scopes.includes(scope));
-  if (missing.length) return { ok: false, error: "mailbox_capability_scope_missing", missing };
+  const now = Number.isInteger(options.nowSeconds)
+    ? options.nowSeconds
+    : Math.floor(Date.now() / 1000);
+  const expired = payload.exp <= now;
+  const iatSkew = payload.iat > now + 60;
   return {
     ok: true,
     schema: MAILBOX_CAPABILITY_SCHEMA,
     principal_actor_id: principalActorId,
     scopes,
+    iat: payload.iat,
+    exp: payload.exp,
+    issued_at: new Date(payload.iat * 1000).toISOString(),
     expires_at: new Date(payload.exp * 1000).toISOString(),
+    expired,
+    iat_skew: iatSkew,
+    usable: !expired && !iatSkew,
     policy: payload.policy || null
+  };
+}
+
+/**
+ * Deterministic host/client preference among already signature-inspected tickets.
+ * Prefer usable (unexpired, non-skewed) tickets with latest iat; tie-break by
+ * highest exp. Never invents authority — callers must only pass inspect results.
+ */
+export function preferUnexpiredMailboxCapability(candidates = []) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  const usable = list.filter(item =>
+    item
+    && item.ok === true
+    && item.usable === true
+    && Number.isInteger(item.iat)
+    && Number.isInteger(item.exp)
+  );
+  if (!usable.length) {
+    return {
+      ok: false,
+      error: "mailbox_capability_no_usable_candidate",
+      candidate_count: list.length
+    };
+  }
+  usable.sort((a, b) => {
+    if (b.iat !== a.iat) return b.iat - a.iat;
+    return b.exp - a.exp;
+  });
+  const preferred = usable[0];
+  return {
+    ok: true,
+    principal_actor_id: preferred.principal_actor_id,
+    scopes: preferred.scopes,
+    iat: preferred.iat,
+    exp: preferred.exp,
+    issued_at: preferred.issued_at,
+    expires_at: preferred.expires_at,
+    source_index: list.indexOf(preferred)
+  };
+}
+
+export async function verifyMailboxCapability(token, expectedActorId, requiredScopes = [], env = {}) {
+  const inspected = await inspectMailboxCapabilityMetadata(token, env);
+  if (!inspected.ok) return inspected;
+  if (inspected.expired) {
+    return {
+      ok: false,
+      error: "mailbox_capability_expired_or_invalid_time",
+      reason: "expired",
+      expires_at: inspected.expires_at
+    };
+  }
+  if (inspected.iat_skew) {
+    return {
+      ok: false,
+      error: "mailbox_capability_expired_or_invalid_time",
+      reason: "iat_skew",
+      issued_at: inspected.issued_at
+    };
+  }
+  if (inspected.principal_actor_id !== expectedActorId) {
+    return {
+      ok: false,
+      error: "mailbox_capability_principal_mismatch",
+      principal_actor_id: inspected.principal_actor_id,
+      requested_actor_id: expectedActorId
+    };
+  }
+  const missing = requiredScopes.filter(scope => !inspected.scopes.includes(scope));
+  if (missing.length) return { ok: false, error: "mailbox_capability_scope_missing", missing };
+  return {
+    ok: true,
+    schema: MAILBOX_CAPABILITY_SCHEMA,
+    principal_actor_id: inspected.principal_actor_id,
+    scopes: inspected.scopes,
+    expires_at: inspected.expires_at,
+    policy: inspected.policy || null
   };
 }
 
