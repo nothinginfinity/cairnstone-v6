@@ -814,6 +814,136 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       additionalProperties: false
     }
   }),
+  // V7.7.7a Durable Code Session. Reuses workspace_capability (no second ticket
+  // format). Mutations are scoped_grant and never automatic-read. Operational
+  // state only — never moves chain_heads/path_heads.
+  Object.freeze({
+    tool_id: "cairnstone_code_session_create",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_create",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7a: create durable Code Session bound to a Shared Agent Workspace; never automatic-read; never accepted-state authority.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "workspace_id", "created_by", "workspace_capability", "source_repos", "base_commits"],
+      properties: {
+        code_session_id: { type: "string" },
+        workspace_id: { type: "string" },
+        created_by: { type: "string" },
+        workspace_capability: { type: "string" },
+        project_chain: { type: "string" },
+        scope: { type: "object" },
+        source_repos: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 32 },
+        base_commits: {
+          type: "array",
+          minItems: 1,
+          maxItems: 32,
+          items: {
+            type: "object",
+            required: ["repo", "commit_sha"],
+            properties: {
+              repo: { type: "string" },
+              commit_sha: { type: "string" }
+            },
+            additionalProperties: false
+          }
+        },
+        working_transport: { type: "object" },
+        task_ledger: { type: "array", items: { type: "object" }, maxItems: 200 },
+        unresolved_issues: { type: "array", maxItems: 200 },
+        actors: { type: "array", items: { type: "object" }, maxItems: 100 },
+        environment_manifest_id: { type: "string" },
+        latest_execution_receipt_refs: { type: "array", maxItems: 100 },
+        latest_checkpoint_id: { type: "string" },
+        checkpoint_tip_vector_digest: { type: "string" },
+        capability_policy_profile_id: { type: "string" },
+        workspace_snapshot_id: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_get",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_get",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7a: read cairnstone-code-session-v1; scoped_grant only; never automatic-read.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_pause",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_pause",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7a: pause Code Session with CAS session_revision; never automatic-read; never HEAD mutation.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability", "base_revision"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        base_revision: { type: "number", minimum: 1 },
+        note: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_resume",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_resume",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7a: resume paused/blocked Code Session with CAS session_revision; never automatic-read; never HEAD mutation.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability", "base_revision"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        base_revision: { type: "number", minimum: 1 },
+        note: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_compile_context",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_compile_context",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7a: compile race-safe cairnstone-code-session-context-v1; scoped_grant only; never automatic-read.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
   Object.freeze({
     tool_id: "cairnstone_send_message",
     connector: "cairnstone",

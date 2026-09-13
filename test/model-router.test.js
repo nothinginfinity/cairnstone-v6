@@ -107,7 +107,7 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   // V7.7.5a registers eight Shared Agent Workspace broker stubs (27 -> 35):
   // five scoped reads + three scoped mutations (create/write_draft/propose_accept).
   // V7.7.6a adds cairnstone_workspace_invite_claim (35 -> 36).
-  assert.equal(result.total, 36);
+  assert.equal(result.total, 41);
 
   const health = result.tools.find(item => item.tool_id === "cairnstone_health");
   assert.equal(health.risk_class, "read");
