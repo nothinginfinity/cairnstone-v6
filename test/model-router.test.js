@@ -109,7 +109,8 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   // V7.7.6a adds cairnstone_workspace_invite_claim (35 -> 36).
   // V7.7.7a adds five Code Session tools (36 -> 41).
   // V7.7.7b adds four checkpoint/task-ledger tools (41 -> 45).
-  assert.equal(result.total, 45);
+  // V7.7.7c adds four task/path lease tools (45 -> 49).
+  assert.equal(result.total, 49);
 
   const health = result.tools.find(item => item.tool_id === "cairnstone_health");
   assert.equal(health.risk_class, "read");

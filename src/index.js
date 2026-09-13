@@ -130,10 +130,14 @@ import {
   getCodeCheckpointFromBody,
   listCodeCheckpointsFromBody,
   transitionCodeSessionTaskFromBody,
+  acquireCodeSessionLeaseFromBody,
+  renewCodeSessionLeaseFromBody,
+  releaseCodeSessionLeaseFromBody,
+  listCodeSessionLeasesFromBody,
   CODE_SESSION_MCP_TOOL_DEFINITIONS
 } from "./code-session.js";
 
-const VERSION = "0.5.32";
+const VERSION = "0.5.33";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -247,6 +251,18 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/v1/code-sessions/task-transition") {
         return json(await transitionCodeSessionTaskFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/leases/acquire") {
+        return json(await acquireCodeSessionLeaseFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/leases/renew") {
+        return json(await renewCodeSessionLeaseFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/leases/release") {
+        return json(await releaseCodeSessionLeaseFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/leases/list") {
+        return json(await listCodeSessionLeasesFromBody(await request.json(), env));
       }
       if (request.method === "POST" && url.pathname === "/v1/code-checkpoints") {
         return json(await createCodeCheckpointFromBody(await request.json(), env));
@@ -424,6 +440,10 @@ function routes() {
     "POST /v1/code-sessions/resume",
     "POST /v1/code-sessions/context",
     "POST /v1/code-sessions/task-transition",
+    "POST /v1/code-sessions/leases/acquire",
+    "POST /v1/code-sessions/leases/renew",
+    "POST /v1/code-sessions/leases/release",
+    "POST /v1/code-sessions/leases/list",
     "POST /v1/code-checkpoints",
     "POST /v1/code-checkpoints/get",
     "POST /v1/code-checkpoints/list",
@@ -1027,6 +1047,10 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_code_checkpoint_get") return getCodeCheckpointFromBody(args, env);
   if (name === "cairnstone_code_checkpoint_list") return listCodeCheckpointsFromBody(args, env);
   if (name === "cairnstone_code_session_task_transition") return transitionCodeSessionTaskFromBody(args, env);
+  if (name === "cairnstone_code_session_lease_acquire") return acquireCodeSessionLeaseFromBody(args, env);
+  if (name === "cairnstone_code_session_lease_renew") return renewCodeSessionLeaseFromBody(args, env);
+  if (name === "cairnstone_code_session_lease_release") return releaseCodeSessionLeaseFromBody(args, env);
+  if (name === "cairnstone_code_session_lease_list") return listCodeSessionLeasesFromBody(args, env);
   return { ok: false, error: "unknown_tool", name };
 }
 

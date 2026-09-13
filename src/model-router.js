@@ -1047,6 +1047,97 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     }
   }),
   Object.freeze({
+    tool_id: "cairnstone_code_session_lease_acquire",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_lease_acquire",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7c: acquire/renew short task/path lease (coordination hint); deny overlapping live foreign leases unless allow_overlap; never automatic-read; never HEAD mutation.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        task_id: { type: "string" },
+        path_prefixes: { type: "array", items: { type: "string" }, maxItems: 32 },
+        path_prefix_set: { type: "array", items: { type: "string" }, maxItems: 32 },
+        ttl_seconds: { type: "number", minimum: 30, maximum: 3600 },
+        allow_overlap: { type: "boolean" },
+        force: { type: "boolean" },
+        base_revision: { type: "number", minimum: 1 },
+        checkpoint_id: { type: "string" },
+        note: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_lease_renew",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_lease_renew",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7c: renew own live lease TTL; fail-closed for other actors; never automatic-read; never HEAD mutation.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability", "lease_id"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        lease_id: { type: "string" },
+        ttl_seconds: { type: "number", minimum: 30, maximum: 3600 },
+        base_revision: { type: "number", minimum: 1 }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_lease_release",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_lease_release",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7c: release own lease; fail-closed for other actors; never automatic-read; never HEAD mutation.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability", "lease_id"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        lease_id: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_lease_list",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_lease_list",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7c: list live (+ optional expired) task/path leases; scoped_grant only; never automatic-read.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        include_expired: { type: "boolean" },
+        limit: { type: "number", minimum: 1, maximum: 100 }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
     tool_id: "cairnstone_send_message",
     connector: "cairnstone",
     handler: "cairnstone_send_message",

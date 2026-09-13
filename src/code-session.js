@@ -1,4 +1,5 @@
-// V7.7.7a Durable Code Session + V7.7.7b Code Checkpoints / task ledger.
+// V7.7.7a Durable Code Session + V7.7.7b Code Checkpoints / task ledger
+// + V7.7.7c Multi-agent awareness / task+path leases.
 //
 // Operational state only. Reuses Shared Agent Workspace (bound workspace_id)
 // and V7.7.6 workspace_capability / membership — no second ticket format,
@@ -6,8 +7,10 @@
 //
 // NEVER moves chain_heads / path_heads. accepted_state_authority always false.
 // Never infer currentness from timestamps when session_revision / tip digest /
-// checkpoint pointers exist. Checkpoints are append-only operational artifacts
-// and are never auto-promoted into canonical project-memory HEAD.
+// checkpoint / lease_id+expires_at pointers exist. Checkpoints are append-only
+// operational artifacts and are never auto-promoted into canonical
+// project-memory HEAD. Leases are coordination hints (not locks / not
+// accepted-state authority); hard path correctness remains workspace CAS.
 
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
 import {
@@ -22,6 +25,7 @@ import {
 export const CODE_SESSION_SCHEMA = "cairnstone-code-session-v1";
 export const CODE_SESSION_CONTEXT_SCHEMA = "cairnstone-code-session-context-v1";
 export const CODE_CHECKPOINT_SCHEMA = "cairnstone-code-checkpoint-v1";
+export const CODE_SESSION_LEASE_SCHEMA = "cairnstone-code-session-lease-v1";
 
 export const CODE_SESSION_LIFECYCLES = Object.freeze([
   "active",
@@ -78,7 +82,11 @@ export const CODE_SESSION_BROKER_TOOL_IDS = Object.freeze({
   checkpoint_create: "cairnstone_code_checkpoint_create",
   checkpoint_get: "cairnstone_code_checkpoint_get",
   checkpoint_list: "cairnstone_code_checkpoint_list",
-  task_transition: "cairnstone_code_session_task_transition"
+  task_transition: "cairnstone_code_session_task_transition",
+  lease_acquire: "cairnstone_code_session_lease_acquire",
+  lease_renew: "cairnstone_code_session_lease_renew",
+  lease_release: "cairnstone_code_session_lease_release",
+  lease_list: "cairnstone_code_session_lease_list"
 });
 
 export const CODE_SESSION_MUTATION_TOOL_IDS = Object.freeze([
@@ -86,20 +94,27 @@ export const CODE_SESSION_MUTATION_TOOL_IDS = Object.freeze([
   CODE_SESSION_BROKER_TOOL_IDS.pause,
   CODE_SESSION_BROKER_TOOL_IDS.resume,
   CODE_SESSION_BROKER_TOOL_IDS.checkpoint_create,
-  CODE_SESSION_BROKER_TOOL_IDS.task_transition
+  CODE_SESSION_BROKER_TOOL_IDS.task_transition,
+  CODE_SESSION_BROKER_TOOL_IDS.lease_acquire,
+  CODE_SESSION_BROKER_TOOL_IDS.lease_renew,
+  CODE_SESSION_BROKER_TOOL_IDS.lease_release
 ]);
 
 export const CODE_SESSION_READ_TOOL_IDS = Object.freeze([
   CODE_SESSION_BROKER_TOOL_IDS.get,
   CODE_SESSION_BROKER_TOOL_IDS.compile_context,
   CODE_SESSION_BROKER_TOOL_IDS.checkpoint_get,
-  CODE_SESSION_BROKER_TOOL_IDS.checkpoint_list
+  CODE_SESSION_BROKER_TOOL_IDS.checkpoint_list,
+  CODE_SESSION_BROKER_TOOL_IDS.lease_list
 ]);
+
+export const CODE_LEASE_STATUSES = Object.freeze(["active", "released", "expired"]);
 
 const ACTOR_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}:[a-z0-9][a-z0-9._-]{0,127}$/i;
 const WORKSPACE_ID_RE = /^ws:[a-z0-9][a-z0-9._-]{0,127}$/i;
 const CODE_SESSION_ID_RE = /^cs:[a-z0-9][a-z0-9._-]{0,127}$/i;
 const CHECKPOINT_ID_RE = /^cp:[a-z0-9][a-z0-9._-]{0,127}$/i;
+const LEASE_ID_RE = /^lease:[a-z0-9][a-z0-9._-]{0,127}$/i;
 const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SECRET_KEY_RE = /^(workspace_capability|mailbox_capability|capability|api[_-]?key|secret|bearer|token|password|credential|private[_-]?key|authorization)$/i;
@@ -108,6 +123,12 @@ const MAX_CHECKPOINT_LIST = 100;
 const DEFAULT_CHECKPOINT_LIST = 20;
 const MAX_ARTIFACT_REFS = 100;
 const MAX_LEASE_STUBS = 50;
+const MAX_LEASE_PATH_PREFIXES = 32;
+const MAX_LEASE_LIST = 100;
+const DEFAULT_LEASE_LIST = 50;
+const DEFAULT_LEASE_TTL_SECONDS = 600;
+const MIN_LEASE_TTL_SECONDS = 30;
+const MAX_LEASE_TTL_SECONDS = 3600;
 const REDACTED_SECRET = "[REDACTED]";
 
 function isObject(value) {
@@ -336,6 +357,13 @@ function checkpointId(value, field = "checkpoint_id") {
   if (!isNonEmptyString(value)) throw new Error(`Missing required string: ${field}`);
   const text = value.trim();
   if (!CHECKPOINT_ID_RE.test(text)) throw new Error(`Invalid checkpoint id for ${field}`);
+  return text;
+}
+
+function leaseId(value, field = "lease_id") {
+  if (!isNonEmptyString(value)) throw new Error(`Missing required string: ${field}`);
+  const text = value.trim();
+  if (!LEASE_ID_RE.test(text)) throw new Error(`Invalid lease id for ${field}`);
   return text;
 }
 
@@ -569,6 +597,576 @@ export async function listCodeCheckpoints(db, {
   };
 }
 
+function clampLeaseTtlSeconds(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_LEASE_TTL_SECONDS;
+  return Math.min(MAX_LEASE_TTL_SECONDS, Math.max(MIN_LEASE_TTL_SECONDS, Math.floor(n)));
+}
+
+function normalizeLeasePathPrefixes(input) {
+  if (input === undefined || input === null || input === "") {
+    return { ok: true, path_prefixes: [] };
+  }
+  const list = Array.isArray(input) ? input : [input];
+  if (list.length > MAX_LEASE_PATH_PREFIXES) {
+    return { ok: false, error: "code_session_lease_path_prefixes_too_large", max: MAX_LEASE_PATH_PREFIXES };
+  }
+  const prefixes = [];
+  for (const item of list) {
+    if (!isNonEmptyString(item)) {
+      return { ok: false, error: "invalid_code_session_lease_path_prefix" };
+    }
+    const path = String(item).trim().replace(/\\/g, "/").slice(0, 512);
+    if (!path || path.includes("\0")) {
+      return { ok: false, error: "invalid_code_session_lease_path_prefix" };
+    }
+    prefixes.push(path);
+  }
+  return { ok: true, path_prefixes: [...new Set(prefixes)].sort() };
+}
+
+function normalizeLeaseTaskId(input) {
+  if (input === undefined || input === null || input === "") return { ok: true, task_id: null };
+  if (!isNonEmptyString(input)) return { ok: false, error: "invalid_code_session_lease_task_id" };
+  return { ok: true, task_id: String(input).trim().slice(0, 128) };
+}
+
+function pathPrefixOverlap(a, b) {
+  const left = String(a || "");
+  const right = String(b || "");
+  if (!left || !right) return false;
+  return left === right || left.startsWith(right) || right.startsWith(left);
+}
+
+/**
+ * Overlap rules for coordination awareness:
+ * - same non-null task_id → overlap
+ * - any path-prefix pair overlaps → overlap
+ * - both unconstrained (no task, no paths) → session-wide overlap
+ * - one unconstrained + other any live lease → session-wide overlap
+ */
+export function leaseScopesOverlap(left, right) {
+  const aTask = left?.task_id || null;
+  const bTask = right?.task_id || null;
+  const aPaths = Array.isArray(left?.path_prefixes) ? left.path_prefixes : [];
+  const bPaths = Array.isArray(right?.path_prefixes) ? right.path_prefixes : [];
+  const aWide = !aTask && aPaths.length === 0;
+  const bWide = !bTask && bPaths.length === 0;
+  if (aWide || bWide) return true;
+  if (aTask && bTask && aTask === bTask) return true;
+  for (const ap of aPaths) {
+    for (const bp of bPaths) {
+      if (pathPrefixOverlap(ap, bp)) return true;
+    }
+  }
+  return false;
+}
+
+function rowToLeaseRecord(row, { nowIso = null } = {}) {
+  if (!row) return null;
+  const now = nowIso || new Date().toISOString();
+  let status = String(row.status || "active");
+  if (status === "active" && String(row.expires_at || "") <= now) {
+    status = "expired";
+  }
+  return scrubSecretsDeep({
+    schema: CODE_SESSION_LEASE_SCHEMA,
+    lease_id: row.lease_id,
+    code_session_id: row.code_session_id,
+    workspace_id: row.workspace_id,
+    actor_id: row.actor_id,
+    task_id: row.task_id || null,
+    path_prefixes: parseJsonField(row.path_prefix_json, []),
+    acquired_at: row.acquired_at,
+    renewed_at: row.renewed_at,
+    expires_at: row.expires_at,
+    checkpoint_id: row.checkpoint_id || null,
+    session_revision: row.session_revision == null ? null : Number(row.session_revision),
+    status,
+    live: status === "active" && String(row.expires_at || "") > now,
+    accepted_state_authority: false,
+    coordination_hint_only: true,
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  });
+}
+
+async function expireStaleLeases(db, code_session_id, nowIso) {
+  await db.prepare(
+    `UPDATE code_session_leases
+     SET status = 'expired', updated_at = ?
+     WHERE code_session_id = ?
+       AND status = 'active'
+       AND expires_at <= ?`
+  ).bind(nowIso, code_session_id, nowIso).run();
+}
+
+export async function listCodeSessionLeaseRows(db, {
+  code_session_id,
+  include_expired = false,
+  limit = DEFAULT_LEASE_LIST,
+  nowIso = null
+} = {}) {
+  let sessionId;
+  try { sessionId = codeSessionId(code_session_id); }
+  catch (error) {
+    return { ok: false, error: "invalid_code_session_id", detail: String(error.message || error) };
+  }
+  const now = nowIso || new Date().toISOString();
+  await expireStaleLeases(db, sessionId, now);
+  const bounded = Math.min(Math.max(Number(limit) || DEFAULT_LEASE_LIST, 1), MAX_LEASE_LIST);
+  const rows = await db.prepare(
+    `SELECT lease_id, code_session_id, workspace_id, actor_id, task_id, path_prefix_json,
+            acquired_at, renewed_at, expires_at, checkpoint_id, session_revision,
+            status, created_at, updated_at
+     FROM code_session_leases
+     WHERE code_session_id = ?
+     ORDER BY expires_at DESC, acquired_at DESC
+     LIMIT ?`
+  ).bind(sessionId, Math.min(bounded * 4, MAX_LEASE_LIST * 2)).all();
+
+  const mapped = (rows?.results || []).map(row => rowToLeaseRecord(row, { nowIso: now }));
+  const filtered = include_expired
+    ? mapped.filter(lease => lease.status === "active" || lease.status === "expired" || lease.status === "released")
+    : mapped.filter(lease => lease.live);
+  const leases = filtered.slice(0, bounded);
+  return {
+    ok: true,
+    code_session_id: sessionId,
+    now: now,
+    count: leases.length,
+    limit: bounded,
+    include_expired: Boolean(include_expired),
+    leases,
+    ...authorityClosedFields()
+  };
+}
+
+export function summarizeLeaseAwareness(leases = [], { viewer_actor_id = null } = {}) {
+  const live = (Array.isArray(leases) ? leases : []).filter(lease => lease?.live || lease?.status === "active");
+  const known = [];
+  const seen = new Set();
+  for (const lease of live) {
+    const actor = lease.actor_id;
+    if (!actor || seen.has(actor)) continue;
+    if (viewer_actor_id && actor === viewer_actor_id) continue;
+    seen.add(actor);
+    known.push({
+      actor_id: actor,
+      task_id: lease.task_id || null,
+      path_prefixes: lease.path_prefixes || [],
+      lease_id: lease.lease_id,
+      expires_at: lease.expires_at
+    });
+  }
+  return {
+    active_task_leases: live.slice(0, MAX_LEASE_STUBS).map(lease => scrubSecretsDeep({
+      lease_id: lease.lease_id,
+      actor_id: lease.actor_id,
+      task_id: lease.task_id || null,
+      path_prefixes: lease.path_prefixes || [],
+      acquired_at: lease.acquired_at,
+      renewed_at: lease.renewed_at,
+      expires_at: lease.expires_at,
+      checkpoint_id: lease.checkpoint_id || null,
+      session_revision: lease.session_revision,
+      status: lease.status,
+      coordination_hint_only: true,
+      accepted_state_authority: false
+    })),
+    known_concurrent_actors: known.slice(0, MAX_LEASE_STUBS)
+  };
+}
+
+async function loadLiveLeaseAwareness(db, code_session_id, viewer_actor_id = null) {
+  const listed = await listCodeSessionLeaseRows(db, {
+    code_session_id,
+    include_expired: false,
+    limit: MAX_LEASE_LIST
+  });
+  if (!listed.ok) return listed;
+  return {
+    ok: true,
+    now: listed.now,
+    ...summarizeLeaseAwareness(listed.leases, { viewer_actor_id }),
+    leases: listed.leases
+  };
+}
+
+async function getLeaseRow(db, lease_id) {
+  let id;
+  try { id = leaseId(lease_id); }
+  catch {
+    return null;
+  }
+  const row = await db.prepare(
+    `SELECT lease_id, code_session_id, workspace_id, actor_id, task_id, path_prefix_json,
+            acquired_at, renewed_at, expires_at, checkpoint_id, session_revision,
+            status, created_at, updated_at
+     FROM code_session_leases WHERE lease_id = ?`
+  ).bind(id).first();
+  return row || null;
+}
+
+export async function acquireCodeSessionLease(db, {
+  code_session_id,
+  actor_id,
+  task_id = null,
+  path_prefixes = [],
+  ttl_seconds = DEFAULT_LEASE_TTL_SECONDS,
+  allow_overlap = false,
+  base_revision = null,
+  checkpoint_id = null,
+  note = null
+} = {}) {
+  let sessionId;
+  let actor;
+  try {
+    sessionId = codeSessionId(code_session_id);
+    actor = actorId(actor_id, "actor_id");
+  } catch (error) {
+    return { ok: false, error: "invalid_code_session_lease_acquire", detail: String(error.message || error) };
+  }
+
+  const taskNorm = normalizeLeaseTaskId(task_id);
+  if (!taskNorm.ok) return taskNorm;
+  const pathsNorm = normalizeLeasePathPrefixes(path_prefixes);
+  if (!pathsNorm.ok) return pathsNorm;
+  const ttl = clampLeaseTtlSeconds(ttl_seconds);
+
+  const current = await getCodeSession(db, sessionId);
+  if (!current) return { ok: false, error: "code_session_not_found", code_session_id: sessionId };
+
+  if (base_revision !== undefined && base_revision !== null && base_revision !== "") {
+    if (!Number.isInteger(base_revision) || base_revision < 1) {
+      return { ok: false, error: "code_session_base_revision_required" };
+    }
+    if (current.session_revision !== base_revision) {
+      return {
+        ok: false,
+        error: "code_session_conflict",
+        code_session_id: sessionId,
+        expected_session_revision: current.session_revision,
+        provided_base_revision: base_revision,
+        ...authorityClosedFields()
+      };
+    }
+  }
+
+  let checkpointRef = null;
+  if (isNonEmptyString(checkpoint_id)) {
+    try { checkpointRef = checkpointId(checkpoint_id); }
+    catch (error) {
+      return { ok: false, error: "invalid_checkpoint_id", detail: String(error.message || error) };
+    }
+  } else if (current.latest_checkpoint_id) {
+    checkpointRef = current.latest_checkpoint_id;
+  }
+
+  const now = new Date().toISOString();
+  await expireStaleLeases(db, sessionId, now);
+
+  const live = await listCodeSessionLeaseRows(db, {
+    code_session_id: sessionId,
+    include_expired: false,
+    limit: MAX_LEASE_LIST,
+    nowIso: now
+  });
+  if (!live.ok) return live;
+
+  const requested = {
+    task_id: taskNorm.task_id,
+    path_prefixes: pathsNorm.path_prefixes
+  };
+  const foreignOverlap = live.leases.filter(lease =>
+    lease.actor_id !== actor && leaseScopesOverlap(requested, lease)
+  );
+  const ownOverlap = live.leases.filter(lease =>
+    lease.actor_id === actor && leaseScopesOverlap(requested, lease)
+  );
+
+  if (foreignOverlap.length && !allow_overlap) {
+    return {
+      ok: false,
+      error: "code_session_lease_conflict",
+      code_session_id: sessionId,
+      overlapping_leases: foreignOverlap,
+      known_concurrent_actors: summarizeLeaseAwareness(foreignOverlap).known_concurrent_actors,
+      hint: "Pass allow_overlap=true to intentionally share scope; workspace CAS remains authoritative for path writes.",
+      ...authorityClosedFields()
+    };
+  }
+
+  const expiresAt = new Date(Date.parse(now) + ttl * 1000).toISOString();
+
+  // Renew own overlapping live lease in place (same actor continuity).
+  if (ownOverlap.length) {
+    const target = ownOverlap.sort((a, b) => String(b.expires_at).localeCompare(String(a.expires_at)))[0];
+    await db.prepare(
+      `UPDATE code_session_leases
+       SET task_id = ?, path_prefix_json = ?, renewed_at = ?, expires_at = ?,
+           checkpoint_id = ?, session_revision = ?, status = 'active', updated_at = ?
+       WHERE lease_id = ? AND actor_id = ? AND code_session_id = ? AND status = 'active'`
+    ).bind(
+      taskNorm.task_id,
+      stableJson(pathsNorm.path_prefixes),
+      now,
+      expiresAt,
+      checkpointRef,
+      current.session_revision,
+      now,
+      target.lease_id,
+      actor,
+      sessionId
+    ).run();
+
+    const renewed = rowToLeaseRecord(await getLeaseRow(db, target.lease_id), { nowIso: now });
+    return {
+      ok: true,
+      action: "renewed_existing",
+      lease: renewed,
+      ttl_seconds: ttl,
+      allow_overlap: Boolean(allow_overlap),
+      overlapping_foreign_leases: foreignOverlap,
+      overlap_allowed: Boolean(allow_overlap) && foreignOverlap.length > 0,
+      note: isNonEmptyString(note) ? String(note).trim().slice(0, 512) : null,
+      session_revision: current.session_revision,
+      ...authorityClosedFields()
+    };
+  }
+
+  const leaseBody = {
+    schema: CODE_SESSION_LEASE_SCHEMA,
+    code_session_id: sessionId,
+    workspace_id: current.workspace_id,
+    actor_id: actor,
+    task_id: taskNorm.task_id,
+    path_prefixes: pathsNorm.path_prefixes,
+    acquired_at: now,
+    session_revision: current.session_revision,
+    checkpoint_id: checkpointRef,
+    nonce: `${now}:${Math.random().toString(36).slice(2, 10)}`
+  };
+  const digest = await sha256Text(stableJson(leaseBody));
+  const newLeaseId = `lease:${digest.slice(0, 32)}`;
+
+  try {
+    await db.prepare(
+      `INSERT INTO code_session_leases (
+        lease_id, code_session_id, workspace_id, actor_id, task_id, path_prefix_json,
+        acquired_at, renewed_at, expires_at, checkpoint_id, session_revision,
+        status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`
+    ).bind(
+      newLeaseId,
+      sessionId,
+      current.workspace_id,
+      actor,
+      taskNorm.task_id,
+      stableJson(pathsNorm.path_prefixes),
+      now,
+      now,
+      expiresAt,
+      checkpointRef,
+      current.session_revision,
+      now,
+      now
+    ).run();
+  } catch (error) {
+    return {
+      ok: false,
+      error: "code_session_lease_create_failed",
+      detail: String(error.message || error),
+      ...authorityClosedFields()
+    };
+  }
+
+  const created = rowToLeaseRecord(await getLeaseRow(db, newLeaseId), { nowIso: now });
+  return {
+    ok: true,
+    action: "acquired",
+    lease: created,
+    ttl_seconds: ttl,
+    allow_overlap: Boolean(allow_overlap),
+    overlapping_foreign_leases: foreignOverlap,
+    overlap_allowed: Boolean(allow_overlap) && foreignOverlap.length > 0,
+    note: isNonEmptyString(note) ? String(note).trim().slice(0, 512) : null,
+    session_revision: current.session_revision,
+    ...authorityClosedFields()
+  };
+}
+
+export async function renewCodeSessionLease(db, {
+  code_session_id,
+  actor_id,
+  lease_id,
+  ttl_seconds = DEFAULT_LEASE_TTL_SECONDS,
+  base_revision = null
+} = {}) {
+  let sessionId;
+  let actor;
+  let id;
+  try {
+    sessionId = codeSessionId(code_session_id);
+    actor = actorId(actor_id, "actor_id");
+    id = leaseId(lease_id);
+  } catch (error) {
+    return { ok: false, error: "invalid_code_session_lease_renew", detail: String(error.message || error) };
+  }
+
+  const current = await getCodeSession(db, sessionId);
+  if (!current) return { ok: false, error: "code_session_not_found", code_session_id: sessionId };
+
+  if (base_revision !== undefined && base_revision !== null && base_revision !== "") {
+    if (!Number.isInteger(base_revision) || base_revision < 1) {
+      return { ok: false, error: "code_session_base_revision_required" };
+    }
+    if (current.session_revision !== base_revision) {
+      return {
+        ok: false,
+        error: "code_session_conflict",
+        code_session_id: sessionId,
+        expected_session_revision: current.session_revision,
+        provided_base_revision: base_revision,
+        ...authorityClosedFields()
+      };
+    }
+  }
+
+  const now = new Date().toISOString();
+  await expireStaleLeases(db, sessionId, now);
+  const row = await getLeaseRow(db, id);
+  if (!row || row.code_session_id !== sessionId) {
+    return { ok: false, error: "code_session_lease_not_found", lease_id: id, ...authorityClosedFields() };
+  }
+  const record = rowToLeaseRecord(row, { nowIso: now });
+  if (record.actor_id !== actor) {
+    return {
+      ok: false,
+      error: "code_session_lease_actor_mismatch",
+      lease_id: id,
+      ...authorityClosedFields()
+    };
+  }
+  if (!record.live) {
+    return {
+      ok: false,
+      error: "code_session_lease_not_live",
+      lease_id: id,
+      status: record.status,
+      ...authorityClosedFields()
+    };
+  }
+
+  const ttl = clampLeaseTtlSeconds(ttl_seconds);
+  const expiresAt = new Date(Date.parse(now) + ttl * 1000).toISOString();
+  const updated = await db.prepare(
+    `UPDATE code_session_leases
+     SET renewed_at = ?, expires_at = ?, session_revision = ?, status = 'active', updated_at = ?
+     WHERE lease_id = ? AND actor_id = ? AND code_session_id = ? AND status = 'active' AND expires_at > ?`
+  ).bind(now, expiresAt, current.session_revision, now, id, actor, sessionId, now).run();
+
+  if (!updated?.meta?.changes) {
+    return {
+      ok: false,
+      error: "code_session_lease_renew_failed",
+      lease_id: id,
+      ...authorityClosedFields()
+    };
+  }
+
+  return {
+    ok: true,
+    action: "renewed",
+    lease: rowToLeaseRecord(await getLeaseRow(db, id), { nowIso: now }),
+    ttl_seconds: ttl,
+    session_revision: current.session_revision,
+    ...authorityClosedFields()
+  };
+}
+
+export async function releaseCodeSessionLease(db, {
+  code_session_id,
+  actor_id,
+  lease_id
+} = {}) {
+  let sessionId;
+  let actor;
+  let id;
+  try {
+    sessionId = codeSessionId(code_session_id);
+    actor = actorId(actor_id, "actor_id");
+    id = leaseId(lease_id);
+  } catch (error) {
+    return { ok: false, error: "invalid_code_session_lease_release", detail: String(error.message || error) };
+  }
+
+  const current = await getCodeSession(db, sessionId);
+  if (!current) return { ok: false, error: "code_session_not_found", code_session_id: sessionId };
+
+  const now = new Date().toISOString();
+  await expireStaleLeases(db, sessionId, now);
+  const row = await getLeaseRow(db, id);
+  if (!row || row.code_session_id !== sessionId) {
+    return { ok: false, error: "code_session_lease_not_found", lease_id: id, ...authorityClosedFields() };
+  }
+  const record = rowToLeaseRecord(row, { nowIso: now });
+  if (record.actor_id !== actor) {
+    return {
+      ok: false,
+      error: "code_session_lease_actor_mismatch",
+      lease_id: id,
+      ...authorityClosedFields()
+    };
+  }
+  if (record.status === "released") {
+    return {
+      ok: true,
+      action: "already_released",
+      lease: record,
+      session_revision: current.session_revision,
+      ...authorityClosedFields()
+    };
+  }
+  if (record.status === "expired" || !record.live) {
+    await db.prepare(
+      `UPDATE code_session_leases
+       SET status = 'expired', updated_at = ?
+       WHERE lease_id = ? AND code_session_id = ?`
+    ).bind(now, id, sessionId).run();
+    return {
+      ok: false,
+      error: "code_session_lease_not_live",
+      lease_id: id,
+      status: "expired",
+      ...authorityClosedFields()
+    };
+  }
+
+  const updated = await db.prepare(
+    `UPDATE code_session_leases
+     SET status = 'released', updated_at = ?
+     WHERE lease_id = ? AND actor_id = ? AND code_session_id = ? AND status = 'active'`
+  ).bind(now, id, actor, sessionId).run();
+
+  if (!updated?.meta?.changes) {
+    return {
+      ok: false,
+      error: "code_session_lease_release_failed",
+      lease_id: id,
+      ...authorityClosedFields()
+    };
+  }
+
+  return {
+    ok: true,
+    action: "released",
+    lease: rowToLeaseRecord(await getLeaseRow(db, id), { nowIso: now }),
+    session_revision: current.session_revision,
+    ...authorityClosedFields()
+  };
+}
+
 function normalizeChangedPathsInput(input, tipVector) {
   if (input === undefined || input === null || input === "") {
     return {
@@ -644,7 +1242,7 @@ function normalizeLeaseStubs(input) {
   if (leases.length > MAX_LEASE_STUBS || actors.length > MAX_LEASE_STUBS) {
     return { ok: false, error: "code_checkpoint_lease_stubs_too_large", max: MAX_LEASE_STUBS };
   }
-  // 7.7.7c will fill these; 7.7.7b stores empty-capable stubs only.
+  // 7.7.7c fills these from live lease rows; 7.7.7b stored empty-capable stubs.
   return {
     ok: true,
     active_task_leases: leases.slice(0, MAX_LEASE_STUBS).map(entry => scrubSecretsDeep(
@@ -653,10 +1251,17 @@ function normalizeLeaseStubs(input) {
     known_concurrent_actors: actors.slice(0, MAX_LEASE_STUBS).map(entry => {
       if (isNonEmptyString(entry)) return { actor_id: String(entry).trim() };
       if (isObject(entry) && isNonEmptyString(entry.actor_id)) {
-        return scrubSecretsDeep({
+        const out = {
           actor_id: String(entry.actor_id).trim(),
           role: isNonEmptyString(entry.role) ? String(entry.role).trim().slice(0, 64) : null
-        });
+        };
+        if (isNonEmptyString(entry.task_id)) out.task_id = String(entry.task_id).trim();
+        if (Array.isArray(entry.path_prefixes)) {
+          out.path_prefixes = entry.path_prefixes.slice(0, MAX_LEASE_PATH_PREFIXES);
+        }
+        if (isNonEmptyString(entry.lease_id)) out.lease_id = String(entry.lease_id).trim();
+        if (isNonEmptyString(entry.expires_at)) out.expires_at = String(entry.expires_at).trim();
+        return scrubSecretsDeep(out);
       }
       return scrubSecretsDeep(entry);
     })
@@ -834,7 +1439,29 @@ export async function createCodeCheckpoint(db, {
   if (!pathsNorm.ok) return pathsNorm;
   const artifactsNorm = normalizeArtifactRefs(artifact_refs);
   if (!artifactsNorm.ok) return artifactsNorm;
-  const leasesNorm = normalizeLeaseStubs({ active_task_leases, known_concurrent_actors });
+
+  // Prefer caller-provided stubs; otherwise hydrate from live 7.7.7c leases.
+  // conflict_rebase boundaries always prefer live awareness when stubs empty.
+  let leaseActive = active_task_leases;
+  let leaseActors = known_concurrent_actors;
+  const stubsEmpty = (!Array.isArray(leaseActive) || leaseActive.length === 0)
+    && (!Array.isArray(leaseActors) || leaseActors.length === 0);
+  if (stubsEmpty || boundary === "conflict_rebase") {
+    const awareness = await loadLiveLeaseAwareness(db, sessionId, actor);
+    if (awareness.ok) {
+      if (!Array.isArray(leaseActive) || leaseActive.length === 0) {
+        leaseActive = awareness.active_task_leases;
+      }
+      if (!Array.isArray(leaseActors) || leaseActors.length === 0) {
+        leaseActors = awareness.known_concurrent_actors;
+      }
+    }
+  }
+
+  const leasesNorm = normalizeLeaseStubs({
+    active_task_leases: leaseActive,
+    known_concurrent_actors: leaseActors
+  });
   if (!leasesNorm.ok) return leasesNorm;
   const receiptsNorm = normalizeReceiptRefs(test_build_execution_receipts);
   if (!receiptsNorm.ok) return receiptsNorm;
@@ -1656,6 +2283,15 @@ export async function compileCodeSessionContext(db, {
     })
     : null;
 
+  const awareness = await loadLiveLeaseAwareness(db, fresh.code_session_id, actor_id);
+  const liveAwareness = awareness.ok
+    ? {
+      active_task_leases: awareness.active_task_leases,
+      known_concurrent_actors: awareness.known_concurrent_actors,
+      lease_count: awareness.leases.length
+    }
+    : { active_task_leases: [], known_concurrent_actors: [], lease_count: 0 };
+
   const contextBody = {
     schema: CODE_SESSION_CONTEXT_SCHEMA,
     code_session_id: fresh.code_session_id,
@@ -1688,20 +2324,30 @@ export async function compileCodeSessionContext(db, {
     },
     unresolved_issues: fresh.unresolved_issues,
     actors: fresh.actors,
+    active_task_leases: liveAwareness.active_task_leases,
+    known_concurrent_actors: liveAwareness.known_concurrent_actors,
+    multi_agent_awareness: {
+      live_lease_count: liveAwareness.lease_count,
+      coordination_hint_only: true,
+      hard_correctness: "workspace_cas",
+      accepted_state_authority: false
+    },
     latest_execution_receipt_refs: fresh.latest_execution_receipt_refs,
     environment_manifest_id: fresh.environment_manifest_id,
     capability_policy_profile_id: fresh.capability_policy_profile_id,
     permissions: permissionsView,
     next_safe_continuation: {
       ...next,
-      next_action_from_checkpoint: checkpointResume?.next_action || null
+      next_action_from_checkpoint: checkpointResume?.next_action || null,
+      concurrent_actor_count: liveAwareness.known_concurrent_actors.length
     },
     currentness: {
-      basis: "session_revision+tip_vector_digest+checkpoint_pointer",
+      basis: "session_revision+tip_vector_digest+checkpoint_pointer+lease_id+expires_at",
       session_revision: fresh.session_revision,
       tip_vector_digest: tipState.tip_vector_digest,
       latest_checkpoint_id: fresh.latest_checkpoint_id,
       checkpoint_payload_digest: latestCheckpoint?.payload_digest || null,
+      live_lease_ids: liveAwareness.active_task_leases.map(lease => lease.lease_id),
       timestamps_are_informational_only: true
     },
     ...authorityClosedFields()
@@ -1817,9 +2463,19 @@ export async function getCodeSessionFromBody(body = {}, env = {}) {
   });
   if (!auth.ok) return auth;
 
+  const awareness = await loadLiveLeaseAwareness(bindings.db, session.code_session_id, actor.value);
+  const live = awareness.ok
+    ? {
+      active_task_leases: awareness.active_task_leases,
+      known_concurrent_actors: awareness.known_concurrent_actors
+    }
+    : { active_task_leases: [], known_concurrent_actors: [] };
+
   return {
     ok: true,
     ...session,
+    active_task_leases: live.active_task_leases,
+    known_concurrent_actors: live.known_concurrent_actors,
     membership_role: auth.membership_role,
     ...authorityClosedFields()
   };
@@ -2085,6 +2741,160 @@ export async function transitionCodeSessionTaskFromBody(body = {}, env = {}) {
   });
 }
 
+export async function acquireCodeSessionLeaseFromBody(body = {}, env = {}) {
+  const bindings = codeSessionEnvBindings(env);
+  if (!bindings.ok) return bindings;
+
+  const actor = requireActorField(body, "actor_id");
+  if (!actor.ok) return actor;
+  if (!isNonEmptyString(body.code_session_id)) {
+    return { ok: false, error: "code_session_id_required" };
+  }
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+
+  const session = await getCodeSession(bindings.db, body.code_session_id);
+  if (!session) {
+    return { ok: false, error: "code_session_not_found", code_session_id: body.code_session_id };
+  }
+
+  const auth = await authorizeCodeSessionRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: actor.value,
+    workspace_id: session.workspace_id,
+    requiredScopes: ["write_draft"]
+  });
+  if (!auth.ok) return auth;
+
+  return acquireCodeSessionLease(bindings.db, {
+    code_session_id: session.code_session_id,
+    actor_id: actor.value,
+    task_id: body.task_id,
+    path_prefixes: body.path_prefixes ?? body.path_prefix_set,
+    ttl_seconds: body.ttl_seconds,
+    allow_overlap: body.allow_overlap === true || body.force === true,
+    base_revision: body.base_revision,
+    checkpoint_id: body.checkpoint_id,
+    note: body.note
+  });
+}
+
+export async function renewCodeSessionLeaseFromBody(body = {}, env = {}) {
+  const bindings = codeSessionEnvBindings(env);
+  if (!bindings.ok) return bindings;
+
+  const actor = requireActorField(body, "actor_id");
+  if (!actor.ok) return actor;
+  if (!isNonEmptyString(body.code_session_id)) {
+    return { ok: false, error: "code_session_id_required" };
+  }
+  if (!isNonEmptyString(body.lease_id)) {
+    return { ok: false, error: "lease_id_required" };
+  }
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+
+  const session = await getCodeSession(bindings.db, body.code_session_id);
+  if (!session) {
+    return { ok: false, error: "code_session_not_found", code_session_id: body.code_session_id };
+  }
+
+  const auth = await authorizeCodeSessionRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: actor.value,
+    workspace_id: session.workspace_id,
+    requiredScopes: ["write_draft"]
+  });
+  if (!auth.ok) return auth;
+
+  return renewCodeSessionLease(bindings.db, {
+    code_session_id: session.code_session_id,
+    actor_id: actor.value,
+    lease_id: body.lease_id,
+    ttl_seconds: body.ttl_seconds,
+    base_revision: body.base_revision
+  });
+}
+
+export async function releaseCodeSessionLeaseFromBody(body = {}, env = {}) {
+  const bindings = codeSessionEnvBindings(env);
+  if (!bindings.ok) return bindings;
+
+  const actor = requireActorField(body, "actor_id");
+  if (!actor.ok) return actor;
+  if (!isNonEmptyString(body.code_session_id)) {
+    return { ok: false, error: "code_session_id_required" };
+  }
+  if (!isNonEmptyString(body.lease_id)) {
+    return { ok: false, error: "lease_id_required" };
+  }
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+
+  const session = await getCodeSession(bindings.db, body.code_session_id);
+  if (!session) {
+    return { ok: false, error: "code_session_not_found", code_session_id: body.code_session_id };
+  }
+
+  const auth = await authorizeCodeSessionRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: actor.value,
+    workspace_id: session.workspace_id,
+    requiredScopes: ["write_draft"]
+  });
+  if (!auth.ok) return auth;
+
+  return releaseCodeSessionLease(bindings.db, {
+    code_session_id: session.code_session_id,
+    actor_id: actor.value,
+    lease_id: body.lease_id
+  });
+}
+
+export async function listCodeSessionLeasesFromBody(body = {}, env = {}) {
+  const bindings = codeSessionEnvBindings(env);
+  if (!bindings.ok) return bindings;
+
+  const actor = requireActorField(body, "actor_id");
+  if (!actor.ok) return actor;
+  if (!isNonEmptyString(body.code_session_id)) {
+    return { ok: false, error: "code_session_id_required" };
+  }
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+
+  const session = await getCodeSession(bindings.db, body.code_session_id);
+  if (!session) {
+    return { ok: false, error: "code_session_not_found", code_session_id: body.code_session_id };
+  }
+
+  const auth = await authorizeCodeSessionRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: actor.value,
+    workspace_id: session.workspace_id,
+    requiredScopes: ["ls"]
+  });
+  if (!auth.ok) return auth;
+
+  const listed = await listCodeSessionLeaseRows(bindings.db, {
+    code_session_id: session.code_session_id,
+    include_expired: body.include_expired === true,
+    limit: body.limit
+  });
+  if (!listed.ok) return listed;
+  return {
+    ...listed,
+    known_concurrent_actors: summarizeLeaseAwareness(listed.leases, {
+      viewer_actor_id: actor.value
+    }).known_concurrent_actors,
+    membership_role: auth.membership_role
+  };
+}
+
 export const CODE_SESSION_CREATE_TOOL_DEFINITION = Object.freeze({
   name: CODE_SESSION_BROKER_TOOL_IDS.create,
   description: "V7.7.7a: create durable Code Session bound to an existing Shared Agent Workspace. Requires workspace_capability (write_draft) + membership. Operational state only; never accepted-state authority; never moves HEADs.",
@@ -2195,7 +3005,7 @@ export const CODE_SESSION_RESUME_TOOL_DEFINITION = Object.freeze({
 
 export const CODE_SESSION_COMPILE_CONTEXT_TOOL_DEFINITION = Object.freeze({
   name: CODE_SESSION_BROKER_TOOL_IDS.compile_context,
-  description: "V7.7.7a/b: compile bounded cairnstone-code-session-context-v1 including latest checkpoint pointer + task ledger for an authorized actor. Race-safe tip re-read; never infers currentness from timestamps when explicit pointers exist.",
+  description: "V7.7.7a/b/c: compile bounded cairnstone-code-session-context-v1 including latest checkpoint, task ledger, and live task/path leases for an authorized actor. Race-safe tip re-read; never infers currentness from timestamps when explicit pointers exist.",
   inputSchema: {
     type: "object",
     required: ["code_session_id", "actor_id", "workspace_capability"],
@@ -2306,6 +3116,81 @@ export const CODE_SESSION_TASK_TRANSITION_TOOL_DEFINITION = Object.freeze({
   }
 });
 
+export const CODE_SESSION_LEASE_ACQUIRE_TOOL_DEFINITION = Object.freeze({
+  name: CODE_SESSION_BROKER_TOOL_IDS.lease_acquire,
+  description: "V7.7.7c: acquire or renew a short task/path lease (coordination hint, not a lock). Rejects overlapping live foreign leases unless allow_overlap=true. Requires write_draft. Never moves HEADs; never accepted-state authority.",
+  inputSchema: {
+    type: "object",
+    required: ["code_session_id", "actor_id", "workspace_capability"],
+    properties: {
+      code_session_id: { type: "string" },
+      actor_id: { type: "string" },
+      workspace_capability: { type: "string" },
+      task_id: { type: "string" },
+      path_prefixes: { type: "array", items: { type: "string" }, maxItems: 32 },
+      path_prefix_set: { type: "array", items: { type: "string" }, maxItems: 32 },
+      ttl_seconds: { type: "number", minimum: 30, maximum: 3600 },
+      allow_overlap: { type: "boolean" },
+      force: { type: "boolean", description: "Alias for allow_overlap" },
+      base_revision: { type: "number", minimum: 1 },
+      checkpoint_id: { type: "string" },
+      note: { type: "string" }
+    },
+    additionalProperties: false
+  }
+});
+
+export const CODE_SESSION_LEASE_RENEW_TOOL_DEFINITION = Object.freeze({
+  name: CODE_SESSION_BROKER_TOOL_IDS.lease_renew,
+  description: "V7.7.7c: renew own live task/path lease TTL from now. Fail-closed for other actors or expired leases. Requires write_draft. Never moves HEADs.",
+  inputSchema: {
+    type: "object",
+    required: ["code_session_id", "actor_id", "workspace_capability", "lease_id"],
+    properties: {
+      code_session_id: { type: "string" },
+      actor_id: { type: "string" },
+      workspace_capability: { type: "string" },
+      lease_id: { type: "string" },
+      ttl_seconds: { type: "number", minimum: 30, maximum: 3600 },
+      base_revision: { type: "number", minimum: 1 }
+    },
+    additionalProperties: false
+  }
+});
+
+export const CODE_SESSION_LEASE_RELEASE_TOOL_DEFINITION = Object.freeze({
+  name: CODE_SESSION_BROKER_TOOL_IDS.lease_release,
+  description: "V7.7.7c: release own task/path lease. Fail-closed for other actors. Requires write_draft. Never moves HEADs.",
+  inputSchema: {
+    type: "object",
+    required: ["code_session_id", "actor_id", "workspace_capability", "lease_id"],
+    properties: {
+      code_session_id: { type: "string" },
+      actor_id: { type: "string" },
+      workspace_capability: { type: "string" },
+      lease_id: { type: "string" }
+    },
+    additionalProperties: false
+  }
+});
+
+export const CODE_SESSION_LEASE_LIST_TOOL_DEFINITION = Object.freeze({
+  name: CODE_SESSION_BROKER_TOOL_IDS.lease_list,
+  description: "V7.7.7c: list live (and optionally recently expired) task/path leases for a Code Session. Requires ls. Coordination awareness only; never accepted-state authority.",
+  inputSchema: {
+    type: "object",
+    required: ["code_session_id", "actor_id", "workspace_capability"],
+    properties: {
+      code_session_id: { type: "string" },
+      actor_id: { type: "string" },
+      workspace_capability: { type: "string" },
+      include_expired: { type: "boolean" },
+      limit: { type: "number", minimum: 1, maximum: 100 }
+    },
+    additionalProperties: false
+  }
+});
+
 export const CODE_SESSION_MCP_TOOL_DEFINITIONS = Object.freeze([
   CODE_SESSION_CREATE_TOOL_DEFINITION,
   CODE_SESSION_GET_TOOL_DEFINITION,
@@ -2315,5 +3200,9 @@ export const CODE_SESSION_MCP_TOOL_DEFINITIONS = Object.freeze([
   CODE_CHECKPOINT_CREATE_TOOL_DEFINITION,
   CODE_CHECKPOINT_GET_TOOL_DEFINITION,
   CODE_CHECKPOINT_LIST_TOOL_DEFINITION,
-  CODE_SESSION_TASK_TRANSITION_TOOL_DEFINITION
+  CODE_SESSION_TASK_TRANSITION_TOOL_DEFINITION,
+  CODE_SESSION_LEASE_ACQUIRE_TOOL_DEFINITION,
+  CODE_SESSION_LEASE_RENEW_TOOL_DEFINITION,
+  CODE_SESSION_LEASE_RELEASE_TOOL_DEFINITION,
+  CODE_SESSION_LEASE_LIST_TOOL_DEFINITION
 ]);
