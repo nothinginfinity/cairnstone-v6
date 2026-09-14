@@ -477,7 +477,8 @@ test("writeDraft CAS: create then conflict on stale base_revision (no LWW)", asy
 test("broker registry: workspace mutations are never automatic-read", () => {
   const registry = toolRegistryFromBody({});
   assert.equal(registry.ok, true);
-  assert.equal(registry.total, 49);
+  // V7.7.7d adds eight workspace-tree tools + one code-session working-transport (49 -> 58).
+  assert.equal(registry.total, 58);
 
   for (const toolId of WORKSPACE_MUTATION_TOOL_IDS) {
     const entry = registry.tools.find(item => item.tool_id === toolId);

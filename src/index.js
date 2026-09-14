@@ -114,6 +114,17 @@ import {
   WORKSPACE_MCP_TOOL_DEFINITIONS
 } from "./workspace.js";
 import {
+  deleteDraftFromBody,
+  renameDraftFromBody,
+  writeContentRefFromBody,
+  hydrateWorkspaceFromGitFromBody,
+  setGithubTransportFromBody,
+  treeLsFromBody,
+  treeDiffFromBody,
+  recordGitzipTransportFromBody,
+  WORKSPACE_TREE_MCP_TOOL_DEFINITIONS
+} from "./workspace-tree.js";
+import {
   mintWorkspaceInviteFromBody,
   revokeWorkspaceInviteFromBody,
   claimWorkspaceInviteFromBody,
@@ -134,10 +145,12 @@ import {
   renewCodeSessionLeaseFromBody,
   releaseCodeSessionLeaseFromBody,
   listCodeSessionLeasesFromBody,
+  setCodeSessionWorkingTransportFromBody,
   CODE_SESSION_MCP_TOOL_DEFINITIONS
 } from "./code-session.js";
+import { fetchGitHubRepoTree } from "./repo-stones-runtime.js";
 
-const VERSION = "0.5.33";
+const VERSION = "0.5.34";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -263,6 +276,44 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/v1/code-sessions/leases/list") {
         return json(await listCodeSessionLeasesFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/working-transport") {
+        return json(await setCodeSessionWorkingTransportFromBody(await request.json(), env, {
+          resolveGitHubCommit: (owner, repo, ref) => resolveGitHubCommit(owner, repo, ref, env)
+        }));
+      }
+      // V7.7.7d workspace tree + Git/GitZip transport (capability-gated draft plane).
+      if (request.method === "POST" && url.pathname === "/v1/workspaces/delete-draft") {
+        return json(await deleteDraftFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/workspaces/rename-draft") {
+        return json(await renameDraftFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/workspaces/write-content-ref") {
+        return json(await writeContentRefFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/workspaces/hydrate-from-git") {
+        return json(await hydrateWorkspaceFromGitFromBody(await request.json(), env, {
+          fetchGitHubRepoTree: (spec, callEnv) => fetchGitHubRepoTree(spec, callEnv || env, {
+            safeGitHubPart: (value) => String(value || "").trim(),
+            safeGitHubRef: (value) => String(value || "main").trim()
+          }),
+          fetchGitHubFile: (spec, callEnv) => fetchGitHubFile(spec, callEnv || env)
+        }));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/workspaces/github-transport") {
+        return json(await setGithubTransportFromBody(await request.json(), env, {
+          resolveGitHubCommit: (owner, repo, ref) => resolveGitHubCommit(owner, repo, ref, env)
+        }));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/workspaces/tree-ls") {
+        return json(await treeLsFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/workspaces/tree-diff") {
+        return json(await treeDiffFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/workspaces/gitzip-transport") {
+        return json(await recordGitzipTransportFromBody(await request.json(), env));
       }
       if (request.method === "POST" && url.pathname === "/v1/code-checkpoints") {
         return json(await createCodeCheckpointFromBody(await request.json(), env));
@@ -444,6 +495,15 @@ function routes() {
     "POST /v1/code-sessions/leases/renew",
     "POST /v1/code-sessions/leases/release",
     "POST /v1/code-sessions/leases/list",
+    "POST /v1/code-sessions/working-transport",
+    "POST /v1/workspaces/delete-draft",
+    "POST /v1/workspaces/rename-draft",
+    "POST /v1/workspaces/write-content-ref",
+    "POST /v1/workspaces/hydrate-from-git",
+    "POST /v1/workspaces/github-transport",
+    "POST /v1/workspaces/tree-ls",
+    "POST /v1/workspaces/tree-diff",
+    "POST /v1/workspaces/gitzip-transport",
     "POST /v1/code-checkpoints",
     "POST /v1/code-checkpoints/get",
     "POST /v1/code-checkpoints/list",
@@ -1038,6 +1098,26 @@ async function callMcpTool(name, args, env) {
       resolveGitHubCommit: (owner, repo, ref) => resolveGitHubCommit(owner, repo, ref, env)
     });
   }
+  if (name === "cairnstone_workspace_delete_draft") return deleteDraftFromBody(args, env);
+  if (name === "cairnstone_workspace_rename_draft") return renameDraftFromBody(args, env);
+  if (name === "cairnstone_workspace_write_content_ref") return writeContentRefFromBody(args, env);
+  if (name === "cairnstone_workspace_hydrate_from_git") {
+    return hydrateWorkspaceFromGitFromBody(args, env, {
+      fetchGitHubRepoTree: (spec, callEnv) => fetchGitHubRepoTree(spec, callEnv || env, {
+        safeGitHubPart: (value) => String(value || "").trim(),
+        safeGitHubRef: (value) => String(value || "main").trim()
+      }),
+      fetchGitHubFile: (spec, callEnv) => fetchGitHubFile(spec, callEnv || env)
+    });
+  }
+  if (name === "cairnstone_workspace_set_github_transport") {
+    return setGithubTransportFromBody(args, env, {
+      resolveGitHubCommit: (owner, repo, ref) => resolveGitHubCommit(owner, repo, ref, env)
+    });
+  }
+  if (name === "cairnstone_workspace_tree_ls") return treeLsFromBody(args, env);
+  if (name === "cairnstone_workspace_tree_diff") return treeDiffFromBody(args, env);
+  if (name === "cairnstone_workspace_record_gitzip_transport") return recordGitzipTransportFromBody(args, env);
   if (name === "cairnstone_code_session_create") return createCodeSessionFromBody(args, env);
   if (name === "cairnstone_code_session_get") return getCodeSessionFromBody(args, env);
   if (name === "cairnstone_code_session_pause") return pauseCodeSessionFromBody(args, env);
@@ -1051,6 +1131,11 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_code_session_lease_renew") return renewCodeSessionLeaseFromBody(args, env);
   if (name === "cairnstone_code_session_lease_release") return releaseCodeSessionLeaseFromBody(args, env);
   if (name === "cairnstone_code_session_lease_list") return listCodeSessionLeasesFromBody(args, env);
+  if (name === "cairnstone_code_session_set_working_transport") {
+    return setCodeSessionWorkingTransportFromBody(args, env, {
+      resolveGitHubCommit: (owner, repo, ref) => resolveGitHubCommit(owner, repo, ref, env)
+    });
+  }
   return { ok: false, error: "unknown_tool", name };
 }
 
@@ -1248,6 +1333,7 @@ function mcpTools() {
     NOTE_SELF_TOOL_DEFINITION,
     GET_NOTES_TOOL_DEFINITION,
     ...WORKSPACE_MCP_TOOL_DEFINITIONS,
+    ...WORKSPACE_TREE_MCP_TOOL_DEFINITIONS,
     WORKSPACE_INVITE_CLAIM_TOOL_DEFINITION,
     ...CODE_SESSION_MCP_TOOL_DEFINITIONS,
     {

@@ -112,7 +112,7 @@ Broker: mutations = `risk_class:mutation` + `scoped_grant`; list = `scoped_grant
 
 ## Out of scope (later slices)
 
-- **7.7.7d** repo-scale tree + GitZip backing
+- **7.7.7d** repo-scale tree + GitZip backing — **shipped** in [V7_7_7D_REPO_SCALE_WORKING_TREE.md](./V7_7_7D_REPO_SCALE_WORKING_TREE.md)
 - **7.7.7e** environment reconstruct / sandbox adapter
 - **7.7.7f** Console Persistent Code Mode UX
 - Treating leases as exclusive locks or accepted-state authority

@@ -27,6 +27,7 @@ import {
   renewCodeSessionLeaseFromBody,
   resumeCodeSessionFromBody,
   scrubSecretsDeep,
+  setCodeSessionWorkingTransportFromBody,
   transitionCodeSessionTaskFromBody
 } from "../src/code-session.js";
 import {
@@ -370,6 +371,20 @@ class FakeCodeSessionD1 {
                 return { success: true, meta: { changes: 0 } };
               }
               db.leases.set(leaseId, { ...row, status: "expired", updated_at: updatedAt });
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (sql.includes("UPDATE code_sessions") && sql.includes("working_transport_json")) {
+              const [workingTransportJson, sessionRevision, updatedAt, codeSessionId, baseRevision] = args;
+              const row = db.sessions.get(codeSessionId);
+              if (!row || row.session_revision !== baseRevision) {
+                return { success: true, meta: { changes: 0 } };
+              }
+              db.sessions.set(codeSessionId, {
+                ...row,
+                working_transport_json: workingTransportJson,
+                session_revision: sessionRevision,
+                updated_at: updatedAt
+              });
               return { success: true, meta: { changes: 1 } };
             }
             if (sql.includes("UPDATE code_sessions") && sql.includes("lifecycle = ?")) {
@@ -1442,5 +1457,104 @@ test("V7.7.7c: compile-context/get surfaces live leases; no HEAD mutation; fail 
   assert.ok(!serialized.includes(SECRET));
   assert.ok(!serialized.includes("eyJ"));
   assert.deepEqual([...db.chainHeads.entries()], [...beforeChain.entries()]);
+  assert.equal(db.headMutationAttempts.length, 0);
+});
+
+test("V7.7.7d: setCodeSessionWorkingTransportFromBody CAS + transport_only", async () => {
+  const db = new FakeCodeSessionD1();
+  const r2 = new FakeR2();
+  const { env } = await seedWorkspace(db, r2);
+  db.chainHeads.set("cairnstone-v6-project-memory", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+  const beforeChain = new Map(db.chainHeads);
+  const cap = await mintCap(ACTOR_A, "owner", ["write_draft", "ls", "read"]);
+
+  const created = await createCodeSessionFromBody({
+    ...baseCreateBody(),
+    workspace_capability: cap
+  }, env);
+  assert.equal(created.ok, true);
+  assert.equal(created.session_revision, 1);
+
+  const observed = "f1e2d3c4b5a697887766554433221100ffeeddcc";
+  const updated = await setCodeSessionWorkingTransportFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: cap,
+    base_revision: 1,
+    working_transport: {
+      branch: "cursor/v777d-repo-scale-working-tree-64df"
+    }
+  }, env, {
+    resolveGitHubCommit: async () => ({ ok: true, observed_commit_sha: observed })
+  });
+  assert.equal(updated.ok, true);
+  assert.equal(updated.session_revision, 2);
+  assert.equal(updated.working_transport.transport_only, true);
+  assert.equal(updated.working_transport.accepted_state_authority, false);
+  assert.equal(updated.working_transport.branch, "cursor/v777d-repo-scale-working-tree-64df");
+  assert.equal(updated.working_transport.observed_commit_sha, observed);
+  assert.equal(updated.chain_heads_mutated, false);
+  assert.equal(updated.path_heads_mutated, false);
+
+  const stale = await setCodeSessionWorkingTransportFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: cap,
+    base_revision: 1,
+    working_transport: { branch: "stale-branch" }
+  }, env);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.error, "code_session_conflict");
+
+  assert.deepEqual([...db.chainHeads.entries()], [...beforeChain.entries()]);
+  assert.equal(db.headMutationAttempts.length, 0);
+});
+
+test("V7.7.7d: compile context includes workspace.tree_stats and git_transport", async () => {
+  const db = new FakeCodeSessionD1();
+  const r2 = new FakeR2();
+  const { env } = await seedWorkspace(db, r2);
+  const cap = await mintCap(ACTOR_A, "owner", ["write_draft", "ls", "read"]);
+
+  await writeDraft(db, r2, {
+    workspace_id: WS_ID,
+    path: "src/tree-stats.js",
+    content: "// tree stats probe\n",
+    base_revision: null,
+    actor_id: ACTOR_A
+  });
+
+  const created = await createCodeSessionFromBody({
+    ...baseCreateBody({
+      working_transport: {
+        branch: "cursor/v777d-repo-scale-working-tree-64df",
+        observed_commit_sha: "aabbccddeeff00112233445566778899aabbccdd",
+        transport_only: true
+      }
+    }),
+    workspace_capability: cap
+  }, env);
+  assert.equal(created.ok, true);
+
+  const context = await compileCodeSessionContextFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: await mintCap(ACTOR_A, "owner", ["read", "ls"])
+  }, env);
+  assert.equal(context.ok, true);
+  assert.ok(context.workspace.tree_stats);
+  assert.equal(context.workspace.tree_stats.tip_count, 1);
+  assert.equal(typeof context.workspace.tree_stats.tip_vector_digest, "string");
+  assert.ok(context.workspace.tree_stats.content_ref_count === 0
+    || context.workspace.tree_stats.content_ref_count === null
+    || Number.isInteger(context.workspace.tree_stats.content_ref_count));
+  assert.ok(context.workspace.git_transport);
+  assert.equal(context.workspace.git_transport.transport_only, true);
+  assert.equal(context.workspace.git_transport.accepted_state_authority, false);
+  assert.equal(context.workspace.git_transport.gitzip_success_is_not_accepted_state, true);
+  assert.equal(context.workspace.git_transport.working_transport.branch,
+    "cursor/v777d-repo-scale-working-tree-64df");
+  assert.equal(context.accepted_state_authority, false);
+  assert.equal(context.chain_heads_mutated, false);
   assert.equal(db.headMutationAttempts.length, 0);
 });
