@@ -926,7 +926,7 @@ test("compileCodeSessionContextFromBody includes environment_sandbox closed auth
 test("broker: ENVIRONMENT_SANDBOX tools are scoped_grant; none automatic-read; MCP defs present", () => {
   const registry = toolRegistryFromBody({}, {}, { registry: DEFAULT_TOOL_BROKER_REGISTRY });
   assert.equal(registry.ok, true);
-  assert.equal(registry.total, 67);
+  assert.equal(registry.total, 68);
 
   for (const toolId of ENVIRONMENT_SANDBOX_MUTATION_TOOL_IDS) {
     const entry = registry.tools.find(item => item.tool_id === toolId);
