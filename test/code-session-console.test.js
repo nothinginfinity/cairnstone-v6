@@ -709,7 +709,8 @@ test("broker + MCP: console_view is scoped_grant read, not automatic-read", () =
 
   const registry = toolRegistryFromBody({}, {}, { registry: DEFAULT_TOOL_BROKER_REGISTRY });
   assert.equal(registry.ok, true);
-  assert.equal(registry.total, 68);
+  // V7.7.8a/b adds grounded response create/get/expand (68 -> 71).
+  assert.equal(registry.total, 71);
 
   const entry = registry.tools.find(item => item.tool_id === CODE_SESSION_CONSOLE_BROKER_TOOL_IDS.view);
   assert.ok(entry);

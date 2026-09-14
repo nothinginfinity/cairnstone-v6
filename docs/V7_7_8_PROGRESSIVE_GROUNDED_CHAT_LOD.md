@@ -1,9 +1,12 @@
 # V7.7.8 — Progressive Grounded Chat LOD
 
-Status: **PLANNED / FUTURE AFTER V7.7.7**
+Status: **IN PROGRESS — V7.7.8a/b implemented in-repo; V7.7.8c/d deferred**
 Slice: `V7.7.8`
-Implementation started: `false`
+Implementation started: `true`
 Activation gate: V7.7.7 Persistent Code Mode is sufficiently stable that chat answers can bind to one durable Scope / authority snapshot without inventing a second continuity model.
+
+**Implemented now:** `docs/V7_7_8A_GROUNDED_RESPONSE_CONTRACT.md` (V7.7.8a contract + deterministic identity; V7.7.8b lazy LOD renderers/expand).
+**Deferred:** V7.7.8c Console Answer Depth UX; V7.7.8d cross-provider/stale acceptance polish.
 
 ## Product thesis
 
