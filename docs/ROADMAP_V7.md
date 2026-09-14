@@ -627,7 +627,7 @@ Status: **COMPLETE / LIVE-VERIFIED through V7.7.7f on runtime 0.5.36.** Durable 
 
 ### V7.7.8 — Progressive Grounded Chat LOD
 
-Status: **PLANNED / NEXT AFTER V7.7.7.** Default grounded answers become the smallest sufficient response and expand lazily through `response_lod` 1→5 while preserving one `response_id`, one Scope/authority snapshot, one evidence-set identity, and one claim/conclusion skeleton. Console Answer Depth UX is V7.7.8c. Canonical contract: `docs/V7_7_8_PROGRESSIVE_GROUNDED_CHAT_LOD.md`.
+Status: **IN PROGRESS — V7.7.8a/b in-repo; V7.7.8c/d deferred.** Default grounded answers become the smallest sufficient response and expand lazily through `response_lod` 1→5 while preserving one `response_id`, one Scope/authority snapshot, one evidence-set identity, and one claim/conclusion skeleton. Console Answer Depth UX remains V7.7.8c. Canonical contract: `docs/V7_7_8_PROGRESSIVE_GROUNDED_CHAT_LOD.md`. Implementation notes: `docs/V7_7_8A_GROUNDED_RESPONSE_CONTRACT.md`.
 
 ### V7.7.9 — Console UX Architecture + Responsive Shell
 

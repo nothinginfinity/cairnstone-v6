@@ -29,6 +29,11 @@ import {
   resolveDelegateLoopControls,
   runBrokeredReadLoop
 } from "./delegate-loop.js";
+import {
+  GROUNDED_RESPONSE_CREATE_TOOL_DEFINITION,
+  GROUNDED_RESPONSE_GET_TOOL_DEFINITION,
+  GROUNDED_RESPONSE_EXPAND_TOOL_DEFINITION
+} from "./grounded-response.js";
 
 export const AGENT_CONTEXT_SCHEMA = "cairnstone-agent-context-v1";
 export const MODEL_REQUEST_SCHEMA = "cairnstone-model-request-v1";
@@ -1585,6 +1590,39 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       },
       additionalProperties: false
     }
+  }),
+  // V7.7.8a/b Progressive Grounded Chat LOD — response identity + lazy expand.
+  // Read/automatic like ask_scope: composes Scope/search/citation validation,
+  // persists operational response identity only, never moves chain/path HEADs.
+  Object.freeze({
+    tool_id: "cairnstone_grounded_response",
+    connector: "cairnstone",
+    handler: "cairnstone_grounded_response",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "V7.7.8a/b: create one grounded response bound to Scope/authority/evidence/claim skeleton; default response_lod 1; distinct from stone_lod; never mutates accepted HEADs.",
+    input_schema: GROUNDED_RESPONSE_CREATE_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_grounded_response_get",
+    connector: "cairnstone",
+    handler: "cairnstone_grounded_response_get",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "V7.7.8a: load one grounded response by response_id and report authority freshness without mutating accepted state.",
+    input_schema: GROUNDED_RESPONSE_GET_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_grounded_response_expand",
+    connector: "cairnstone",
+    handler: "cairnstone_grounded_response_expand",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "V7.7.8b: lazily expand the same response_id to a deeper response_lod; stale authority fails closed unless view_original; refresh is a new response_id.",
+    input_schema: GROUNDED_RESPONSE_EXPAND_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
     tool_id: "cairnstone_send_message",

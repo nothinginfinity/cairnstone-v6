@@ -164,8 +164,14 @@ import {
   codeSessionConsoleViewFromBody,
   CODE_SESSION_CONSOLE_MCP_TOOL_DEFINITIONS
 } from "./code-session-console.js";
+import {
+  createGroundedResponseFromBody,
+  getGroundedResponseFromBody,
+  expandGroundedResponseFromBody,
+  GROUNDED_RESPONSE_MCP_TOOL_DEFINITIONS
+} from "./grounded-response.js";
 
-const VERSION = "0.5.36";
+const VERSION = "0.5.37";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -409,6 +415,17 @@ export default {
       if (request.method === "POST" && url.pathname === "/v2/find") return json(await findV2FromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v2/find-scope") return json(await findScopeFromBody(await request.json(), env));
       if (request.method === "POST" && url.pathname === "/v2/ask-scope") return json(await askScopeFromBody(await request.json(), env));
+
+      // V7.7.8a/b Progressive Grounded Chat LOD — response identity + lazy expand.
+      if (request.method === "POST" && url.pathname === "/v1/grounded-response") {
+        return json(await createGroundedResponseFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/grounded-response/get") {
+        return json(await getGroundedResponseFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/grounded-response/expand") {
+        return json(await expandGroundedResponseFromBody(await request.json(), env));
+      }
       const manifestV2Match = url.pathname.match(/^\/v2\/chains\/([^/]+)\/manifest$/);
       if (request.method === "GET" && manifestV2Match) {
         const chain = decodeURIComponent(manifestV2Match[1]);
@@ -578,6 +595,9 @@ function routes() {
     "POST /v2/find",
     "POST /v2/find-scope",
     "POST /v2/ask-scope",
+    "POST /v1/grounded-response",
+    "POST /v1/grounded-response/get",
+    "POST /v1/grounded-response/expand",
     "GET /v2/chains/:chain/manifest?detail=summary|compact|orientation|full&since=ISO&path=...",  
     "GET /v2/stones/:hash?level=lod1-5",
     "GET /v2/chains/:chain/resume?detail=full|compact|start_here&since=ISO&path=..."
@@ -1136,6 +1156,9 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_resolve_scope") return resolveScopeFromBody(args, env);
   if (name === "cairnstone_find_scope") return findScopeFromBody(args, env);
   if (name === "cairnstone_ask_scope") return askScopeFromBody(args, env);
+  if (name === "cairnstone_grounded_response") return createGroundedResponseFromBody(args, env);
+  if (name === "cairnstone_grounded_response_get") return getGroundedResponseFromBody(args, env);
+  if (name === "cairnstone_grounded_response_expand") return expandGroundedResponseFromBody(args, env);
   if (name === "cairnstone_workspace_create") return createWorkspaceFromBody(args, env);
   if (name === "cairnstone_workspace_list") return listWorkspacesFromBody(args, env);
   if (name === "cairnstone_workspace_stat") return statWorkspaceFromBody(args, env);
@@ -1405,6 +1428,7 @@ function mcpTools() {
     WORKSPACE_INVITE_CLAIM_TOOL_DEFINITION,
     ...CODE_SESSION_MCP_TOOL_DEFINITIONS,
     ...CODE_SESSION_CONSOLE_MCP_TOOL_DEFINITIONS,
+    ...GROUNDED_RESPONSE_MCP_TOOL_DEFINITIONS,
     ...ENVIRONMENT_SANDBOX_MCP_TOOL_DEFINITIONS,
     {
       name: "cairnstone_create_stone",
