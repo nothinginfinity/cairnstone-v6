@@ -114,6 +114,6 @@ Broker: mutations = `risk_class:mutation` + `scoped_grant`; list = `scoped_grant
 
 - **7.7.7d** repo-scale tree + GitZip backing — **shipped** in [V7_7_7D_REPO_SCALE_WORKING_TREE.md](./V7_7_7D_REPO_SCALE_WORKING_TREE.md)
 - **7.7.7e** environment reconstruct / sandbox adapter — **shipped** in [V7_7_7E_ENVIRONMENT_SANDBOX.md](./V7_7_7E_ENVIRONMENT_SANDBOX.md)
-- **7.7.7f** Console Persistent Code Mode UX
+- **7.7.7f** Console Persistent Code Mode UX — see [V7_7_7F_CODE_SESSION_CONSOLE.md](./V7_7_7F_CODE_SESSION_CONSOLE.md)
 - Treating leases as exclusive locks or accepted-state authority
 - Auto-promoting checkpoints / leases into project-memory accepted HEAD
