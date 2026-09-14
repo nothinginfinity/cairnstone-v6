@@ -1,6 +1,7 @@
 // V7.7.7a Durable Code Session + V7.7.7b Code Checkpoints / task ledger
 // + V7.7.7c Multi-agent awareness / task+path leases
 // + V7.7.7d working-transport CAS + tree/Git transport surfacing in context.
+// + V7.7.7e environment manifest / sandbox attachment / execution receipts in context.
 //
 // Operational state only. Reuses Shared Agent Workspace (bound workspace_id)
 // and V7.7.6 workspace_capability / membership — no second ticket format,
@@ -24,6 +25,7 @@ import {
   tipVectorsEqual
 } from "./workspace.js";
 import { summarizeTreeState } from "./workspace-tree.js";
+import { summarizeEnvironmentSandboxForContext } from "./environment-sandbox.js";
 
 export const CODE_SESSION_SCHEMA = "cairnstone-code-session-v1";
 export const CODE_SESSION_CONTEXT_SCHEMA = "cairnstone-code-session-context-v1";
@@ -513,6 +515,7 @@ export function rowToCodeSessionRecord(row) {
     latest_checkpoint_id: row.latest_checkpoint_id || null,
     checkpoint_tip_vector_digest: row.checkpoint_tip_vector_digest || null,
     capability_policy_profile_id: row.capability_policy_profile_id || null,
+    latest_sandbox_attachment_id: row.latest_sandbox_attachment_id || null,
     lifecycle: row.lifecycle,
     session_revision: Number(row.session_revision) || 1,
     created_by: row.created_by,
@@ -532,7 +535,7 @@ export async function getCodeSession(db, code_session_id) {
             workspace_snapshot_id, task_ledger_json, unresolved_issues_json, actors_json,
             environment_manifest_id, latest_execution_receipt_refs_json, latest_checkpoint_id,
             checkpoint_tip_vector_digest, capability_policy_profile_id, lifecycle,
-            session_revision, created_by, created_at, updated_at
+            session_revision, created_by, created_at, updated_at, latest_sandbox_attachment_id
      FROM code_sessions WHERE code_session_id = ?`
   ).bind(id).first();
   return rowToCodeSessionRecord(row);
@@ -2299,6 +2302,13 @@ export async function compileCodeSessionContext(db, {
     }
     : { active_task_leases: [], known_concurrent_actors: [], lease_count: 0 };
 
+  const envSandbox = await summarizeEnvironmentSandboxForContext(db, {
+    code_session_id: fresh.code_session_id,
+    environment_manifest_id: fresh.environment_manifest_id,
+    latest_sandbox_attachment_id: fresh.latest_sandbox_attachment_id,
+    latest_execution_receipt_refs: fresh.latest_execution_receipt_refs
+  });
+
   const contextBody = {
     schema: CODE_SESSION_CONTEXT_SCHEMA,
     code_session_id: fresh.code_session_id,
@@ -2360,6 +2370,20 @@ export async function compileCodeSessionContext(db, {
     },
     latest_execution_receipt_refs: fresh.latest_execution_receipt_refs,
     environment_manifest_id: fresh.environment_manifest_id,
+    latest_sandbox_attachment_id: fresh.latest_sandbox_attachment_id || null,
+    environment_sandbox: {
+      environment_manifest: envSandbox.environment_manifest || null,
+      sandbox_attachment: envSandbox.sandbox_attachment || null,
+      latest_execution_receipt_refs: envSandbox.latest_execution_receipt_refs || fresh.latest_execution_receipt_refs || [],
+      secrets_absent: true,
+      sandbox_local_execution_only: true,
+      production_mutation_authority: false,
+      accepted_state_authority: false,
+      reconstructability: {
+        survives_sandbox_destruction: true,
+        hydrate_from: "code_session+workspace_tips+environment_manifest"
+      }
+    },
     capability_policy_profile_id: fresh.capability_policy_profile_id,
     permissions: permissionsView,
     next_safe_continuation: {
@@ -3177,7 +3201,7 @@ export const CODE_SESSION_RESUME_TOOL_DEFINITION = Object.freeze({
 
 export const CODE_SESSION_COMPILE_CONTEXT_TOOL_DEFINITION = Object.freeze({
   name: CODE_SESSION_BROKER_TOOL_IDS.compile_context,
-  description: "V7.7.7a/b/c: compile bounded cairnstone-code-session-context-v1 including latest checkpoint, task ledger, and live task/path leases for an authorized actor. Race-safe tip re-read; never infers currentness from timestamps when explicit pointers exist.",
+  description: "V7.7.7a/b/c/d/e: compile bounded cairnstone-code-session-context-v1 including latest checkpoint, task ledger, live leases, tree/Git transport, environment manifest, sandbox attachment, and execution receipts for an authorized actor. Race-safe tip re-read; never infers currentness from timestamps when explicit pointers exist.",
   inputSchema: {
     type: "object",
     required: ["code_session_id", "actor_id", "workspace_capability"],

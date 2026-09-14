@@ -148,8 +148,20 @@ import {
   setCodeSessionWorkingTransportFromBody,
   CODE_SESSION_MCP_TOOL_DEFINITIONS
 } from "./code-session.js";
+import {
+  createEnvironmentManifestFromBody,
+  getEnvironmentManifestFromBody,
+  attachEnvironmentManifestToSessionFromBody,
+  attachSandboxFromBody,
+  detachSandboxFromBody,
+  getSandboxAttachmentFromBody,
+  createExecutionReceiptFromBody,
+  getExecutionReceiptFromBody,
+  listExecutionReceiptsFromBody,
+  ENVIRONMENT_SANDBOX_MCP_TOOL_DEFINITIONS
+} from "./environment-sandbox.js";
 
-const VERSION = "0.5.34";
+const VERSION = "0.5.35";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -280,6 +292,34 @@ export default {
         return json(await setCodeSessionWorkingTransportFromBody(await request.json(), env, {
           resolveGitHubCommit: (owner, repo, ref) => resolveGitHubCommit(owner, repo, ref, env)
         }));
+      }
+      // V7.7.7e environment manifest / sandbox attachment / execution receipts.
+      if (request.method === "POST" && url.pathname === "/v1/environment-manifests") {
+        return json(await createEnvironmentManifestFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/environment-manifests/get") {
+        return json(await getEnvironmentManifestFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/attach-environment") {
+        return json(await attachEnvironmentManifestToSessionFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/sandbox/attach") {
+        return json(await attachSandboxFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/sandbox/detach") {
+        return json(await detachSandboxFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/sandbox/get") {
+        return json(await getSandboxAttachmentFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/execution-receipts") {
+        return json(await createExecutionReceiptFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/execution-receipts/get") {
+        return json(await getExecutionReceiptFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/execution-receipts/list") {
+        return json(await listExecutionReceiptsFromBody(await request.json(), env));
       }
       // V7.7.7d workspace tree + Git/GitZip transport (capability-gated draft plane).
       if (request.method === "POST" && url.pathname === "/v1/workspaces/delete-draft") {
@@ -495,6 +535,15 @@ function routes() {
     "POST /v1/code-sessions/leases/release",
     "POST /v1/code-sessions/leases/list",
     "POST /v1/code-sessions/working-transport",
+    "POST /v1/environment-manifests",
+    "POST /v1/environment-manifests/get",
+    "POST /v1/code-sessions/attach-environment",
+    "POST /v1/code-sessions/sandbox/attach",
+    "POST /v1/code-sessions/sandbox/detach",
+    "POST /v1/code-sessions/sandbox/get",
+    "POST /v1/execution-receipts",
+    "POST /v1/execution-receipts/get",
+    "POST /v1/execution-receipts/list",
     "POST /v1/workspaces/delete-draft",
     "POST /v1/workspaces/rename-draft",
     "POST /v1/workspaces/write-content-ref",
@@ -1135,6 +1184,17 @@ async function callMcpTool(name, args, env) {
       resolveGitHubCommit: (owner, repo, ref) => resolveGitHubCommit(owner, repo, ref, env)
     });
   }
+  if (name === "cairnstone_environment_manifest_create") return createEnvironmentManifestFromBody(args, env);
+  if (name === "cairnstone_environment_manifest_get") return getEnvironmentManifestFromBody(args, env);
+  if (name === "cairnstone_code_session_attach_environment") {
+    return attachEnvironmentManifestToSessionFromBody(args, env);
+  }
+  if (name === "cairnstone_code_session_sandbox_attach") return attachSandboxFromBody(args, env);
+  if (name === "cairnstone_code_session_sandbox_detach") return detachSandboxFromBody(args, env);
+  if (name === "cairnstone_code_session_sandbox_get") return getSandboxAttachmentFromBody(args, env);
+  if (name === "cairnstone_execution_receipt_create") return createExecutionReceiptFromBody(args, env);
+  if (name === "cairnstone_execution_receipt_get") return getExecutionReceiptFromBody(args, env);
+  if (name === "cairnstone_execution_receipt_list") return listExecutionReceiptsFromBody(args, env);
   return { ok: false, error: "unknown_tool", name };
 }
 
@@ -1335,6 +1395,7 @@ function mcpTools() {
     ...WORKSPACE_TREE_MCP_TOOL_DEFINITIONS,
     WORKSPACE_INVITE_CLAIM_TOOL_DEFINITION,
     ...CODE_SESSION_MCP_TOOL_DEFINITIONS,
+    ...ENVIRONMENT_SANDBOX_MCP_TOOL_DEFINITIONS,
     {
       name: "cairnstone_create_stone",
       description: "Create a CairnStone from either inline content or server-side GitHub fetch input. For scale, pass owner, repo, path, and ref instead of content.",

@@ -781,7 +781,8 @@ test("FromBody auth fail-closed without capability", async () => {
 test("broker: WORKSPACE_TREE_MUTATION_TOOL_IDS never in listAutomaticReadToolIds", () => {
   const registry = toolRegistryFromBody({});
   assert.equal(registry.ok, true);
-  assert.equal(registry.total, 58);
+  // V7.7.7e adds nine environment/sandbox/execution-receipt tools (58 -> 67).
+  assert.equal(registry.total, 67);
 
   for (const toolId of WORKSPACE_TREE_MUTATION_TOOL_IDS) {
     const entry = registry.tools.find(item => item.tool_id === toolId);

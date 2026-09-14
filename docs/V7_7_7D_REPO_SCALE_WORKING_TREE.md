@@ -99,7 +99,7 @@ Broker: mutations = `risk_class:mutation` + `scoped_grant`; reads = `scoped_gran
 
 ## Out of scope (later slices)
 
-- **7.7.7e** environment reconstruct / sandbox adapter
+- **7.7.7e** environment reconstruct / sandbox adapter — **shipped** in [V7_7_7E_ENVIRONMENT_SANDBOX.md](./V7_7_7E_ENVIRONMENT_SANDBOX.md)
 - **7.7.7f** Console Persistent Code Mode UX
 - Promoting Git/GitZip transport success into project-memory accepted HEAD
 - Treating `content_ref` hydrate as accepted deploy or chain mutation
