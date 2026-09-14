@@ -1137,6 +1137,216 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       additionalProperties: false
     }
   }),
+  // V7.7.7d: repo-scale working tree + Git/GitZip transport. Mutations are
+  // scoped_grant + never automatic-read. GitZip success ≠ accepted state.
+  Object.freeze({
+    tool_id: "cairnstone_workspace_delete_draft",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_delete_draft",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7d: CAS delete draft tip; never automatic-read; never accepted-state authority.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "path", "base_revision", "actor_id", "workspace_capability"],
+      properties: {
+        workspace_id: { type: "string" },
+        path: { type: "string" },
+        base_revision: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_rename_draft",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_rename_draft",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7d: CAS rename draft path; never automatic-read; never HEADs.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "from_path", "to_path", "base_revision", "actor_id", "workspace_capability"],
+      properties: {
+        workspace_id: { type: "string" },
+        from_path: { type: "string" },
+        to_path: { type: "string" },
+        base_revision: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_write_content_ref",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_write_content_ref",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7d: CAS tip write via GitZip/direct-byte content_ref; body never via model JSON; never accepted-state.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "path", "content_ref", "actor_id", "workspace_capability"],
+      properties: {
+        workspace_id: { type: "string" },
+        path: { type: "string" },
+        content_ref: { type: "string" },
+        content_bytes: { type: "number" },
+        content_sha256: { type: "string" },
+        git_blob_sha: { type: "string" },
+        base_revision: { type: ["string", "null"] },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_hydrate_from_git",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_hydrate_from_git",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7d: hydrate missing tips from immutable Git commit tree; transport only; never HEADs.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "actor_id", "workspace_capability"],
+      properties: {
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        owner: { type: "string" },
+        repo: { type: "string" },
+        commit_sha: { type: "string" },
+        ref: { type: "string" },
+        root_path: { type: "string" },
+        max_files: { type: "number" },
+        inline_max_bytes: { type: "number" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_set_github_transport",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_set_github_transport",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7d: record mutable working-branch transport + observed_commit_sha; transport only.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "actor_id", "workspace_capability"],
+      properties: {
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        working_branch: { type: "string" },
+        branch: { type: "string" },
+        observed_commit_sha: { type: "string" },
+        root_path: { type: ["string", "null"] }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_tree_ls",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_tree_ls",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7d: directory-aware tree listing over draft tips; scoped_grant only; never automatic-read.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "actor_id", "workspace_capability"],
+      properties: {
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        prefix: { type: "string" },
+        include_directories: { type: "boolean" },
+        include_content_refs: { type: "boolean" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_tree_diff",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_tree_diff",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7d: tip-vector scale diff; scoped_grant only; never automatic-read.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "actor_id", "workspace_capability"],
+      properties: {
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        prefix: { type: "string" },
+        against_tip_vector: { type: "array", items: { type: "object" } }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_workspace_record_gitzip_transport",
+    connector: "cairnstone",
+    handler: "cairnstone_workspace_record_gitzip_transport",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7d: record GitZip transport receipt; GitZip success NEVER means accepted or deployed.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "actor_id", "workspace_capability", "gitzip_content_refs"],
+      properties: {
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        gitzip_content_refs: { type: "array", items: { type: ["string", "object"] } },
+        code_session_id: { type: "string" },
+        proposal_snapshot_id: { type: "string" },
+        expected_base_sha: { type: "string" },
+        observed_commit_sha: { type: "string" },
+        working_branch: { type: "string" },
+        transport_status: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_set_working_transport",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_set_working_transport",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7d: CAS-update Code Session working_transport; transport only; never automatic-read; never HEADs.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability", "working_transport", "base_revision"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        base_revision: { type: "number" },
+        working_transport: { type: "object" },
+        source_repo: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
   Object.freeze({
     tool_id: "cairnstone_send_message",
     connector: "cairnstone",

@@ -108,7 +108,7 @@ Broker: mutations = `risk_class:mutation` + `scoped_grant`; reads = `scoped_gran
 ## Out of scope (later slices)
 
 - **7.7.7c** task/path leases — **shipped** in [V7_7_7C_TASK_LEASES.md](./V7_7_7C_TASK_LEASES.md) (this doc previously held stubs only)
-- **7.7.7d** repo-scale tree + GitZip backing
+- **7.7.7d** repo-scale tree + GitZip backing — **shipped** in [V7_7_7D_REPO_SCALE_WORKING_TREE.md](./V7_7_7D_REPO_SCALE_WORKING_TREE.md)
 - **7.7.7e** environment reconstruct / sandbox adapter
 - **7.7.7f** Console Persistent Code Mode UX
 - Auto-promoting checkpoints into project-memory accepted HEAD

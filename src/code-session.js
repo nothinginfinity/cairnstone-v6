@@ -1,5 +1,6 @@
 // V7.7.7a Durable Code Session + V7.7.7b Code Checkpoints / task ledger
-// + V7.7.7c Multi-agent awareness / task+path leases.
+// + V7.7.7c Multi-agent awareness / task+path leases
+// + V7.7.7d working-transport CAS + tree/Git transport surfacing in context.
 //
 // Operational state only. Reuses Shared Agent Workspace (bound workspace_id)
 // and V7.7.6 workspace_capability / membership — no second ticket format,
@@ -11,6 +12,7 @@
 // operational artifacts and are never auto-promoted into canonical
 // project-memory HEAD. Leases are coordination hints (not locks / not
 // accepted-state authority); hard path correctness remains workspace CAS.
+// GitHub / GitZip remain transport only — never accepted-state authority.
 
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
 import {
@@ -21,6 +23,7 @@ import {
   listWorkspaceTips,
   tipVectorsEqual
 } from "./workspace.js";
+import { summarizeTreeState } from "./workspace-tree.js";
 
 export const CODE_SESSION_SCHEMA = "cairnstone-code-session-v1";
 export const CODE_SESSION_CONTEXT_SCHEMA = "cairnstone-code-session-context-v1";
@@ -86,7 +89,8 @@ export const CODE_SESSION_BROKER_TOOL_IDS = Object.freeze({
   lease_acquire: "cairnstone_code_session_lease_acquire",
   lease_renew: "cairnstone_code_session_lease_renew",
   lease_release: "cairnstone_code_session_lease_release",
-  lease_list: "cairnstone_code_session_lease_list"
+  lease_list: "cairnstone_code_session_lease_list",
+  set_working_transport: "cairnstone_code_session_set_working_transport"
 });
 
 export const CODE_SESSION_MUTATION_TOOL_IDS = Object.freeze([
@@ -97,7 +101,8 @@ export const CODE_SESSION_MUTATION_TOOL_IDS = Object.freeze([
   CODE_SESSION_BROKER_TOOL_IDS.task_transition,
   CODE_SESSION_BROKER_TOOL_IDS.lease_acquire,
   CODE_SESSION_BROKER_TOOL_IDS.lease_renew,
-  CODE_SESSION_BROKER_TOOL_IDS.lease_release
+  CODE_SESSION_BROKER_TOOL_IDS.lease_release,
+  CODE_SESSION_BROKER_TOOL_IDS.set_working_transport
 ]);
 
 export const CODE_SESSION_READ_TOOL_IDS = Object.freeze([
@@ -2200,6 +2205,8 @@ export async function compileCodeSessionContext(db, {
   const tipState = await refreshWorkspaceTipState(db, session.workspace_id);
   if (!tipState.ok) return tipState;
 
+  const treeStats = await summarizeTreeState(db, session.workspace_id);
+
   // Persist latest observed tip digest onto the session only when unchanged
   // revision CAS succeeds; never invent HEAD authority from this refresh.
   if (session.tip_vector_digest !== tipState.tip_vector_digest) {
@@ -2309,7 +2316,26 @@ export async function compileCodeSessionContext(db, {
       tip_vector: tipState.tip_vector,
       tip_vector_digest: tipState.tip_vector_digest,
       tip_count: tipState.tip_count,
-      workspace_snapshot_id: fresh.workspace_snapshot_id
+      workspace_snapshot_id: fresh.workspace_snapshot_id,
+      tree_stats: treeStats.ok
+        ? {
+          tip_count: treeStats.tip_count,
+          content_ref_count: treeStats.content_ref_count,
+          git_blob_count: treeStats.git_blob_count,
+          tip_vector_digest: treeStats.tip_vector_digest
+        }
+        : {
+          tip_count: tipState.tip_count,
+          content_ref_count: null,
+          git_blob_count: null,
+          tip_vector_digest: tipState.tip_vector_digest
+        },
+      git_transport: {
+        working_transport: fresh.working_transport,
+        transport_only: true,
+        accepted_state_authority: false,
+        gitzip_success_is_not_accepted_state: true
+      }
     },
     latest_checkpoint: checkpointResume,
     changes_since_last_checkpoint: {
@@ -2548,6 +2574,152 @@ export async function resumeCodeSessionFromBody(body = {}, env = {}) {
     target_lifecycle: "active",
     base_revision: body.base_revision,
     note: body.note
+  });
+}
+
+/**
+ * V7.7.7d: CAS-update working_transport on a Code Session.
+ * Mutable branch/PR refs are transport-only; optional observed_commit_sha may
+ * be supplied or resolved. Never accepted-state authority; never moves HEADs.
+ */
+export async function setCodeSessionWorkingTransport(db, {
+  code_session_id,
+  actor_id,
+  working_transport,
+  base_revision,
+  resolveGitHubCommit = null,
+  env = {},
+  source_repo = null
+} = {}) {
+  let sessionId;
+  let actor;
+  try {
+    sessionId = codeSessionId(code_session_id);
+    actor = actorId(actor_id, "actor_id");
+  } catch (error) {
+    return { ok: false, error: "invalid_code_session_working_transport_request", detail: String(error.message || error) };
+  }
+
+  if (base_revision === undefined || base_revision === null || !Number.isInteger(Number(base_revision))) {
+    return { ok: false, error: "base_revision_required", detail: "integer_session_revision_required" };
+  }
+  const expectedRevision = Number(base_revision);
+
+  const transportNorm = normalizeWorkingTransport(working_transport);
+  if (!transportNorm.ok) return transportNorm;
+  if (!transportNorm.working_transport) {
+    return { ok: false, error: "invalid_code_session_working_transport", detail: "empty" };
+  }
+
+  const transport = { ...transportNorm.working_transport };
+  if (!transport.observed_commit_sha && typeof resolveGitHubCommit === "function") {
+    const ref = transport.branch || transport.ref || null;
+    const repo = isNonEmptyString(source_repo)
+      ? String(source_repo).trim()
+      : null;
+    if (ref && repo && REPO_RE.test(repo)) {
+      const [owner, name] = repo.split("/");
+      const resolved = await resolveGitHubCommit(owner, name, ref, env);
+      const sha = resolved?.observed_commit_sha || resolved?.sha || null;
+      if (!sha || !FULL_SHA_RE.test(String(sha))) {
+        return {
+          ok: false,
+          error: "github_commit_resolution_failed",
+          requested_ref: ref,
+          detail: resolved?.error || resolved || null,
+          ...authorityClosedFields()
+        };
+      }
+      transport.observed_commit_sha = String(sha).toLowerCase();
+      transport.observed_at = new Date().toISOString();
+    }
+  }
+
+  transport.transport_only = true;
+  transport.accepted_state_authority = false;
+
+  const current = await getCodeSession(db, sessionId);
+  if (!current) return { ok: false, error: "code_session_not_found", code_session_id: sessionId };
+  if (current.session_revision !== expectedRevision) {
+    return {
+      ok: false,
+      error: "code_session_conflict",
+      code_session_id: sessionId,
+      expected_session_revision: current.session_revision,
+      provided_base_revision: expectedRevision,
+      ...authorityClosedFields()
+    };
+  }
+
+  const nextRevision = expectedRevision + 1;
+  const now = new Date().toISOString();
+  const updated = await db.prepare(
+    `UPDATE code_sessions
+     SET working_transport_json = ?, session_revision = ?, updated_at = ?
+     WHERE code_session_id = ? AND session_revision = ?`
+  ).bind(stableJson(transport), nextRevision, now, sessionId, expectedRevision).run();
+  const changes = updated?.meta?.changes ?? updated?.changes ?? 0;
+  if (!changes) {
+    const raced = await getCodeSession(db, sessionId);
+    return {
+      ok: false,
+      error: "code_session_conflict",
+      code_session_id: sessionId,
+      expected_session_revision: raced?.session_revision || null,
+      provided_base_revision: expectedRevision,
+      ...authorityClosedFields()
+    };
+  }
+
+  const record = await getCodeSession(db, sessionId);
+  return {
+    ok: true,
+    code_session_id: sessionId,
+    working_transport: record.working_transport,
+    session_revision: record.session_revision,
+    actor_id: actor,
+    ...authorityClosedFields()
+  };
+}
+
+export async function setCodeSessionWorkingTransportFromBody(body = {}, env = {}, deps = {}) {
+  const bindings = codeSessionEnvBindings(env);
+  if (!bindings.ok) return bindings;
+
+  const actor = requireActorField(body, "actor_id");
+  if (!actor.ok) return actor;
+  if (!isNonEmptyString(body.code_session_id)) {
+    return { ok: false, error: "code_session_id_required" };
+  }
+  if (!isNonEmptyString(body.workspace_capability)) {
+    return { ok: false, error: "workspace_capability_required" };
+  }
+
+  const session = await getCodeSession(bindings.db, body.code_session_id);
+  if (!session) {
+    return { ok: false, error: "code_session_not_found", code_session_id: body.code_session_id };
+  }
+
+  const auth = await authorizeCodeSessionRequest(bindings.db, env, {
+    workspace_capability: body.workspace_capability,
+    actor_id: actor.value,
+    workspace_id: session.workspace_id,
+    requiredScopes: ["write_draft"]
+  });
+  if (!auth.ok) return auth;
+
+  const sourceRepo = Array.isArray(session.source_repos) && session.source_repos[0]
+    ? session.source_repos[0]
+    : (body.source_repo || null);
+
+  return setCodeSessionWorkingTransport(bindings.db, {
+    code_session_id: session.code_session_id,
+    actor_id: actor.value,
+    working_transport: body.working_transport,
+    base_revision: body.base_revision,
+    resolveGitHubCommit: deps.resolveGitHubCommit || null,
+    env,
+    source_repo: sourceRepo
   });
 }
 
@@ -3191,6 +3363,40 @@ export const CODE_SESSION_LEASE_LIST_TOOL_DEFINITION = Object.freeze({
   }
 });
 
+export const CODE_SESSION_SET_WORKING_TRANSPORT_TOOL_DEFINITION = Object.freeze({
+  name: CODE_SESSION_BROKER_TOOL_IDS.set_working_transport,
+  description: "V7.7.7d: CAS-update Code Session working_transport (mutable branch/PR + observed_commit_sha). Transport only; never accepted-state authority; never moves HEADs. Requires write_draft + base_revision.",
+  inputSchema: {
+    type: "object",
+    required: ["code_session_id", "actor_id", "workspace_capability", "working_transport", "base_revision"],
+    properties: {
+      code_session_id: { type: "string" },
+      actor_id: { type: "string" },
+      workspace_capability: { type: "string" },
+      base_revision: { type: "number" },
+      working_transport: {
+        type: "object",
+        properties: {
+          branch: { type: "string" },
+          ref: { type: "string" },
+          observed_commit_sha: { type: "string" },
+          pr: {
+            type: "object",
+            properties: {
+              number: { type: "number" },
+              url: { type: "string" }
+            },
+            additionalProperties: false
+          }
+        },
+        additionalProperties: false
+      },
+      source_repo: { type: "string" }
+    },
+    additionalProperties: false
+  }
+});
+
 export const CODE_SESSION_MCP_TOOL_DEFINITIONS = Object.freeze([
   CODE_SESSION_CREATE_TOOL_DEFINITION,
   CODE_SESSION_GET_TOOL_DEFINITION,
@@ -3204,5 +3410,6 @@ export const CODE_SESSION_MCP_TOOL_DEFINITIONS = Object.freeze([
   CODE_SESSION_LEASE_ACQUIRE_TOOL_DEFINITION,
   CODE_SESSION_LEASE_RENEW_TOOL_DEFINITION,
   CODE_SESSION_LEASE_RELEASE_TOOL_DEFINITION,
-  CODE_SESSION_LEASE_LIST_TOOL_DEFINITION
+  CODE_SESSION_LEASE_LIST_TOOL_DEFINITION,
+  CODE_SESSION_SET_WORKING_TRANSPORT_TOOL_DEFINITION
 ]);
