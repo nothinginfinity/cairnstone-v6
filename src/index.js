@@ -148,7 +148,6 @@ import {
   setCodeSessionWorkingTransportFromBody,
   CODE_SESSION_MCP_TOOL_DEFINITIONS
 } from "./code-session.js";
-import { fetchGitHubRepoTree } from "./repo-stones-runtime.js";
 
 const VERSION = "0.5.34";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
