@@ -563,7 +563,7 @@ Canonical detailed plan: `project-memory/v76-context-efficiency-optimization-pla
 
 ## V7.7 — Vault / Workspace Navigation + Multi-Chain Intelligence
 
-Status: **PLANNED / READ-FIRST; NEXT AFTER V7.6.5 CLOSURE.** The V7.6.5 optimization/default-flip acceptance gate is closed. V7.7 must work through the portable CairnStone runtime and cannot make correctness depend on experimental V7.6.2b native tool hydration.
+Status: **ACTIVE EVOLUTION — V7.7.7f Persistent Code Mode Console UX is COMPLETE / LIVE-VERIFIED; V7.7.8 Progressive Grounded Chat LOD is the next planned product slice; V7.7.9 Console UX Architecture + Responsive Shell is planned immediately after V7.7.8.** V7.7 must continue to work through the portable CairnStone runtime and cannot make correctness depend on experimental native tool hydration.
 
 ### Goal
 
@@ -617,7 +617,36 @@ Acceptance must prove at minimum:
 - live tests cover at least three genuinely stoned repositories and exercise single-chain, repo, multi-repo, and vault modes;
 - the milestone works through full `/mcp` and portable `/mcp/core` Tool Vault paths without relying on native dynamic hydration.
 
-Canonical detailed plan: `project-memory/v77-vault-workspace-multi-chain-intelligence-plan.md`.
+### V7.7.6 — Console Workspace Invitations + Capability lifecycle
+
+Status: **COMPLETE / CLOSED.** Principal-bound workspace invitations, trusted-human mailbox capability issuance, recipient-authenticated claims, and cross-model lifecycle acceptance are now part of the live Console/runtime path. Correspondence and invitation transport remain non-authoritative; workspace capabilities remain scoped authority and are never persisted into Stones/chat.
+
+### V7.7.7 — Persistent Code Mode / Durable Multi-Agent Code Sessions
+
+Status: **COMPLETE / LIVE-VERIFIED through V7.7.7f on runtime 0.5.36.** Durable Code Sessions now cover deterministic resume context, immutable checkpoints, task transitions, leases, repo-scale working trees and Git/GitZip transport, environment manifests, disposable sandbox attachment, execution receipts, and the Console Code Session operator surface. This is the functional base for the later Work UX redesign.
+
+### V7.7.8 — Progressive Grounded Chat LOD
+
+Status: **PLANNED / NEXT AFTER V7.7.7.** Default grounded answers become the smallest sufficient response and expand lazily through `response_lod` 1→5 while preserving one `response_id`, one Scope/authority snapshot, one evidence-set identity, and one claim/conclusion skeleton. Console Answer Depth UX is V7.7.8c. Canonical contract: `docs/V7_7_8_PROGRESSIVE_GROUNDED_CHAT_LOD.md`.
+
+### V7.7.9 — Console UX Architecture + Responsive Shell
+
+Status: **PLANNED / AFTER V7.7.8.** This is the deliberate whole-Console information-architecture pass. Chat becomes the normal landing surface; primary navigation collapses toward a task-oriented `Chat · Work · Universe · Inbox · More` model (or acceptance-tested equivalent); Runtime/Scope/provider/session state moves into compact contextual controls; V7.7.7f Code evolves into a Work surface; Inbox/Handoff/Activity become a coherent communications experience; Evidence/Stones become contextual drill-downs; Authorize remains a visibly distinct trusted-human boundary; and progressive disclosure/LOD-style interaction becomes a Console-wide design rule.
+
+V7.7.9 also carries the **Bird's Eye / Universe v2** follow-on: semantic zoom from Vault → Repo → Chain → Intelligence, richer mobile spatial interaction using `prax-your-universe` patterns where useful, list/grid parity, search-to-focus, selection preservation, and bounded current-LOD loading. Spatial presentation remains projection metadata only and creates no authority or graph edges.
+
+Initial slices:
+
+- `V7.7.9a` — Information Architecture + Responsive Shell
+- `V7.7.9b` — Chat + contextual evidence integration
+- `V7.7.9c` — Work + communications consolidation
+- `V7.7.9d` — Universe v2
+- `V7.7.9e` — Progressive disclosure + Saved Views
+- `V7.7.9f` — Cross-device UX acceptance
+
+Canonical detailed plan: `docs/V7_7_9_CONSOLE_UX_ARCHITECTURE.md`.
+
+Canonical V7.7 multi-chain plan: `project-memory/v77-vault-workspace-multi-chain-intelligence-plan.md`.
 
 ---
 
@@ -804,7 +833,7 @@ V7.5 x402 paid sub-agent runtime (IN PROGRESS — V7.5.0 contract/quote boundary
         ↓
 V7.6 Context Efficiency & MCP Surface Optimization (COMPLETE + LIVE-ACCEPTED — profiler + Tool Vault + sparse authority + compact reads + canonical instruction runtime brief + optimized_sparse default flip closed; legacy_full rollback proven)
         ↓
-V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (PLANNED / READ-FIRST — catalog + scope contract → multi-chain search → grounded Q&A → Console Scope → saved workspaces → live scale/citation gate)
+V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (ACTIVE EVOLUTION — V7.7.7f complete/live; V7.7.8 Progressive Grounded Chat LOD next; V7.7.9 Console UX Architecture after)
         ↓
 V7.8 CairnStone Federation / StoneLink (PLANNED / AFTER V7.7 ACCEPTANCE — public node manifest → DNS/.well-known discovery → external read-only Scope → signed external Stone envelopes → cross-vault grounded search/Q&A → federated AC1 → capability tiers → federation security gate)
 ```
