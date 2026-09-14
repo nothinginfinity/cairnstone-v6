@@ -387,6 +387,10 @@ class FakeEnvironmentSandboxD1 {
               });
               return { success: true, meta: { changes: 1 } };
             }
+            // Compile-context / get-session expire stale leases (none stored in this Fake).
+            if (sql.includes("UPDATE code_session_leases") && sql.includes("status = 'expired'")) {
+              return { success: true, meta: { changes: 0 } };
+            }
             if (sql.includes("INSERT INTO chain_heads") || sql.includes("UPDATE chain_heads")
               || sql.includes("INSERT INTO path_heads") || sql.includes("UPDATE path_heads")) {
               db.headMutationAttempts.push({ sql, args });
