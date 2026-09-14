@@ -478,7 +478,8 @@ test("broker registry: workspace mutations are never automatic-read", () => {
   const registry = toolRegistryFromBody({});
   assert.equal(registry.ok, true);
   // V7.7.7d adds eight workspace-tree tools + one code-session working-transport (49 -> 58).
-  assert.equal(registry.total, 58);
+  // V7.7.7e adds nine environment/sandbox/execution-receipt tools (58 -> 67).
+  assert.equal(registry.total, 67);
 
   for (const toolId of WORKSPACE_MUTATION_TOOL_IDS) {
     const entry = registry.tools.find(item => item.tool_id === toolId);

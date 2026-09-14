@@ -478,6 +478,15 @@ class FakeCodeSessionD1 {
             if (sql.includes("FROM code_sessions WHERE code_session_id")) {
               return db.sessions.get(args[0]) || null;
             }
+            if (sql.includes("FROM environment_manifests WHERE environment_manifest_id")) {
+              return null;
+            }
+            if (sql.includes("FROM code_session_sandbox_attachments WHERE attachment_id")) {
+              return null;
+            }
+            if (sql.includes("FROM code_session_execution_receipts WHERE receipt_id")) {
+              return null;
+            }
             if (sql.includes("FROM code_checkpoints WHERE checkpoint_id")) {
               return db.checkpoints.get(args[0]) || null;
             }

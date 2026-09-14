@@ -1347,6 +1347,221 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       additionalProperties: false
     }
   }),
+  // V7.7.7e Reconstructable environment + disposable sandbox + execution receipts.
+  // Operational/reconstructability only — sandbox-local ≠ deploy/merge/accepted-state.
+  // Never automatic-read. Never stores secrets.
+  Object.freeze({
+    tool_id: "cairnstone_environment_manifest_create",
+    connector: "cairnstone",
+    handler: "cairnstone_environment_manifest_create",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7e: create provider-neutral environment manifest (secrets_absent); never automatic-read; never HEADs.",
+    input_schema: {
+      type: "object",
+      required: ["workspace_id", "created_by", "workspace_capability"],
+      properties: {
+        environment_manifest_id: { type: "string" },
+        workspace_id: { type: "string" },
+        created_by: { type: "string" },
+        workspace_capability: { type: "string" },
+        code_session_id: { type: "string" },
+        sandbox_execution_class: { type: "string" },
+        source_repos: { type: "array" },
+        base_commits: { type: "array" },
+        runtime: { type: "object" },
+        lockfiles: { type: "array" },
+        build_commands: { type: "array" },
+        test_commands: { type: "array" },
+        install_commands: { type: "array" },
+        env_bindings: { type: "array" },
+        artifact_cache_refs: { type: "array" },
+        sandbox_adapter: { type: "object" },
+        notes: { type: "string" },
+        payload: { type: "object" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_environment_manifest_get",
+    connector: "cairnstone",
+    handler: "cairnstone_environment_manifest_get",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7e: read environment manifest; scoped_grant only; never automatic-read.",
+    input_schema: {
+      type: "object",
+      required: ["environment_manifest_id", "actor_id", "workspace_capability"],
+      properties: {
+        environment_manifest_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_attach_environment",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_attach_environment",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7e: CAS-attach environment_manifest_id to Code Session; never automatic-read; never HEADs.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "environment_manifest_id", "actor_id", "workspace_capability", "base_revision"],
+      properties: {
+        code_session_id: { type: "string" },
+        environment_manifest_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        base_revision: { type: "number", minimum: 1 }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_sandbox_attach",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_sandbox_attach",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7e: record disposable sandbox attachment; replaceable compute only; never production mutation; never HEADs.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability"],
+      properties: {
+        code_session_id: { type: "string" },
+        attachment_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        environment_manifest_id: { type: "string" },
+        adapter_profile_id: { type: "string" },
+        status: { type: "string" },
+        detail: { type: "object" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_sandbox_detach",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_sandbox_detach",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7e: detach/destroy disposable sandbox attachment; Code Session remains durable; never HEADs.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "attachment_id", "actor_id", "workspace_capability"],
+      properties: {
+        code_session_id: { type: "string" },
+        attachment_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        status: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_code_session_sandbox_get",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_sandbox_get",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7e: read sandbox attachment; scoped_grant only; never automatic-read.",
+    input_schema: {
+      type: "object",
+      required: ["actor_id", "workspace_capability"],
+      properties: {
+        attachment_id: { type: "string" },
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_execution_receipt_create",
+    connector: "cairnstone",
+    handler: "cairnstone_execution_receipt_create",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7e: emit immutable sandbox-local execution receipt; evidence only — NOT deploy/merge/accepted-state; no secrets.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability", "command_class", "status"],
+      properties: {
+        code_session_id: { type: "string" },
+        receipt_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        sandbox_attachment_id: { type: "string" },
+        environment_manifest_id: { type: "string" },
+        base_revision: { type: "number" },
+        command_class: { type: "string" },
+        command_summary: { type: "string" },
+        argv: { type: "array" },
+        status: { type: "string" },
+        exit_code: { type: "number" },
+        duration_ms: { type: "number" },
+        tip_vector_digest: { type: "string" },
+        log_ref: { type: "string" },
+        artifact_refs: { type: "array" },
+        notes: { type: "string" },
+        receipt: { type: "object" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_execution_receipt_get",
+    connector: "cairnstone",
+    handler: "cairnstone_execution_receipt_get",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7e: read immutable execution receipt; scoped_grant only; never automatic-read.",
+    input_schema: {
+      type: "object",
+      required: ["receipt_id", "actor_id", "workspace_capability"],
+      properties: {
+        receipt_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" }
+      },
+      additionalProperties: false
+    }
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_execution_receipt_list",
+    connector: "cairnstone",
+    handler: "cairnstone_execution_receipt_list",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7e: list recent execution receipts for a Code Session; scoped_grant only; never automatic-read.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        limit: { type: "number" }
+      },
+      additionalProperties: false
+    }
+  }),
   Object.freeze({
     tool_id: "cairnstone_send_message",
     connector: "cairnstone",
