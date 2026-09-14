@@ -1,12 +1,13 @@
 # V7.7.8 — Progressive Grounded Chat LOD
 
-Status: **IN PROGRESS — V7.7.8a/b implemented in-repo; V7.7.8c/d deferred**
+Status: **IN PROGRESS — V7.7.8a/b/d implemented in-repo; V7.7.8c Console Answer Depth UX live-verified separately.**
 Slice: `V7.7.8`
 Implementation started: `true`
 Activation gate: V7.7.7 Persistent Code Mode is sufficiently stable that chat answers can bind to one durable Scope / authority snapshot without inventing a second continuity model.
 
-**Implemented now:** `docs/V7_7_8A_GROUNDED_RESPONSE_CONTRACT.md` (V7.7.8a contract + deterministic identity; V7.7.8b lazy LOD renderers/expand).
-**Deferred:** V7.7.8c Console Answer Depth UX; V7.7.8d cross-provider/stale acceptance polish.
+**Implemented now:** `docs/V7_7_8A_GROUNDED_RESPONSE_CONTRACT.md` (V7.7.8a contract + deterministic identity; V7.7.8b lazy LOD renderers/expand); `docs/V7_7_8D_CROSS_PROVIDER_STALE_ACCEPTANCE.md` (V7.7.8d cross-provider envelope + stale/view_original/refresh acceptance).
+**Console:** V7.7.8c Answer Depth UX + View original / Refresh UI live-verified in `cairnstone-v6-console` (not redesigned here).
+**Deferred:** none remaining inside V7.7.8 after 8d lands; next product slice is V7.7.9.
 
 ## Product thesis
 
@@ -233,11 +234,12 @@ Ordinary non-code questions must still support response LOD without requiring a 
    - mobile-first presentation;
    - per-thread / per-Code-Session default depth.
 
-4. **V7.7.8d — Cross-provider + stale-state acceptance**
+4. **V7.7.8d — Cross-provider + stale-state acceptance** ✅ (worker `0.5.38`)
    - provider swap while preserving response identity/evidence;
    - accepted-state change between LOD expansions;
    - original-snapshot vs refresh behavior;
    - real multi-repo / roadmap / Code Session examples.
+   - Contract: `docs/V7_7_8D_CROSS_PROVIDER_STALE_ACCEPTANCE.md`.
 
 ## Acceptance
 
