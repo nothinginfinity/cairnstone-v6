@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   GROUNDED_RESPONSE_SCHEMA,
+  GROUNDED_RESPONSE_ENVELOPE_SCHEMA,
+  GROUNDED_RESPONSE_ENVELOPE_CATALOG,
   GROUNDED_RESPONSE_MCP_TOOL_DEFINITIONS,
   RESPONSE_LOD_CHAR_BUDGETS,
+  applyEnvelopeSwap,
+  buildProviderEnvelope,
   clampResponseLod,
   computeResponseId,
   createGroundedResponseFromBody,
@@ -14,6 +18,7 @@ import {
   normalizeSkeleton,
   parseSkeletonModelResponse,
   renderResponseLod,
+  resolveEnvelopeRoute,
   skeletonIdentityPayload
 } from "../src/grounded-response.js";
 import {
@@ -560,4 +565,258 @@ test("V7.7.8 broker: three grounded-response tools are automatic reads (68 -> 71
   for (const def of GROUNDED_RESPONSE_MCP_TOOL_DEFINITIONS) {
     assert.ok(mcpNames.includes(def.name));
   }
+});
+
+test("V7.7.8d helpers: envelope catalog resolves generation vs reattribution routes", () => {
+  assert.ok(GROUNDED_RESPONSE_ENVELOPE_CATALOG.some(item => item.generation));
+  assert.ok(GROUNDED_RESPONSE_ENVELOPE_CATALOG.some(item => !item.generation));
+
+  const gen = resolveEnvelopeRoute({}, { generationRequired: true });
+  assert.equal(gen.ok, true);
+  assert.equal(gen.provider, "workers_ai");
+  assert.equal(gen.generation, true);
+
+  const reattr = resolveEnvelopeRoute({
+    provider: "openai",
+    model: "gpt-4o-mini"
+  }, { generationRequired: false });
+  assert.equal(reattr.ok, true);
+  assert.equal(reattr.provider, "openai");
+
+  const blocked = resolveEnvelopeRoute({
+    provider: "openai",
+    model: "gpt-4o-mini"
+  }, { generationRequired: true });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error, "model_not_generation_capable");
+
+  const envelope = buildProviderEnvelope({
+    provider: "workers_ai",
+    model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+  });
+  assert.equal(envelope.schema, GROUNDED_RESPONSE_ENVELOPE_SCHEMA);
+  assert.equal(envelope.identity_affecting, false);
+  const swapped = applyEnvelopeSwap(envelope, {
+    provider: "anthropic",
+    model: "claude-sonnet-4-20250514",
+    transport: "anthropic-messages",
+    at: "2026-09-14T12:00:00Z",
+    response_lod: 3
+  });
+  assert.equal(swapped.swapped, true);
+  assert.equal(swapped.envelope.provider, "anthropic");
+  assert.equal(swapped.envelope.history.length, 1);
+  assert.equal(swapped.envelope.identity_affecting, false);
+});
+
+test("V7.7.8d envelope swap on expand: identity/authority/evidence/claims preserved", async () => {
+  const env = makeEnv(makeFixture());
+  const created = await createGroundedResponseFromBody({
+    question: "What shared scope behavior is current?",
+    scope: { mode: "multi", chains: ["alpha", "beta"] },
+    top_k: 2,
+    per_chain_k: 1,
+    max_expansions: 2,
+    context_lines: 0
+  }, env);
+  assert.equal(created.ok, true);
+  assert.equal(created.provider_envelope.schema, GROUNDED_RESPONSE_ENVELOPE_SCHEMA);
+  assert.equal(created.provider_envelope.provider, "workers_ai");
+  assert.equal(created.provider_envelope.visible, true);
+  assert.equal(created.provider_envelope.identity_affecting, false);
+  assert.equal(created.refresh_lineage.is_refresh, false);
+  assert.equal(env._aiCalls(), 1);
+
+  const expanded = await expandGroundedResponseFromBody({
+    response_id: created.response_id,
+    response_lod: 3,
+    provider: "openai",
+    model: "gpt-4o-mini"
+  }, env);
+  assert.equal(expanded.ok, true);
+  assert.equal(expanded.response_id, created.response_id);
+  assert.equal(expanded.authority_digest, created.authority_digest);
+  assert.equal(expanded.evidence_set_digest, created.evidence_set_digest);
+  assert.equal(expanded.answer_skeleton_digest, created.answer_skeleton_digest);
+  assert.equal(expanded.envelope_swapped, true);
+  assert.equal(expanded.provider_envelope.provider, "openai");
+  assert.equal(expanded.provider_envelope.model, "gpt-4o-mini");
+  assert.equal(expanded.provider_envelope.visible, true);
+  assert.ok(expanded.provider_envelope.history.length >= 1);
+  assert.equal(expanded.provider_envelope.history[0].provider, "workers_ai");
+  assert.equal(env._aiCalls(), 1, "envelope swap must not re-run the model");
+  assert.equal(env._writes.chain_heads, 0);
+  assert.equal(env._writes.path_heads, 0);
+});
+
+test("V7.7.8d stale acceptance: reason codes, view_original, refresh lineage", async () => {
+  const fixture = makeFixture();
+  const env = makeEnv(fixture);
+  const created = await createGroundedResponseFromBody({
+    question: "What shared scope behavior is current?",
+    scope: { mode: "multi", chains: ["alpha", "beta"] },
+    actor_id: "tester",
+    thread_id: "thread-8d",
+    code_session_id: "cs-optional-bind",
+    top_k: 2,
+    per_chain_k: 1,
+    max_expansions: 2,
+    context_lines: 0
+  }, env);
+  assert.equal(created.ok, true);
+  assert.equal(created.code_session_id, "cs-optional-bind");
+
+  env._mutateHead("alpha", "f".repeat(64));
+
+  const gotStale = await getGroundedResponseFromBody({ response_id: created.response_id }, env);
+  assert.equal(gotStale.ok, true);
+  assert.equal(gotStale.authority_freshness.status, "authority_changed");
+  assert.equal(gotStale.authority_freshness.stale, true);
+  assert.equal(gotStale.authority_freshness.stale_reason_code, "authority_changed");
+  assert.equal(gotStale.authority_freshness.snapshot_view, "stale");
+  assert.deepEqual(gotStale.authority_freshness.actions, ["view_original", "refresh"]);
+  assert.equal(gotStale.provider_envelope.visible, true);
+
+  const stale = await expandGroundedResponseFromBody({
+    response_id: created.response_id,
+    response_lod: 4
+  }, env);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.error, "stale_response");
+  assert.equal(stale.reason, "authority_changed");
+  assert.equal(stale.stale_reason_code, "authority_changed");
+  assert.equal(stale.snapshot_view, "stale");
+  assert.equal(stale.evidence_set_digest, created.evidence_set_digest);
+  assert.ok(stale.provider_envelope);
+  assert.ok(stale.actions.view_original.params.view_original);
+  assert.equal(stale.actions.refresh.params.refresh_of, created.response_id);
+
+  const original = await expandGroundedResponseFromBody({
+    response_id: created.response_id,
+    response_lod: 4,
+    view_original: true
+  }, env);
+  assert.equal(original.ok, true);
+  assert.equal(original.response_id, created.response_id);
+  assert.equal(original.authority_freshness.snapshot_view, "original");
+  assert.equal(original.authority_freshness.viewed_original_snapshot, true);
+  assert.equal(original.authority_digest, created.authority_digest);
+  assert.equal(original.answer_skeleton_digest, created.answer_skeleton_digest);
+
+  fixture.stones.push({
+    hash: "f".repeat(64),
+    chain_hash: "alpha",
+    repo: "org/a",
+    path: "project-memory/start.md",
+    commit_sha: "5".repeat(40),
+    title: "Alpha moved",
+    stone_json: JSON.stringify({ layers: { lod4: "Alpha orientation moved to a new accepted HEAD." } })
+  });
+  const refreshed = await createGroundedResponseFromBody({
+    question: created.question,
+    scope: { mode: "multi", chains: ["alpha", "beta"] },
+    refresh_of: created.response_id,
+    code_session_id: created.code_session_id,
+    top_k: 2,
+    per_chain_k: 1,
+    max_expansions: 2,
+    context_lines: 0
+  }, env);
+  assert.equal(refreshed.ok, true);
+  assert.notEqual(refreshed.response_id, created.response_id);
+  assert.equal(refreshed.parent_response_id, created.response_id);
+  assert.equal(refreshed.refresh_of, created.response_id);
+  assert.equal(refreshed.refresh_lineage.is_refresh, true);
+  assert.equal(refreshed.refresh_lineage.refresh_of, created.response_id);
+  assert.notEqual(refreshed.authority_digest, created.authority_digest);
+  assert.equal(refreshed.code_session_id, "cs-optional-bind");
+  assert.equal(refreshed.accepted_state_authority, false);
+
+  // Original remains inspectable after refresh.
+  const stillOriginal = await expandGroundedResponseFromBody({
+    response_id: created.response_id,
+    response_lod: 5,
+    view_original: true
+  }, env);
+  assert.equal(stillOriginal.ok, true);
+  assert.equal(stillOriginal.response_id, created.response_id);
+  assert.equal(stillOriginal.authority_digest, created.authority_digest);
+});
+
+test("V7.7.8d multi-scope examples: single_chain, multi-chain, optional Code Session", async () => {
+  const fixture = makeFixture({
+    skeleton: {
+      conclusion: "Roadmap next step is Progressive Grounded Chat LOD.",
+      claims: [
+        { text: "Alpha roadmap points at V7.7.8", stone_hash: ALPHA_PATH, ref_id: "ref-alpha" }
+      ],
+      uncertainty: [],
+      next_action: "Accept V7.7.8d cross-provider stale acceptance.",
+      caveats: [],
+      context: "Single-chain and multi-chain Scope share one trust model.",
+      analysis: "Code Session binding is optional for ordinary Q&A."
+    },
+    aiResponse: null
+  });
+  fixture.aiResponse = JSON.stringify(fixture.skeleton);
+
+  const singleEnv = makeEnv(fixture);
+  const single = await createGroundedResponseFromBody({
+    question: "What is the next roadmap slice?",
+    scope: { mode: "single_chain", chains: ["alpha"] },
+    top_k: 2,
+    per_chain_k: 1,
+    max_expansions: 2,
+    context_lines: 0
+  }, singleEnv);
+  assert.equal(single.ok, true);
+  assert.equal(single.scope_snapshot.mode, "single_chain");
+  assert.equal(single.scope_snapshot.chains.length, 1);
+  assert.equal(single.code_session_id, null);
+  assert.equal(single.accepted_state_authority, false);
+
+  const multiEnv = makeEnv(fixture);
+  const multi = await createGroundedResponseFromBody({
+    question: "What shared scope behavior is current across repos?",
+    scope: { mode: "multi", chains: ["alpha", "beta"] },
+    code_session_id: "cs-roadmap-smoke",
+    top_k: 2,
+    per_chain_k: 1,
+    max_expansions: 2,
+    context_lines: 0
+  }, multiEnv);
+  assert.equal(multi.ok, true);
+  assert.equal(multi.scope_snapshot.mode, "multi");
+  assert.equal(multi.scope_snapshot.chains.length, 2);
+  assert.equal(multi.code_session_id, "cs-roadmap-smoke");
+  assert.notEqual(multi.response_id, single.response_id);
+  assert.equal(multi.provider_envelope.visible, true);
+
+  const deep = await expandGroundedResponseFromBody({
+    response_id: multi.response_id,
+    response_lod: 5
+  }, multiEnv);
+  assert.equal(deep.ok, true);
+  assert.equal(deep.response_id, multi.response_id);
+  assert.match(deep.answer, /Deep trace/);
+  assert.equal(multiEnv._aiCalls(), 1);
+  assert.equal(multiEnv._writes.chain_heads, 0);
+});
+
+test("V7.7.8d create rejects non-generation envelope models without changing allowlist semantics", async () => {
+  const env = makeEnv(makeFixture());
+  const result = await createGroundedResponseFromBody({
+    question: "What shared scope behavior is current?",
+    scope: { mode: "multi", chains: ["alpha", "beta"] },
+    provider: "openai",
+    model: "gpt-4o-mini",
+    top_k: 2,
+    per_chain_k: 1,
+    max_expansions: 2,
+    context_lines: 0
+  }, env);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "model_not_generation_capable");
+  assert.equal(result.accepted_state_authority, false);
+  assert.equal(env._aiCalls(), 0);
 });

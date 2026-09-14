@@ -1,7 +1,7 @@
 # V7.7.8a/b — Grounded Response Contract + Lazy LOD Expansion
 
 **Status:** in-repo implementation slice (V7.7.8a + coherent V7.7.8b).  
-**Does not** implement Console Answer Depth UX (V7.7.8c) or cross-provider stale acceptance polish (V7.7.8d).  
+**Does not** implement Console Answer Depth UX (V7.7.8c; shipped separately) or claim V7.7.8d — see `docs/V7_7_8D_CROSS_PROVIDER_STALE_ACCEPTANCE.md` for cross-provider stale acceptance.  
 **Never** moves `chain_heads` / `path_heads`. Every response API returns `accepted_state_authority: false`.
 
 Canonical product contract: `docs/V7_7_8_PROGRESSIVE_GROUNDED_CHAT_LOD.md`  
@@ -78,7 +78,7 @@ If accepted authority changes after create:
 
 No auto-refresh that silently discards the snapshot the user was reading.
 
-## Deferred
+## Deferred / follow-on
 
-- **V7.7.8c** — Console Answer Depth UX / natural-language “LOD 3 that”
-- **V7.7.8d** — cross-provider envelope swap acceptance + richer live multi-repo examples
+- **V7.7.8c** — Console Answer Depth UX / natural-language “LOD 3 that” (live-verified in console repo; not this worker slice)
+- **V7.7.8d** — cross-provider envelope swap + richer stale/view_original/refresh acceptance → `docs/V7_7_8D_CROSS_PROVIDER_STALE_ACCEPTANCE.md`

@@ -171,7 +171,7 @@ import {
   GROUNDED_RESPONSE_MCP_TOOL_DEFINITIONS
 } from "./grounded-response.js";
 
-const VERSION = "0.5.37";
+const VERSION = "0.5.38";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";

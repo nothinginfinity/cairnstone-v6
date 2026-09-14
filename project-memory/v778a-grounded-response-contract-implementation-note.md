@@ -13,4 +13,4 @@ D1: `migrations/0020_v778a_grounded_responses.sql`
 Docs: `docs/V7_7_8A_GROUNDED_RESPONSE_CONTRACT.md`
 Worker version tip for this slice: `0.5.37`
 
-Deferred: V7.7.8c Console Answer Depth UX; V7.7.8d cross-provider acceptance.
+Deferred at 8a/b time: V7.7.8c Console Answer Depth UX; V7.7.8d cross-provider acceptance (see `v778d-cross-provider-stale-acceptance-implementation-note.md`).

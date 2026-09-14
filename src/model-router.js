@@ -1591,7 +1591,8 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       additionalProperties: false
     }
   }),
-  // V7.7.8a/b Progressive Grounded Chat LOD — response identity + lazy expand.
+  // V7.7.8a/b/d Progressive Grounded Chat LOD — response identity + lazy expand
+  // + cross-provider envelope / stale-state acceptance.
   // Read/automatic like ask_scope: composes Scope/search/citation validation,
   // persists operational response identity only, never moves chain/path HEADs.
   Object.freeze({
@@ -1601,7 +1602,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "read",
     authorization: "automatic",
     available: true,
-    description: "V7.7.8a/b: create one grounded response bound to Scope/authority/evidence/claim skeleton; default response_lod 1; distinct from stone_lod; never mutates accepted HEADs.",
+    description: "V7.7.8a/b/d: create one grounded response bound to Scope/authority/evidence/claim skeleton; default response_lod 1; provider/model are outer envelope only; distinct from stone_lod; never mutates accepted HEADs.",
     input_schema: GROUNDED_RESPONSE_CREATE_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
@@ -1611,7 +1612,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "read",
     authorization: "automatic",
     available: true,
-    description: "V7.7.8a: load one grounded response by response_id and report authority freshness without mutating accepted state.",
+    description: "V7.7.8a/d: load one grounded response by response_id; report authority freshness, refresh lineage, and visible provider/model envelope without mutating accepted state.",
     input_schema: GROUNDED_RESPONSE_GET_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
@@ -1621,7 +1622,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "read",
     authorization: "automatic",
     available: true,
-    description: "V7.7.8b: lazily expand the same response_id to a deeper response_lod; stale authority fails closed unless view_original; refresh is a new response_id.",
+    description: "V7.7.8b/d: lazily expand the same response_id to a deeper response_lod; stale authority fails closed unless view_original; optional provider/model reattributes outer envelope only; refresh is a new response_id.",
     input_schema: GROUNDED_RESPONSE_EXPAND_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
