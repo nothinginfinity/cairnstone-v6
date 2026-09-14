@@ -160,8 +160,12 @@ import {
   listExecutionReceiptsFromBody,
   ENVIRONMENT_SANDBOX_MCP_TOOL_DEFINITIONS
 } from "./environment-sandbox.js";
+import {
+  codeSessionConsoleViewFromBody,
+  CODE_SESSION_CONSOLE_MCP_TOOL_DEFINITIONS
+} from "./code-session-console.js";
 
-const VERSION = "0.5.35";
+const VERSION = "0.5.36";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -272,6 +276,9 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/v1/code-sessions/context") {
         return json(await compileCodeSessionContextFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/code-sessions/console-view") {
+        return json(await codeSessionConsoleViewFromBody(await request.json(), env));
       }
       if (request.method === "POST" && url.pathname === "/v1/code-sessions/task-transition") {
         return json(await transitionCodeSessionTaskFromBody(await request.json(), env));
@@ -529,6 +536,7 @@ function routes() {
     "POST /v1/code-sessions/pause",
     "POST /v1/code-sessions/resume",
     "POST /v1/code-sessions/context",
+    "POST /v1/code-sessions/console-view",
     "POST /v1/code-sessions/task-transition",
     "POST /v1/code-sessions/leases/acquire",
     "POST /v1/code-sessions/leases/renew",
@@ -1171,6 +1179,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_code_session_pause") return pauseCodeSessionFromBody(args, env);
   if (name === "cairnstone_code_session_resume") return resumeCodeSessionFromBody(args, env);
   if (name === "cairnstone_code_session_compile_context") return compileCodeSessionContextFromBody(args, env);
+  if (name === "cairnstone_code_session_console_view") return codeSessionConsoleViewFromBody(args, env);
   if (name === "cairnstone_code_checkpoint_create") return createCodeCheckpointFromBody(args, env);
   if (name === "cairnstone_code_checkpoint_get") return getCodeCheckpointFromBody(args, env);
   if (name === "cairnstone_code_checkpoint_list") return listCodeCheckpointsFromBody(args, env);
@@ -1395,6 +1404,7 @@ function mcpTools() {
     ...WORKSPACE_TREE_MCP_TOOL_DEFINITIONS,
     WORKSPACE_INVITE_CLAIM_TOOL_DEFINITION,
     ...CODE_SESSION_MCP_TOOL_DEFINITIONS,
+    ...CODE_SESSION_CONSOLE_MCP_TOOL_DEFINITIONS,
     ...ENVIRONMENT_SANDBOX_MCP_TOOL_DEFINITIONS,
     {
       name: "cairnstone_create_stone",

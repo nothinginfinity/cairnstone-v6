@@ -1562,6 +1562,30 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       additionalProperties: false
     }
   }),
+  // V7.7.7f Console Persistent Code Mode UX — thin read aggregation over
+  // existing Code Session surfaces. Operator UX only; never automatic-read;
+  // never a new trust root; Invite Agent remains V7.7.6 mint/claim.
+  Object.freeze({
+    tool_id: "cairnstone_code_session_console_view",
+    connector: "cairnstone",
+    handler: "cairnstone_code_session_console_view",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.7f: Code Session Console operator snapshot (actors/tests/tree/actions); scoped_grant only; never automatic-read; Console grants no new authority.",
+    input_schema: {
+      type: "object",
+      required: ["code_session_id", "actor_id", "workspace_capability"],
+      properties: {
+        code_session_id: { type: "string" },
+        actor_id: { type: "string" },
+        workspace_capability: { type: "string" },
+        checkpoint_limit: { type: "number" },
+        receipt_limit: { type: "number" }
+      },
+      additionalProperties: false
+    }
+  }),
   Object.freeze({
     tool_id: "cairnstone_send_message",
     connector: "cairnstone",

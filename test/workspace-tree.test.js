@@ -782,7 +782,8 @@ test("broker: WORKSPACE_TREE_MUTATION_TOOL_IDS never in listAutomaticReadToolIds
   const registry = toolRegistryFromBody({});
   assert.equal(registry.ok, true);
   // V7.7.7e adds nine environment/sandbox/execution-receipt tools (58 -> 67).
-  assert.equal(registry.total, 67);
+  // V7.7.7f adds cairnstone_code_session_console_view (67 -> 68).
+  assert.equal(registry.total, 68);
 
   for (const toolId of WORKSPACE_TREE_MUTATION_TOOL_IDS) {
     const entry = registry.tools.find(item => item.tool_id === toolId);

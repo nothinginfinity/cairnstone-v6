@@ -109,7 +109,7 @@ Broker: mutations = `risk_class:mutation` + `scoped_grant`; reads = `scoped_gran
 
 ## Out of scope (later slices)
 
-- **7.7.7f** Console Persistent Code Mode UX
+- **7.7.7f** Console Persistent Code Mode UX — see [V7_7_7F_CODE_SESSION_CONSOLE.md](./V7_7_7F_CODE_SESSION_CONSOLE.md)
 - Promoting sandbox receipts into project-memory accepted HEAD
 - Treating sandbox attach/success as deploy or production mutation authority
 - Storing raw provider credentials / secret env values in manifests or receipts
