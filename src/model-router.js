@@ -59,6 +59,9 @@ import {
 import {
   FORWARD_WITH_NOTE_TOOL_DEFINITION
 } from "./forward-note.js";
+import {
+  INTENT_ROUTE_TOOL_DEFINITION
+} from "./intent-router.js";
 
 export const AGENT_CONTEXT_SCHEMA = "cairnstone-agent-context-v1";
 export const MODEL_REQUEST_SCHEMA = "cairnstone-model-request-v1";
@@ -1803,6 +1806,17 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     available: true,
     description: "V7.7.10b: Forward with note — new AC1 referencing original object_ref; not default share path.",
     input_schema: FORWARD_WITH_NOTE_TOOL_DEFINITION.inputSchema
+  }),
+  // V7.7.10c — deterministic Intent Router (proposal/read plan only; never mutates / never HEADs).
+  Object.freeze({
+    tool_id: "cairnstone_intent_route",
+    connector: "cairnstone",
+    handler: "cairnstone_intent_route",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10c: deterministic no-LLM Intent Router; returns proposal/read plan only; never auto-mutates.",
+    input_schema: INTENT_ROUTE_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
     tool_id: "cairnstone_send_message",
