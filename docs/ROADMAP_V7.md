@@ -812,6 +812,121 @@ V7.8.0 public node manifest
 
 ---
 
+## V7.9 — Skills vNext / Capability Recipes
+
+Status: **PLANNED / ROADMAP-ACCEPTED — implementation not started.** V7.9 evolves the existing V6.9/V6.10 accepted-skills system from primarily instruction-oriented progressive loading into a provider-neutral capability-recipe layer that remains portable across ChatGPT, Claude, Grok, Bolt, Cursor, and future MCP hosts.
+
+### Goal
+
+A CairnStone skill should be able to describe not only **how an agent should behave**, but also **which abstract capabilities it needs, how those capabilities may be used, and how success must be verified**. The LLM remains a replaceable reasoning engine; skill identity, provenance, capability requirements, policy, and acceptance remain CairnStone-controlled state.
+
+The intended progression is:
+
+```text
+behavioral guidance
+  -> operational skill
+  -> capability recipe / capability pack
+```
+
+Pure behavioral guidance remains valid when useful, but it must not masquerade as executable capability.
+
+### V7.9.0 — Skill taxonomy + schema evolution
+
+Introduce explicit skill classes such as:
+
+- **behavioral guardrail** — compact cross-model guidance/policy with no implied tool capability;
+- **operational skill** — a repeatable procedure with capability requirements and success criteria;
+- **capability pack** — operational skill plus policy/authorization expectations, verification contract, receipts/evidence expectations, and optional host/tool adapters.
+
+Extend manifest/schema metadata while preserving backward compatibility with the current accepted catalog. Candidate fields include `kind`, `requires_capabilities`, `success_criteria`, `verification`, `risk_policy`, and structured `provenance`. Existing `requires_tools` remains a compatibility surface during migration rather than being removed abruptly.
+
+### V7.9.1 — Capability contracts instead of hard-coded host tool names
+
+Skills should prefer abstract capability identities such as:
+
+```text
+repo.read
+repo.diff
+repo.patch
+sandbox.test
+cairnstone.accept
+```
+
+CairnStone then resolves those capability requirements against the Tool Vault / broker and the tools actually available in the current host/runtime. The target architecture is:
+
+```text
+Skill
+  -> capability requirements
+  -> CairnStone capability resolver / Tool Vault
+  -> host-specific tool contract
+  -> existing V7.3 policy + authorization boundary
+```
+
+A skill never grants authority merely by requiring a capability. Missing capabilities must fail closed or explicitly degrade to guidance-only behavior when the skill contract permits it. Tool resolution must preserve the existing rule that model intent is not execution authority.
+
+### V7.9.2 — Verification-bearing execution recipes
+
+Operational skills should define verifiable execution structure rather than prompt advice alone. A coding recipe may require:
+
+```text
+establish immutable/base state
+  -> state assumptions / ambiguity
+  -> identify smallest change surface
+  -> perform bounded mutation under policy
+  -> inspect resulting diff
+  -> run relevant tests/checks
+  -> verify requested outcome
+  -> emit evidence / receipts
+```
+
+Acceptance should distinguish "the model followed the advice" from "the requested result was actually proven." Existing execution receipts, Code Session checkpoints, Git commit evidence, path/chain HEAD authority, and live verification primitives should be reused rather than duplicated.
+
+### V7.9.3 — External-skill adaptation pipeline
+
+External/open-source skills may enter CairnStone first as immutable reference Stones. They do **not** become accepted CairnStone skills automatically.
+
+Promotion path:
+
+```text
+external immutable source Stone
+  -> provenance + license review
+  -> CairnStone-native candidate adaptation
+  -> capability/policy mapping
+  -> lint + tests + cross-model evaluation
+  -> immutable Git source
+  -> individual skill path HEAD acceptance
+  -> manifest HEAD accepted last
+```
+
+Upstream identity and CairnStone-derived identity remain separate. External source updates create freshness/drift evidence, not silent skill updates. Attribution/license obligations travel with derived skills where required.
+
+**First pilot:** adapt the MIT-declared upstream `karpathy-guidelines` skill from `multica-ai/andrej-karpathy-skills` (external reference Stone `b2a95cf4a1ca...`, immutable source commit `64723a49ea6117894304eb491f0d32a60570bf45`) into a CairnStone-native experimental recipe, working name `engineering.surgical-change`. The pilot should transform guidance such as simplicity, surgical edits, explicit assumptions, and goal-driven verification into a capability-aware recipe rather than simply copying the prompt text.
+
+### V7.9.4 — Cross-model / cross-host portability
+
+Prove that one accepted capability recipe can be loaded by multiple reasoning hosts while resolving to different concrete tool surfaces. ChatGPT, Claude, and Grok are the minimum first acceptance matrix; Bolt/Cursor or another independent MCP host should be added where practical.
+
+The same accepted skill identity should preserve behavioral contract, required capability semantics, risk/authorization expectations, and verification criteria even when exact connector/tool names differ.
+
+### V7.9 acceptance
+
+V7.9 is complete only when live acceptance proves at minimum:
+
+- existing behavioral skills remain backward compatible and progressively loaded;
+- operational skills can declare abstract capabilities without hard-coding one provider/client's tool names;
+- capability resolution maps to real Tool Vault/broker contracts and never bypasses V7.3 policy/authorization;
+- missing or ambiguous capability mappings fail closed;
+- one capability recipe runs across ChatGPT, Claude, and Grok with equivalent semantic behavior despite different native harness/tool surfaces;
+- verification criteria produce grounded evidence/receipts rather than self-reported success;
+- external-reference skills remain non-authoritative until explicitly adapted, linted, tested, Git-versioned, and accepted through the existing manifest-last process;
+- provenance and applicable license/attribution survive adaptation;
+- the Karpathy-guidelines pilot demonstrates measurable value beyond what the models' native harnesses already provide;
+- skill loading remains bounded/progressive and does not turn the entire capability catalog into startup context.
+
+V7.9 extends the skills/control plane; it does not replace Tool Vault, V7.3 authorization, Persistent Code Mode, model profiles, or provider-native harnesses. Its purpose is to make those layers composable through portable, accepted recipes.
+
+---
+
 ## Phase ordering
 
 ```text
@@ -836,6 +951,8 @@ V7.6 Context Efficiency & MCP Surface Optimization (COMPLETE + LIVE-ACCEPTED —
 V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (ACTIVE EVOLUTION — V7.7.7f complete/live; V7.7.8 Progressive Grounded Chat LOD next; V7.7.9 Console UX Architecture after)
         ↓
 V7.8 CairnStone Federation / StoneLink (PLANNED / AFTER V7.7 ACCEPTANCE — public node manifest → DNS/.well-known discovery → external read-only Scope → signed external Stone envelopes → cross-vault grounded search/Q&A → federated AC1 → capability tiers → federation security gate)
+        ↓
+V7.9 Skills vNext / Capability Recipes (PLANNED — behavioral guardrails → operational skills → abstract capability contracts → verification-bearing recipes → external-skill adaptation → cross-model/host acceptance)
 ```
 
 Do not skip V7.0.
