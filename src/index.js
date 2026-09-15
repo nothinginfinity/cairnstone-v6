@@ -200,8 +200,12 @@ import {
   forwardWithNoteFromBody,
   FORWARD_NOTE_MCP_TOOL_DEFINITIONS
 } from "./forward-note.js";
+import {
+  routeIntentFromBody,
+  INTENT_ROUTE_MCP_TOOL_DEFINITIONS
+} from "./intent-router.js";
 
-const VERSION = "0.5.40";
+const VERSION = "0.5.41";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -507,6 +511,10 @@ export default {
           createStone: body => createStoneFromBody(body, env)
         }));
       }
+      // V7.7.10c — deterministic Intent Router (proposal/read plan only; never mutates)
+      if (request.method === "POST" && url.pathname === "/v1/intent/route") {
+        return json(routeIntentFromBody(await request.json(), env));
+      }
       const manifestV2Match = url.pathname.match(/^\/v2\/chains\/([^/]+)\/manifest$/);
       if (request.method === "GET" && manifestV2Match) {
         const chain = decodeURIComponent(manifestV2Match[1]);
@@ -694,6 +702,7 @@ function routes() {
     "POST /v1/task-runs/get",
     "POST /v1/task-runs/list",
     "POST /v1/correspondence/forward-with-note",
+    "POST /v1/intent/route",
     "GET /v2/chains/:chain/manifest?detail=summary|compact|orientation|full&since=ISO&path=...",  
     "GET /v2/stones/:hash?level=lod1-5",
     "GET /v2/chains/:chain/resume?detail=full|compact|start_here&since=ISO&path=..."
@@ -1274,6 +1283,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_forward_with_note") {
     return forwardWithNoteFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   }
+  if (name === "cairnstone_intent_route") return routeIntentFromBody(args, env);
   if (name === "cairnstone_workspace_create") return createWorkspaceFromBody(args, env);
   if (name === "cairnstone_workspace_list") return listWorkspacesFromBody(args, env);
   if (name === "cairnstone_workspace_stat") return statWorkspaceFromBody(args, env);
@@ -1549,6 +1559,7 @@ function mcpTools() {
     ...ACCESS_GRANT_MCP_TOOL_DEFINITIONS,
     ...TASK_RUN_MCP_TOOL_DEFINITIONS,
     ...FORWARD_NOTE_MCP_TOOL_DEFINITIONS,
+    ...INTENT_ROUTE_MCP_TOOL_DEFINITIONS,
     ...ENVIRONMENT_SANDBOX_MCP_TOOL_DEFINITIONS,
     {
       name: "cairnstone_create_stone",

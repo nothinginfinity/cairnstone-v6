@@ -926,8 +926,8 @@ test("compileCodeSessionContextFromBody includes environment_sandbox closed auth
 test("broker: ENVIRONMENT_SANDBOX tools are scoped_grant; none automatic-read; MCP defs present", () => {
   const registry = toolRegistryFromBody({}, {}, { registry: DEFAULT_TOOL_BROKER_REGISTRY });
   assert.equal(registry.ok, true);
-  // V7.7.10b adds 10 access-grant/attachment/task-run/forward tools (76 -> 86).
-  assert.equal(registry.total, 86);
+  // V7.7.10b adds 10 access-grant/attachment/task-run/forward tools (76 -> 86; V7.7.10c +1 intent router -> 87).
+  assert.equal(registry.total, 87);
 
   for (const toolId of ENVIRONMENT_SANDBOX_MUTATION_TOOL_IDS) {
     const entry = registry.tools.find(item => item.tool_id === toolId);

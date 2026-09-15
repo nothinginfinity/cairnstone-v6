@@ -113,8 +113,8 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   // V7.7.7d adds eight workspace-tree tools + one code-session working-transport (49 -> 58).
   // V7.7.7e adds nine environment/sandbox/execution-receipt tools (58 -> 67).
   // V7.7.7f adds cairnstone_code_session_console_view (67 -> 68).
-  // V7.7.10b adds 10 access-grant/attachment/task-run/forward tools (76 -> 86).
-  assert.equal(result.total, 86);
+  // V7.7.10b adds 10 access-grant/attachment/task-run/forward tools (76 -> 86; V7.7.10c +1 intent router -> 87).
+  assert.equal(result.total, 87);
 
   const health = result.tools.find(item => item.tool_id === "cairnstone_health");
   assert.equal(health.risk_class, "read");
