@@ -926,8 +926,8 @@ test("compileCodeSessionContextFromBody includes environment_sandbox closed auth
 test("broker: ENVIRONMENT_SANDBOX tools are scoped_grant; none automatic-read; MCP defs present", () => {
   const registry = toolRegistryFromBody({}, {}, { registry: DEFAULT_TOOL_BROKER_REGISTRY });
   assert.equal(registry.ok, true);
-  // V7.7.10a adds 5 conversation-session tools (71 -> 76).
-  assert.equal(registry.total, 76);
+  // V7.7.10b adds 10 access-grant/attachment/task-run/forward tools (76 -> 86).
+  assert.equal(registry.total, 86);
 
   for (const toolId of ENVIRONMENT_SANDBOX_MUTATION_TOOL_IDS) {
     const entry = registry.tools.find(item => item.tool_id === toolId);

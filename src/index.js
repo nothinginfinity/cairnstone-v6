@@ -178,8 +178,30 @@ import {
   appendConversationTurnFromBody,
   CONVERSATION_SESSION_MCP_TOOL_DEFINITIONS
 } from "./conversation-session.js";
+import {
+  resolveAttachmentRefsFromBody,
+  ATTACHMENT_REF_MCP_TOOL_DEFINITIONS
+} from "./attachment-refs.js";
+import {
+  createAccessGrantFromBody,
+  getAccessGrantFromBody,
+  listAccessGrantsFromBody,
+  revokeAccessGrantFromBody,
+  markAccessGrantFirstReadFromBody,
+  ACCESS_GRANT_MCP_TOOL_DEFINITIONS
+} from "./access-grant.js";
+import {
+  proposeTaskRunFromBody,
+  getTaskRunFromBody,
+  listTaskRunsFromBody,
+  TASK_RUN_MCP_TOOL_DEFINITIONS
+} from "./task-run.js";
+import {
+  forwardWithNoteFromBody,
+  FORWARD_NOTE_MCP_TOOL_DEFINITIONS
+} from "./forward-note.js";
 
-const VERSION = "0.5.39";
+const VERSION = "0.5.40";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -450,6 +472,41 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/conversation-sessions/append-turn") {
         return json(await appendConversationTurnFromBody(await request.json(), env));
       }
+      // V7.7.10b — typed attachments + access grants + task-run proposals + forward-with-note
+      if (request.method === "POST" && url.pathname === "/v1/attachment-refs/resolve") {
+        return json(await resolveAttachmentRefsFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/access-grants") {
+        return json(await createAccessGrantFromBody(await request.json(), env, {
+          createStone: body => createStoneFromBody(body, env)
+        }));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/access-grants/get") {
+        return json(await getAccessGrantFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/access-grants/list") {
+        return json(await listAccessGrantsFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/access-grants/revoke") {
+        return json(await revokeAccessGrantFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/access-grants/mark-first-read") {
+        return json(await markAccessGrantFirstReadFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/task-runs/propose") {
+        return json(await proposeTaskRunFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/task-runs/get") {
+        return json(await getTaskRunFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/task-runs/list") {
+        return json(await listTaskRunsFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/correspondence/forward-with-note") {
+        return json(await forwardWithNoteFromBody(await request.json(), env, {
+          createStone: body => createStoneFromBody(body, env)
+        }));
+      }
       const manifestV2Match = url.pathname.match(/^\/v2\/chains\/([^/]+)\/manifest$/);
       if (request.method === "GET" && manifestV2Match) {
         const chain = decodeURIComponent(manifestV2Match[1]);
@@ -627,6 +684,16 @@ function routes() {
     "POST /v1/conversation-sessions/list",
     "POST /v1/conversation-sessions/update",
     "POST /v1/conversation-sessions/append-turn",
+    "POST /v1/attachment-refs/resolve",
+    "POST /v1/access-grants",
+    "POST /v1/access-grants/get",
+    "POST /v1/access-grants/list",
+    "POST /v1/access-grants/revoke",
+    "POST /v1/access-grants/mark-first-read",
+    "POST /v1/task-runs/propose",
+    "POST /v1/task-runs/get",
+    "POST /v1/task-runs/list",
+    "POST /v1/correspondence/forward-with-note",
     "GET /v2/chains/:chain/manifest?detail=summary|compact|orientation|full&since=ISO&path=...",  
     "GET /v2/stones/:hash?level=lod1-5",
     "GET /v2/chains/:chain/resume?detail=full|compact|start_here&since=ISO&path=..."
@@ -1193,6 +1260,20 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_conversation_session_list") return listConversationSessionsFromBody(args, env);
   if (name === "cairnstone_conversation_session_update") return updateConversationSessionFromBody(args, env);
   if (name === "cairnstone_conversation_session_append_turn") return appendConversationTurnFromBody(args, env);
+  if (name === "cairnstone_attachment_ref_resolve") return resolveAttachmentRefsFromBody(args, env);
+  if (name === "cairnstone_access_grant_create") {
+    return createAccessGrantFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
+  }
+  if (name === "cairnstone_access_grant_get") return getAccessGrantFromBody(args, env);
+  if (name === "cairnstone_access_grant_list") return listAccessGrantsFromBody(args, env);
+  if (name === "cairnstone_access_grant_revoke") return revokeAccessGrantFromBody(args, env);
+  if (name === "cairnstone_access_grant_mark_first_read") return markAccessGrantFirstReadFromBody(args, env);
+  if (name === "cairnstone_task_run_propose") return proposeTaskRunFromBody(args, env);
+  if (name === "cairnstone_task_run_get") return getTaskRunFromBody(args, env);
+  if (name === "cairnstone_task_run_list") return listTaskRunsFromBody(args, env);
+  if (name === "cairnstone_forward_with_note") {
+    return forwardWithNoteFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
+  }
   if (name === "cairnstone_workspace_create") return createWorkspaceFromBody(args, env);
   if (name === "cairnstone_workspace_list") return listWorkspacesFromBody(args, env);
   if (name === "cairnstone_workspace_stat") return statWorkspaceFromBody(args, env);
@@ -1464,6 +1545,10 @@ function mcpTools() {
     ...CODE_SESSION_CONSOLE_MCP_TOOL_DEFINITIONS,
     ...GROUNDED_RESPONSE_MCP_TOOL_DEFINITIONS,
     ...CONVERSATION_SESSION_MCP_TOOL_DEFINITIONS,
+    ...ATTACHMENT_REF_MCP_TOOL_DEFINITIONS,
+    ...ACCESS_GRANT_MCP_TOOL_DEFINITIONS,
+    ...TASK_RUN_MCP_TOOL_DEFINITIONS,
+    ...FORWARD_NOTE_MCP_TOOL_DEFINITIONS,
     ...ENVIRONMENT_SANDBOX_MCP_TOOL_DEFINITIONS,
     {
       name: "cairnstone_create_stone",
