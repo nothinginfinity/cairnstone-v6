@@ -170,8 +170,16 @@ import {
   expandGroundedResponseFromBody,
   GROUNDED_RESPONSE_MCP_TOOL_DEFINITIONS
 } from "./grounded-response.js";
+import {
+  createConversationSessionFromBody,
+  getConversationSessionFromBody,
+  listConversationSessionsFromBody,
+  updateConversationSessionFromBody,
+  appendConversationTurnFromBody,
+  CONVERSATION_SESSION_MCP_TOOL_DEFINITIONS
+} from "./conversation-session.js";
 
-const VERSION = "0.5.38";
+const VERSION = "0.5.39";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -426,6 +434,22 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/grounded-response/expand") {
         return json(await expandGroundedResponseFromBody(await request.json(), env));
       }
+      // V7.7.10a Conversation Session (operational D1; never moves HEADs).
+      if (request.method === "POST" && url.pathname === "/v1/conversation-sessions") {
+        return json(await createConversationSessionFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/conversation-sessions/get") {
+        return json(await getConversationSessionFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/conversation-sessions/list") {
+        return json(await listConversationSessionsFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/conversation-sessions/update") {
+        return json(await updateConversationSessionFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/conversation-sessions/append-turn") {
+        return json(await appendConversationTurnFromBody(await request.json(), env));
+      }
       const manifestV2Match = url.pathname.match(/^\/v2\/chains\/([^/]+)\/manifest$/);
       if (request.method === "GET" && manifestV2Match) {
         const chain = decodeURIComponent(manifestV2Match[1]);
@@ -598,6 +622,11 @@ function routes() {
     "POST /v1/grounded-response",
     "POST /v1/grounded-response/get",
     "POST /v1/grounded-response/expand",
+    "POST /v1/conversation-sessions",
+    "POST /v1/conversation-sessions/get",
+    "POST /v1/conversation-sessions/list",
+    "POST /v1/conversation-sessions/update",
+    "POST /v1/conversation-sessions/append-turn",
     "GET /v2/chains/:chain/manifest?detail=summary|compact|orientation|full&since=ISO&path=...",  
     "GET /v2/stones/:hash?level=lod1-5",
     "GET /v2/chains/:chain/resume?detail=full|compact|start_here&since=ISO&path=..."
@@ -1159,6 +1188,11 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_grounded_response") return createGroundedResponseFromBody(args, env);
   if (name === "cairnstone_grounded_response_get") return getGroundedResponseFromBody(args, env);
   if (name === "cairnstone_grounded_response_expand") return expandGroundedResponseFromBody(args, env);
+  if (name === "cairnstone_conversation_session_create") return createConversationSessionFromBody(args, env);
+  if (name === "cairnstone_conversation_session_get") return getConversationSessionFromBody(args, env);
+  if (name === "cairnstone_conversation_session_list") return listConversationSessionsFromBody(args, env);
+  if (name === "cairnstone_conversation_session_update") return updateConversationSessionFromBody(args, env);
+  if (name === "cairnstone_conversation_session_append_turn") return appendConversationTurnFromBody(args, env);
   if (name === "cairnstone_workspace_create") return createWorkspaceFromBody(args, env);
   if (name === "cairnstone_workspace_list") return listWorkspacesFromBody(args, env);
   if (name === "cairnstone_workspace_stat") return statWorkspaceFromBody(args, env);
@@ -1429,6 +1463,7 @@ function mcpTools() {
     ...CODE_SESSION_MCP_TOOL_DEFINITIONS,
     ...CODE_SESSION_CONSOLE_MCP_TOOL_DEFINITIONS,
     ...GROUNDED_RESPONSE_MCP_TOOL_DEFINITIONS,
+    ...CONVERSATION_SESSION_MCP_TOOL_DEFINITIONS,
     ...ENVIRONMENT_SANDBOX_MCP_TOOL_DEFINITIONS,
     {
       name: "cairnstone_create_stone",
