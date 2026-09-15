@@ -230,6 +230,8 @@ export function normalizeSelectedActors(input, createdBy = null) {
 /**
  * Opaque typed attachment / object_ref placeholders for 10b resolvers.
  * Does NOT resolve, grant access, or imply capability.
+ * When 10b provides resolved fields (kind/canonical_ref/orientation/unresolved=false),
+ * they are preserved as operational metadata only.
  */
 export function normalizeAttachmentSet(input) {
   if (input === undefined || input === null || input === "") {
@@ -261,7 +263,7 @@ export function normalizeAttachmentSet(input) {
     if (!objectRef && !attachmentRef) {
       return { ok: false, error: "invalid_attachment_set_entry", detail: "object_ref_or_attachment_ref_required" };
     }
-    out.push({
+    const entry = {
       attachment_id: isNonEmptyString(item.attachment_id)
         ? String(item.attachment_id).trim().slice(0, 128)
         : null,
@@ -270,7 +272,17 @@ export function normalizeAttachmentSet(input) {
       kind: isNonEmptyString(item.kind) ? String(item.kind).trim().slice(0, 64) : null,
       unresolved: item.unresolved === false ? false : true,
       accepted_state_authority: false
-    });
+    };
+    if (isNonEmptyString(item.canonical_ref)) {
+      entry.canonical_ref = String(item.canonical_ref).trim().slice(0, MAX_REF_LEN);
+    }
+    if (item.orientation !== undefined && item.orientation !== null) {
+      entry.orientation = scrubSecretsDeep(item.orientation);
+    }
+    if (item.grants_no_capability !== undefined) {
+      entry.grants_no_capability = item.grants_no_capability !== false;
+    }
+    out.push(entry);
   }
   return { ok: true, attachment_set: out };
 }

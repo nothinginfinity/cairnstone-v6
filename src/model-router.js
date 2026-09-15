@@ -41,6 +41,24 @@ import {
   CONVERSATION_SESSION_UPDATE_TOOL_DEFINITION,
   CONVERSATION_SESSION_APPEND_TURN_TOOL_DEFINITION
 } from "./conversation-session.js";
+import {
+  ATTACHMENT_REF_RESOLVE_TOOL_DEFINITION
+} from "./attachment-refs.js";
+import {
+  ACCESS_GRANT_CREATE_TOOL_DEFINITION,
+  ACCESS_GRANT_GET_TOOL_DEFINITION,
+  ACCESS_GRANT_LIST_TOOL_DEFINITION,
+  ACCESS_GRANT_REVOKE_TOOL_DEFINITION,
+  ACCESS_GRANT_MARK_FIRST_READ_TOOL_DEFINITION
+} from "./access-grant.js";
+import {
+  TASK_RUN_PROPOSE_TOOL_DEFINITION,
+  TASK_RUN_GET_TOOL_DEFINITION,
+  TASK_RUN_LIST_TOOL_DEFINITION
+} from "./task-run.js";
+import {
+  FORWARD_WITH_NOTE_TOOL_DEFINITION
+} from "./forward-note.js";
 
 export const AGENT_CONTEXT_SCHEMA = "cairnstone-agent-context-v1";
 export const MODEL_REQUEST_SCHEMA = "cairnstone-model-request-v1";
@@ -1683,6 +1701,108 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     available: true,
     description: "V7.7.10a: append durable turn/message identity (CAS); never promotes conversation history to project memory.",
     input_schema: CONVERSATION_SESSION_APPEND_TURN_TOOL_DEFINITION.inputSchema
+  }),
+  // V7.7.10b — typed attachments + access grants + task-run proposals + forward-with-note.
+  // Never HEADs / never automatic-read for delegate / never accepted-state authority.
+  Object.freeze({
+    tool_id: "cairnstone_attachment_ref_resolve",
+    connector: "cairnstone",
+    handler: "cairnstone_attachment_ref_resolve",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10b: resolve typed object_ref attachments; orientation only; never grants capability.",
+    input_schema: ATTACHMENT_REF_RESOLVE_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_access_grant_create",
+    connector: "cairnstone",
+    handler: "cairnstone_access_grant_create",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10b: create cairnstone-access-grant-v1 (Give Access); never copies payload; never mints capabilities.",
+    input_schema: ACCESS_GRANT_CREATE_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_access_grant_get",
+    connector: "cairnstone",
+    handler: "cairnstone_access_grant_get",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10b: get one access grant; never accepted-state authority.",
+    input_schema: ACCESS_GRANT_GET_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_access_grant_list",
+    connector: "cairnstone",
+    handler: "cairnstone_access_grant_list",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10b: list access grants visible to actor; never moves HEADs.",
+    input_schema: ACCESS_GRANT_LIST_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_access_grant_revoke",
+    connector: "cairnstone",
+    handler: "cairnstone_access_grant_revoke",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10b: revoke access grant (future access only); never moves HEADs.",
+    input_schema: ACCESS_GRANT_REVOKE_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_access_grant_mark_first_read",
+    connector: "cairnstone",
+    handler: "cairnstone_access_grant_mark_first_read",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10b: principal marks first_read on a grant; audit only.",
+    input_schema: ACCESS_GRANT_MARK_FIRST_READ_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_task_run_propose",
+    connector: "cairnstone",
+    handler: "cairnstone_task_run_propose",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10b: create Assign/Ask-to-work Task Run PROPOSAL (not dispatched).",
+    input_schema: TASK_RUN_PROPOSE_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_task_run_get",
+    connector: "cairnstone",
+    handler: "cairnstone_task_run_get",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10b: get one Task Run proposal; never dispatches.",
+    input_schema: TASK_RUN_GET_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_task_run_list",
+    connector: "cairnstone",
+    handler: "cairnstone_task_run_list",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10b: list Task Run proposals visible to actor.",
+    input_schema: TASK_RUN_LIST_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_forward_with_note",
+    connector: "cairnstone",
+    handler: "cairnstone_forward_with_note",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10b: Forward with note — new AC1 referencing original object_ref; not default share path.",
+    input_schema: FORWARD_WITH_NOTE_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
     tool_id: "cairnstone_send_message",
