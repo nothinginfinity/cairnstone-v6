@@ -648,6 +648,21 @@ Canonical detailed plan: `docs/V7_7_9_CONSOLE_UX_ARCHITECTURE.md`.
 
 Canonical V7.7 multi-chain plan: `project-memory/v77-vault-workspace-multi-chain-intelligence-plan.md`.
 
+### V7.7.10 — Persistent Conversational Control Plane + Agent Execution Fabric
+
+Status: **IN PROGRESS — V7.7.10a Conversation Session contract + persistence in-repo on worker `0.5.39`.** Canonical START HERE (Give Access amendment): stone `eab0bdb8304f0d5439b659bdbedf2715fe4894a1d9958814f4db13a8de89b22f`. Foundation plan: `7615d226…`. Fabric plan: `4ccf169f…`. Worker slice contract: `docs/V7_7_10A_CONVERSATION_SESSION.md`.
+
+Family slices (authoritative; do not invent alternate numbering):
+
+- `V7.7.10a` — Conversation Session contract + persistence (**this worker slice**)
+- `V7.7.10b` — Typed attachments + Give Access / Assign entry points
+- `V7.7.10c` — Deterministic Intent Router
+- `V7.7.10d` — Model + Agent Execution Routing
+- `V7.7.10e` — Human Proposal / Commit Boundary
+- `V7.7.10f` — Live Event Plane + Agent Tree
+
+Conversation Session is operational D1 only (`accepted_state_authority: false`); it never moves chain/path HEADs and never bulk-promotes chat history into project memory.
+
 ---
 
 ## V7.8 — CairnStone Federation / StoneLink

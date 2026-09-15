@@ -34,6 +34,13 @@ import {
   GROUNDED_RESPONSE_GET_TOOL_DEFINITION,
   GROUNDED_RESPONSE_EXPAND_TOOL_DEFINITION
 } from "./grounded-response.js";
+import {
+  CONVERSATION_SESSION_CREATE_TOOL_DEFINITION,
+  CONVERSATION_SESSION_GET_TOOL_DEFINITION,
+  CONVERSATION_SESSION_LIST_TOOL_DEFINITION,
+  CONVERSATION_SESSION_UPDATE_TOOL_DEFINITION,
+  CONVERSATION_SESSION_APPEND_TURN_TOOL_DEFINITION
+} from "./conversation-session.js";
 
 export const AGENT_CONTEXT_SCHEMA = "cairnstone-agent-context-v1";
 export const MODEL_REQUEST_SCHEMA = "cairnstone-model-request-v1";
@@ -1624,6 +1631,58 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     available: true,
     description: "V7.7.8b/d: lazily expand the same response_id to a deeper response_lod; stale authority fails closed unless view_original; optional provider/model reattributes outer envelope only; refresh is a new response_id.",
     input_schema: GROUNDED_RESPONSE_EXPAND_TOOL_DEFINITION.inputSchema
+  }),
+  // V7.7.10a Conversation Session — operational D1 continuity; never HEADs /
+  // never automatic-read for delegate; never accepted-state authority.
+  Object.freeze({
+    tool_id: "cairnstone_conversation_session_create",
+    connector: "cairnstone",
+    handler: "cairnstone_conversation_session_create",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10a: create cairnstone-conversation-session-v1 operational record; never moves HEADs; never accepted-state authority.",
+    input_schema: CONVERSATION_SESSION_CREATE_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_conversation_session_get",
+    connector: "cairnstone",
+    handler: "cairnstone_conversation_session_get",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10a: read/resume Conversation Session + durable turns; actor membership required; never accepted-state authority.",
+    input_schema: CONVERSATION_SESSION_GET_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_conversation_session_list",
+    connector: "cairnstone",
+    handler: "cairnstone_conversation_session_list",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10a: list Conversation Sessions visible to an actor; never moves HEADs.",
+    input_schema: CONVERSATION_SESSION_LIST_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_conversation_session_update",
+    connector: "cairnstone",
+    handler: "cairnstone_conversation_session_update",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10a: CAS-update Conversation Session bindings/hooks; never moves HEADs; never grants capabilities.",
+    input_schema: CONVERSATION_SESSION_UPDATE_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_conversation_session_append_turn",
+    connector: "cairnstone",
+    handler: "cairnstone_conversation_session_append_turn",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10a: append durable turn/message identity (CAS); never promotes conversation history to project memory.",
+    input_schema: CONVERSATION_SESSION_APPEND_TURN_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
     tool_id: "cairnstone_send_message",
