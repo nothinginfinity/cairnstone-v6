@@ -28,6 +28,60 @@ export const COST_CLASSES = Object.freeze(["free", "low", "medium", "high", "pai
 export const LATENCY_CLASSES = Object.freeze(["sync_fast", "sync", "async", "async_long"]);
 export const QUALITY_CLASSES = Object.freeze(["deterministic", "specialist", "balanced", "premium"]);
 
+/** V7.7.10d.1 — how context is delivered to an executor. */
+export const CONTEXT_MODES = Object.freeze({
+  cairnstone_native: "cairnstone_native",
+  compiled_context: "compiled_context"
+});
+
+/** Route/dispatch receipt encoding of how context was resolved. */
+export const CONTEXT_RESOLUTION = Object.freeze({
+  reference_only_native: "reference_only_native",
+  compiled_transmitted: "compiled_transmitted"
+});
+
+export const SUPPORTED_REF_TYPES = Object.freeze([
+  "stone_hash",
+  "attachment_ref",
+  "code_session_id",
+  "path_head",
+  "repo_sha",
+  "access_grant_id",
+  "scope",
+  "task_run_id",
+  "msg_ref"
+]);
+
+/** Default ref types CairnStone-native executors can resolve themselves. */
+export const NATIVE_SUPPORTED_REF_TYPES = Object.freeze([
+  "stone_hash",
+  "attachment_ref",
+  "code_session_id",
+  "path_head",
+  "repo_sha",
+  "access_grant_id",
+  "scope",
+  "task_run_id",
+  "msg_ref"
+]);
+
+/** External compiled executors get a narrower typed-ref surface in the pack. */
+export const COMPILED_SUPPORTED_REF_TYPES = Object.freeze([
+  "attachment_ref",
+  "repo_sha",
+  "stone_hash",
+  "task_run_id",
+  "msg_ref"
+]);
+
+/** Bounded compiled-context pack budgets (fail closed past these). */
+export const COMPILED_CONTEXT_BUDGET = Object.freeze({
+  max_pack_bytes: 48_000,
+  max_body_chars: 24_000,
+  max_refs: 100,
+  max_omission_entries: 64
+});
+
 /** Preferred selection order ranks (fabric plan §5). Lower = preferred. */
 export const EXECUTOR_SELECTION_RANK = Object.freeze({
   deterministic: 1,
@@ -92,6 +146,11 @@ export const SEED_EXECUTOR_PROFILES = Object.freeze([
     cost_class: "free",
     latency_class: "sync_fast",
     quality_class: "deterministic",
+    // V7.7.10d.1 — in-process / CairnStone-connected: resolve refs natively
+    context_mode: CONTEXT_MODES.cairnstone_native,
+    requires_compiled_context: false,
+    supported_ref_types: NATIVE_SUPPORTED_REF_TYPES,
+    context_resolution_endpoint: "in_process:cairnstone",
     verification_capabilities: Object.freeze(["receipt.emit", "tool_result.hash"]),
     supported_artifact_types: Object.freeze(["tool_receipt", "orientation"]),
     max_concurrency: 8,
@@ -100,7 +159,7 @@ export const SEED_EXECUTOR_PROFILES = Object.freeze([
       allowlisted_read_tools_only: true,
       mutation_allowed: false
     }),
-    notes: "Bounded allowlisted read tools via existing broker; proves specialist path on dispatch."
+    notes: "Bounded allowlisted read tools via existing broker; proves specialist path on dispatch. CairnStone-native context."
   }),
   Object.freeze({
     schema: EXECUTOR_PROFILE_SCHEMA,
@@ -124,6 +183,11 @@ export const SEED_EXECUTOR_PROFILES = Object.freeze([
     cost_class: "low",
     latency_class: "async",
     quality_class: "specialist",
+    // External specialist — needs bounded compiled pack
+    context_mode: CONTEXT_MODES.compiled_context,
+    requires_compiled_context: true,
+    supported_ref_types: COMPILED_SUPPORTED_REF_TYPES,
+    context_resolution_endpoint: null,
     verification_capabilities: Object.freeze(["receipt.emit", "artifact.attach"]),
     supported_artifact_types: Object.freeze(["investigation_receipt", "api_result"]),
     max_concurrency: 4,
@@ -132,7 +196,7 @@ export const SEED_EXECUTOR_PROFILES = Object.freeze([
       dry_run_default: true,
       mutation_allowed: false
     }),
-    notes: "AFO specialist adapter contract + stub. Live AFO not required for 10d."
+    notes: "AFO specialist adapter contract + stub. Live AFO not required for 10d. Compiled context required."
   }),
   Object.freeze({
     schema: EXECUTOR_PROFILE_SCHEMA,
@@ -155,6 +219,10 @@ export const SEED_EXECUTOR_PROFILES = Object.freeze([
     cost_class: "low",
     latency_class: "async",
     quality_class: "balanced",
+    context_mode: CONTEXT_MODES.cairnstone_native,
+    requires_compiled_context: false,
+    supported_ref_types: NATIVE_SUPPORTED_REF_TYPES,
+    context_resolution_endpoint: "in_process:cairnstone_delegate",
     verification_capabilities: Object.freeze(["receipt.emit", "subagent_result"]),
     supported_artifact_types: Object.freeze(["subagent_result", "tool_receipt"]),
     max_concurrency: 2,
@@ -163,7 +231,7 @@ export const SEED_EXECUTOR_PROFILES = Object.freeze([
       does_not_auto_run: true,
       dry_run_default: true
     }),
-    notes: "Points at existing cairnstone_delegate path; does not auto-run on route or propose."
+    notes: "Points at existing cairnstone_delegate path; does not auto-run on route or propose. CairnStone-native context."
   }),
   Object.freeze({
     schema: EXECUTOR_PROFILE_SCHEMA,
@@ -188,6 +256,11 @@ export const SEED_EXECUTOR_PROFILES = Object.freeze([
     cost_class: "medium",
     latency_class: "async_long",
     quality_class: "premium",
+    // External coding agent — no CairnStone MCP assumed
+    context_mode: CONTEXT_MODES.compiled_context,
+    requires_compiled_context: true,
+    supported_ref_types: COMPILED_SUPPORTED_REF_TYPES,
+    context_resolution_endpoint: null,
     verification_capabilities: Object.freeze(["pr.attach", "diff.attach", "test.attach", "receipt.emit"]),
     supported_artifact_types: Object.freeze(["pr", "diff", "test_result", "job_stub"]),
     max_concurrency: 2,
@@ -196,7 +269,7 @@ export const SEED_EXECUTOR_PROFILES = Object.freeze([
       dry_run_default: true,
       requires_immutable_base_sha: true
     }),
-    notes: "GitHub Copilot coding-agent adapter contract + dry-run stub. No API keys invented."
+    notes: "GitHub Copilot coding-agent adapter contract + dry-run stub. No API keys invented. Compiled context required."
   }),
   Object.freeze({
     schema: EXECUTOR_PROFILE_SCHEMA,
@@ -221,6 +294,11 @@ export const SEED_EXECUTOR_PROFILES = Object.freeze([
     cost_class: "medium",
     latency_class: "async_long",
     quality_class: "premium",
+    // Cursor often has CairnStone MCP connected — native-capable even while adapter dry-run
+    context_mode: CONTEXT_MODES.cairnstone_native,
+    requires_compiled_context: false,
+    supported_ref_types: NATIVE_SUPPORTED_REF_TYPES,
+    context_resolution_endpoint: "mcp:cairnstone",
     verification_capabilities: Object.freeze(["pr.attach", "diff.attach", "test.attach", "receipt.emit"]),
     supported_artifact_types: Object.freeze(["pr", "diff", "test_result", "job_stub"]),
     max_concurrency: 2,
@@ -229,7 +307,7 @@ export const SEED_EXECUTOR_PROFILES = Object.freeze([
       dry_run_default: true,
       requires_immutable_base_sha: true
     }),
-    notes: "Cursor/cloud coding-agent adapter contract + dry-run stub."
+    notes: "Cursor/cloud coding-agent adapter contract + dry-run stub. CairnStone-native context capable."
   })
 ]);
 
@@ -244,6 +322,11 @@ function cloneProfile(profile, { now = null } = {}) {
     authorization_requirements: [...profile.authorization_requirements],
     verification_capabilities: [...profile.verification_capabilities],
     supported_artifact_types: [...profile.supported_artifact_types],
+    supported_ref_types: [...(profile.supported_ref_types || [])],
+    context_mode: profile.context_mode || CONTEXT_MODES.compiled_context,
+    requires_compiled_context: profile.requires_compiled_context === true
+      || profile.context_mode === CONTEXT_MODES.compiled_context,
+    context_resolution_endpoint: profile.context_resolution_endpoint || null,
     bounds: { ...profile.bounds },
     health: {
       ...profile.health,
@@ -449,6 +532,15 @@ function policyAllows(profile, policy, budget) {
   if (budget?.allow_paid_external === false && profile.cost_class === "paid_external") {
     return { ok: false, reason: "paid_external_not_allowed" };
   }
+  // Soft budget gate: force compiled_context when operator forbids native resolution
+  if (budget?.require_compiled_context === true
+    && profile.context_mode === CONTEXT_MODES.cairnstone_native) {
+    return { ok: false, reason: "budget_requires_compiled_context" };
+  }
+  if (budget?.forbid_native_context === true
+    && profile.context_mode === CONTEXT_MODES.cairnstone_native) {
+    return { ok: false, reason: "budget_forbids_native_context" };
+  }
   if (Array.isArray(budget?.executor_allowlist) && budget.executor_allowlist.length) {
     if (!budget.executor_allowlist.includes(profile.executor_id)) {
       return { ok: false, reason: "not_in_executor_allowlist" };
@@ -460,20 +552,67 @@ function policyAllows(profile, policy, budget) {
   return { ok: true };
 }
 
+function contextModeRank(profile) {
+  // Prefer cairnstone_native when capability/cost/rank already equal (10d.1).
+  // Never overrides capability fit, risk, budget, or human preferred_executor.
+  return profile.context_mode === CONTEXT_MODES.cairnstone_native ? 0 : 1;
+}
+
 function compareCandidates(a, b, policy) {
   if (policy === "best") {
     const q = qualityRank(b.quality_class) - qualityRank(a.quality_class);
     if (q !== 0) return q;
-    return a.selection_rank - b.selection_rank;
+    const rank = a.selection_rank - b.selection_rank;
+    if (rank !== 0) return rank;
+    return contextModeRank(a) - contextModeRank(b);
   }
   if (policy === "economy") {
     const c = costRank(a.cost_class) - costRank(b.cost_class);
     if (c !== 0) return c;
-    return a.selection_rank - b.selection_rank;
+    const rank = a.selection_rank - b.selection_rank;
+    if (rank !== 0) return rank;
+    return contextModeRank(a) - contextModeRank(b);
   }
-  // balanced (default): fabric preferred order
+  // balanced (default): fabric preferred order, then native context as tiebreaker
   if (a.selection_rank !== b.selection_rank) return a.selection_rank - b.selection_rank;
-  return costRank(a.cost_class) - costRank(b.cost_class);
+  const cost = costRank(a.cost_class) - costRank(b.cost_class);
+  if (cost !== 0) return cost;
+  return contextModeRank(a) - contextModeRank(b);
+}
+
+/**
+ * Derive context_resolution fields for a selected executor profile.
+ * Pure — does not grant capability or dispatch.
+ */
+export function resolveContextResolution(profile, { selection_reason = null } = {}) {
+  const mode = profile?.context_mode === CONTEXT_MODES.cairnstone_native
+    ? CONTEXT_MODES.cairnstone_native
+    : CONTEXT_MODES.compiled_context;
+  const requiresCompiled = mode === CONTEXT_MODES.compiled_context
+    || profile?.requires_compiled_context === true;
+  const resolution = mode === CONTEXT_MODES.cairnstone_native
+    ? CONTEXT_RESOLUTION.reference_only_native
+    : CONTEXT_RESOLUTION.compiled_transmitted;
+  let reason;
+  if (mode === CONTEXT_MODES.cairnstone_native) {
+    reason = "executor_cairnstone_aware_resolves_canonical_refs";
+  } else if (profile?.requires_compiled_context) {
+    reason = "executor_requires_compiled_context_no_cairnstone_access";
+  } else {
+    reason = "executor_compiled_context_mode";
+  }
+  if (selection_reason === "preferred_executor") {
+    reason = `${reason};human_preferred_executor_honored`;
+  }
+  return {
+    context_mode: mode,
+    context_resolution: resolution,
+    context_resolution_reason: reason,
+    requires_compiled_context: requiresCompiled,
+    compiled_pack_required: requiresCompiled,
+    supported_ref_types: [...(profile?.supported_ref_types || [])],
+    context_resolution_endpoint: profile?.context_resolution_endpoint || null
+  };
 }
 
 /**
@@ -546,7 +685,9 @@ export function routeExecutor({
       cost_class: profile.cost_class,
       latency_class: profile.latency_class,
       quality_class: profile.quality_class,
-      availability: profile.availability
+      availability: profile.availability,
+      context_mode: profile.context_mode,
+      requires_compiled_context: profile.requires_compiled_context === true
     };
     considered.push(entry);
 
@@ -636,6 +777,7 @@ export function routeExecutor({
 
   const routeReceiptId = `errcpt:${crypto.randomUUID()}`;
   const createdAt = new Date().toISOString();
+  const contextResolution = resolveContextResolution(selected, { selection_reason: selectionReason });
   const routeReceipt = {
     schema: EXECUTOR_ROUTE_RECEIPT_SCHEMA,
     route_receipt_id: routeReceiptId,
@@ -648,6 +790,8 @@ export function routeExecutor({
     budget_envelope: {
       max_cost_class: budget.max_cost_class || null,
       allow_paid_external: budget.allow_paid_external !== false,
+      require_compiled_context: budget.require_compiled_context === true,
+      forbid_native_context: budget.forbid_native_context === true,
       executor_allowlist: Array.isArray(budget.executor_allowlist) ? budget.executor_allowlist : null,
       executor_denylist: Array.isArray(budget.executor_denylist) ? budget.executor_denylist : null
     },
@@ -660,6 +804,14 @@ export function routeExecutor({
     cost_class: selected.cost_class,
     latency_class: selected.latency_class,
     quality_class: selected.quality_class,
+    // V7.7.10d.1 — context mode / resolution on every route receipt
+    context_mode: contextResolution.context_mode,
+    context_resolution: contextResolution.context_resolution,
+    context_resolution_reason: contextResolution.context_resolution_reason,
+    requires_compiled_context: contextResolution.requires_compiled_context,
+    compiled_pack_required: contextResolution.compiled_pack_required,
+    supported_ref_types: contextResolution.supported_ref_types,
+    context_resolution_endpoint: contextResolution.context_resolution_endpoint,
     authorization_state: "requires_human_commit",
     dispatched: false,
     executor_invoked: false,

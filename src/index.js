@@ -215,7 +215,7 @@ import {
   EXECUTOR_MCP_TOOL_DEFINITIONS
 } from "./executor-profile.js";
 
-const VERSION = "0.5.42";
+const VERSION = "0.5.43";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
