@@ -538,11 +538,11 @@ test("V7.7.8 skeleton parser accepts JSON and prose fallback", () => {
   assert.match(prose.skeleton.conclusion, /Only prose/);
 });
 
-test("V7.7.8 broker: grounded-response tools remain automatic reads; registry 87 after V7.7.10c", async () => {
+test("V7.7.8 broker: grounded-response tools remain automatic reads; registry 94 after V7.7.10d", async () => {
   const registry = await toolRegistryFromBody({}, {});
   assert.equal(registry.ok, true);
-  // V7.7.8a/b added create/get/expand; V7.7.10b adds 10 access-grant/attachment/task-run/forward tools (76 -> 86; V7.7.10c +1 intent router -> 87).
-  assert.equal(registry.total, 87);
+  // V7.7.8a/b added create/get/expand; V7.7.10b adds 10 access-grant/attachment/task-run/forward tools (76 -> 86; V7.7.10c +1 intent router -> 87; V7.7.10d +7 executor/task-run tools -> 94).
+  assert.equal(registry.total, 94);
 
   for (const toolId of [
     "cairnstone_grounded_response",

@@ -650,14 +650,14 @@ Canonical V7.7 multi-chain plan: `project-memory/v77-vault-workspace-multi-chain
 
 ### V7.7.10 — Persistent Conversational Control Plane + Agent Execution Fabric
 
-Status: **IN PROGRESS — V7.7.10c Deterministic Intent Router in-repo on worker `0.5.41` (builds on 10b `0.5.40` tip `1ac0f58c21b065aaf2a02a77aed495467baa030f`).** 10b COMPLETE gate: stone `10d5352767645ccba760ee65579d85dbc8469bbcf4bf8e6e9bd46ee16df5ab17`. Canonical START HERE (Give Access amendment): stone `eab0bdb8304f0d5439b659bdbedf2715fe4894a1d9958814f4db13a8de89b22f`. 10a complete stone: `2cc7e85db99423804e23418dae4402df232e34fc537ba335a2d7b742cd713c50`. Worker slice contract: `docs/V7_7_10C_DETERMINISTIC_INTENT_ROUTER.md`.
+Status: **IN PROGRESS — V7.7.10d Model + Agent Execution Routing in-repo on worker `0.5.42` (builds on 10c `0.5.41` tip `35dac65f336a8f3afd8b62bf5d225c53f01b4e41`).** 10c COMPLETE gate: stone `b60b14a06a737719a4147cd8cb913c304772b1b5bc217b549f6fefbe506cb65b`. Give Access amendment: `eab0bdb8304f0d5439b659bdbedf2715fe4894a1d9958814f4db13a8de89b22f`. Fabric plan (10d authority): `4ccf169f4fd6e94109c1ac66e3492069beade5206c73f2ce1b3ad6d061eabfaf`. Worker slice contract: `docs/V7_7_10D_MODEL_AGENT_EXECUTION_ROUTING.md`.
 
 Family slices (authoritative; do not invent alternate numbering):
 
 - `V7.7.10a` — Conversation Session contract + persistence (**complete / live-verified** on `0.5.39`)
 - `V7.7.10b` — Typed attachments + Give Access / Assign entry points (**complete** on `0.5.40`)
-- `V7.7.10c` — Deterministic Intent Router (**this worker slice** on `0.5.41`)
-- `V7.7.10d` — Model + Agent Execution Routing
+- `V7.7.10c` — Deterministic Intent Router (**complete** on `0.5.41`)
+- `V7.7.10d` — Model + Agent Execution Routing (**this worker slice** on `0.5.42` — ready for coordinator)
 - `V7.7.10e` — Human Proposal / Commit Boundary
 - `V7.7.10f` — Live Event Plane + Agent Tree
 
