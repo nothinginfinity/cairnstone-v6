@@ -194,6 +194,9 @@ import {
   proposeTaskRunFromBody,
   getTaskRunFromBody,
   listTaskRunsFromBody,
+  dispatchTaskRunFromBody,
+  cancelTaskRunFromBody,
+  taskRunStatusFromBody,
   TASK_RUN_MCP_TOOL_DEFINITIONS
 } from "./task-run.js";
 import {
@@ -204,8 +207,15 @@ import {
   routeIntentFromBody,
   INTENT_ROUTE_MCP_TOOL_DEFINITIONS
 } from "./intent-router.js";
+import {
+  listExecutorsFromBody,
+  getExecutorFromBody,
+  executorHealthFromBody,
+  routeExecutorFromBody,
+  EXECUTOR_MCP_TOOL_DEFINITIONS
+} from "./executor-profile.js";
 
-const VERSION = "0.5.41";
+const VERSION = "0.5.42";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -506,6 +516,27 @@ export default {
       if (request.method === "POST" && url.pathname === "/v1/task-runs/list") {
         return json(await listTaskRunsFromBody(await request.json(), env));
       }
+      if (request.method === "POST" && url.pathname === "/v1/task-runs/dispatch") {
+        return json(await dispatchTaskRunFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/task-runs/cancel") {
+        return json(await cancelTaskRunFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/task-runs/status") {
+        return json(await taskRunStatusFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/executors/list") {
+        return json(listExecutorsFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/executors/get") {
+        return json(getExecutorFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/executors/health") {
+        return json(executorHealthFromBody(await request.json(), env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/executors/route") {
+        return json(routeExecutorFromBody(await request.json(), env));
+      }
       if (request.method === "POST" && url.pathname === "/v1/correspondence/forward-with-note") {
         return json(await forwardWithNoteFromBody(await request.json(), env, {
           createStone: body => createStoneFromBody(body, env)
@@ -701,6 +732,13 @@ function routes() {
     "POST /v1/task-runs/propose",
     "POST /v1/task-runs/get",
     "POST /v1/task-runs/list",
+    "POST /v1/task-runs/dispatch",
+    "POST /v1/task-runs/cancel",
+    "POST /v1/task-runs/status",
+    "POST /v1/executors/list",
+    "POST /v1/executors/get",
+    "POST /v1/executors/health",
+    "POST /v1/executors/route",
     "POST /v1/correspondence/forward-with-note",
     "POST /v1/intent/route",
     "GET /v2/chains/:chain/manifest?detail=summary|compact|orientation|full&since=ISO&path=...",  
@@ -1280,6 +1318,13 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_task_run_propose") return proposeTaskRunFromBody(args, env);
   if (name === "cairnstone_task_run_get") return getTaskRunFromBody(args, env);
   if (name === "cairnstone_task_run_list") return listTaskRunsFromBody(args, env);
+  if (name === "cairnstone_task_run_dispatch") return dispatchTaskRunFromBody(args, env);
+  if (name === "cairnstone_task_run_cancel") return cancelTaskRunFromBody(args, env);
+  if (name === "cairnstone_task_run_status") return taskRunStatusFromBody(args, env);
+  if (name === "cairnstone_executor_list") return listExecutorsFromBody(args, env);
+  if (name === "cairnstone_executor_get") return getExecutorFromBody(args, env);
+  if (name === "cairnstone_executor_health") return executorHealthFromBody(args, env);
+  if (name === "cairnstone_executor_route") return routeExecutorFromBody(args, env);
   if (name === "cairnstone_forward_with_note") {
     return forwardWithNoteFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   }
@@ -1558,6 +1603,7 @@ function mcpTools() {
     ...ATTACHMENT_REF_MCP_TOOL_DEFINITIONS,
     ...ACCESS_GRANT_MCP_TOOL_DEFINITIONS,
     ...TASK_RUN_MCP_TOOL_DEFINITIONS,
+    ...EXECUTOR_MCP_TOOL_DEFINITIONS,
     ...FORWARD_NOTE_MCP_TOOL_DEFINITIONS,
     ...INTENT_ROUTE_MCP_TOOL_DEFINITIONS,
     ...ENVIRONMENT_SANDBOX_MCP_TOOL_DEFINITIONS,

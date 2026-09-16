@@ -144,6 +144,44 @@ class FakeV7710bD1 {
               return { success: true, meta: { changes: 1 } };
             }
             if (sql.includes("INSERT INTO task_runs")) {
+              if (sql.includes("required_capabilities_json") || args.length >= 16) {
+                const [
+                  taskRunId, schema, conversationId, parentTurnId, requestedBy,
+                  assignee, intent, attachmentRefsJson, objectRefsJson, note,
+                  capsJson, policy, budgetJson, parentId, delegationDepth,
+                  createdAt, updatedAt
+                ] = args;
+                if (db.taskRuns.has(taskRunId)) {
+                  throw new Error("UNIQUE constraint failed: task_runs.task_run_id");
+                }
+                db.taskRuns.set(taskRunId, {
+                  task_run_id: taskRunId,
+                  schema,
+                  status: "proposed",
+                  conversation_id: conversationId,
+                  parent_turn_id: parentTurnId,
+                  requested_by: requestedBy,
+                  assignee_actor_id: assignee,
+                  requested_intent: intent,
+                  intent_mode: "propose-action",
+                  attachment_refs_json: attachmentRefsJson,
+                  object_refs_json: objectRefsJson,
+                  note,
+                  dispatch_state: "not_dispatched",
+                  selected_executor_id: null,
+                  required_capabilities_json: capsJson || "[]",
+                  policy_preset: policy || null,
+                  budget_envelope_json: budgetJson || null,
+                  parent_task_run_id: parentId || null,
+                  child_task_run_ids_json: "[]",
+                  delegation_depth: delegationDepth || 0,
+                  created_at: createdAt,
+                  updated_at: updatedAt,
+                  cancelled_at: null,
+                  accepted_state_authority: 0
+                });
+                return { success: true, meta: { changes: 1 } };
+              }
               const [
                 taskRunId, schema, conversationId, parentTurnId, requestedBy,
                 assignee, intent, attachmentRefsJson, objectRefsJson, note,
@@ -296,10 +334,14 @@ class FakeV7710bD1 {
               return { results };
             }
             if (sql.includes("FROM task_runs")) {
-              const [actorA, actorB, status, , conversationId, , assignee, , lim] = args;
+              const actorA = args[0];
+              const status = args[3];
+              const conversationId = args[5];
+              const assignee = args[7];
+              const lim = args[args.length - 1];
               const results = [...db.taskRuns.values()].filter(row => {
-                const visible = row.requested_by === actorA || row.assignee_actor_id === actorB
-                  || row.requested_by === actorB || row.assignee_actor_id === actorA;
+                const visible = row.requested_by === actorA || row.assignee_actor_id === actorA
+                  || row.human_committed_by === actorA;
                 if (!visible) return false;
                 if (status && row.status !== status) return false;
                 if (conversationId && row.conversation_id !== conversationId) return false;
@@ -434,7 +476,8 @@ test("task run propose is non-dispatching and references same object refs", asyn
   assert.equal(proposed.task_run.executor_invoked, false);
   assert.equal(proposed.task_run.access_granted_by_assign, false);
   assert.deepEqual(proposed.task_run.attachment_refs, [objectRef]);
-  assert.equal(proposed.task_run.proposal.dispatchable, false);
+  assert.equal(proposed.task_run.proposal.dispatchable, true);
+  assert.equal(proposed.task_run.proposal.requires_human_dispatch, true);
 
   const got = await getTaskRunFromBody({
     task_run_id: "tr:demo-1",
@@ -530,11 +573,15 @@ test("access/task/forward/attachment tools are MCP+broker scoped and never autom
 
   const registry = toolRegistryFromBody({}, { registry: DEFAULT_TOOL_BROKER_REGISTRY });
   assert.equal(registry.ok, true);
-  assert.equal(registry.total, 87);
+  assert.equal(registry.total, 94);
   const byId = new Map(registry.tools.map(tool => [tool.tool_id, tool]));
   for (const id of [...ACCESS_GRANT_MUTATION_TOOL_IDS, ...TASK_RUN_MUTATION_TOOL_IDS, ...Object.values(FORWARD_NOTE_BROKER_TOOL_IDS)]) {
     assert.equal(byId.get(id).risk_class, "mutation");
-    assert.equal(byId.get(id).authorization, "scoped_grant");
+    if (id === TASK_RUN_BROKER_TOOL_IDS.dispatch) {
+      assert.equal(byId.get(id).authorization, "human_confirmation");
+    } else {
+      assert.equal(byId.get(id).authorization, "scoped_grant");
+    }
   }
   for (const id of [...ACCESS_GRANT_READ_TOOL_IDS, ...TASK_RUN_READ_TOOL_IDS, ...Object.values(ATTACHMENT_REF_BROKER_TOOL_IDS)]) {
     assert.equal(byId.get(id).risk_class, "read");

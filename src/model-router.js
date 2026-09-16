@@ -54,7 +54,10 @@ import {
 import {
   TASK_RUN_PROPOSE_TOOL_DEFINITION,
   TASK_RUN_GET_TOOL_DEFINITION,
-  TASK_RUN_LIST_TOOL_DEFINITION
+  TASK_RUN_LIST_TOOL_DEFINITION,
+  TASK_RUN_DISPATCH_TOOL_DEFINITION,
+  TASK_RUN_CANCEL_TOOL_DEFINITION,
+  TASK_RUN_STATUS_TOOL_DEFINITION
 } from "./task-run.js";
 import {
   FORWARD_WITH_NOTE_TOOL_DEFINITION
@@ -62,6 +65,12 @@ import {
 import {
   INTENT_ROUTE_TOOL_DEFINITION
 } from "./intent-router.js";
+import {
+  EXECUTOR_LIST_TOOL_DEFINITION,
+  EXECUTOR_GET_TOOL_DEFINITION,
+  EXECUTOR_HEALTH_TOOL_DEFINITION,
+  EXECUTOR_ROUTE_TOOL_DEFINITION
+} from "./executor-profile.js";
 
 export const AGENT_CONTEXT_SCHEMA = "cairnstone-agent-context-v1";
 export const MODEL_REQUEST_SCHEMA = "cairnstone-model-request-v1";
@@ -1774,7 +1783,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "mutation",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.10b: create Assign/Ask-to-work Task Run PROPOSAL (not dispatched).",
+    description: "V7.7.10b/d: create Assign/Ask-to-work Task Run PROPOSAL (not dispatched).",
     input_schema: TASK_RUN_PROPOSE_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
@@ -1784,7 +1793,7 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "read",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.10b: get one Task Run proposal; never dispatches.",
+    description: "V7.7.10b/d: get one Task Run; never dispatches.",
     input_schema: TASK_RUN_GET_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
@@ -1794,8 +1803,78 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     risk_class: "read",
     authorization: "scoped_grant",
     available: true,
-    description: "V7.7.10b: list Task Run proposals visible to actor.",
+    description: "V7.7.10b/d: list Task Runs visible to actor.",
     input_schema: TASK_RUN_LIST_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_task_run_dispatch",
+    connector: "cairnstone",
+    handler: "cairnstone_task_run_dispatch",
+    risk_class: "mutation",
+    authorization: "human_confirmation",
+    available: true,
+    description: "V7.7.10d: human-commit Task Run dispatch; requires human_commit:true; never auto-dispatch.",
+    input_schema: TASK_RUN_DISPATCH_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_task_run_cancel",
+    connector: "cairnstone",
+    handler: "cairnstone_task_run_cancel",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10d: cancel a non-terminal Task Run; never moves HEADs.",
+    input_schema: TASK_RUN_CANCEL_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_task_run_status",
+    connector: "cairnstone",
+    handler: "cairnstone_task_run_status",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10d: async Task Run status/progress snapshot.",
+    input_schema: TASK_RUN_STATUS_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_executor_list",
+    connector: "cairnstone",
+    handler: "cairnstone_executor_list",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10d: list cairnstone-executor-profile-v1 registry; never dispatches.",
+    input_schema: EXECUTOR_LIST_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_executor_get",
+    connector: "cairnstone",
+    handler: "cairnstone_executor_get",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10d: get one executor profile; never dispatches.",
+    input_schema: EXECUTOR_GET_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_executor_health",
+    connector: "cairnstone",
+    handler: "cairnstone_executor_health",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10d: cheap executor health snapshot; never dispatches.",
+    input_schema: EXECUTOR_HEALTH_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_executor_route",
+    connector: "cairnstone",
+    handler: "cairnstone_executor_route",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10d: capability-aware executor route (proposal only); distinct from model_route; never dispatches.",
+    input_schema: EXECUTOR_ROUTE_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
     tool_id: "cairnstone_forward_with_note",
