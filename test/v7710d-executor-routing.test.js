@@ -6,12 +6,16 @@ import {
   executorHealth,
   routeExecutor,
   inferRequiredCapabilities,
+  resolveContextResolution,
   SEED_EXECUTOR_PROFILES,
   EXECUTOR_PROFILE_SCHEMA,
   EXECUTOR_ROUTE_RECEIPT_SCHEMA,
   EXECUTOR_BROKER_TOOL_IDS,
   EXECUTOR_SELECTION_RANK,
-  EXECUTOR_MCP_TOOL_DEFINITIONS
+  EXECUTOR_MCP_TOOL_DEFINITIONS,
+  CONTEXT_MODES,
+  CONTEXT_RESOLUTION,
+  COMPILED_CONTEXT_BUDGET
 } from "../src/executor-profile.js";
 import {
   DETERMINISTIC_MCP_ALLOWLIST,
@@ -19,7 +23,9 @@ import {
   CURSOR_ADAPTER_CONTRACT,
   AFO_ADAPTER_CONTRACT,
   invokeExecutorAdapter,
-  getAdapterContract
+  getAdapterContract,
+  buildDispatchContextEnvelope,
+  COMPILED_CONTEXT_PACK_SCHEMA
 } from "../src/executor-adapters.js";
 import {
   proposeTaskRun,
@@ -227,9 +233,22 @@ test("executor registry: seed profiles discoverable", () => {
   const got = getExecutorProfile("exec:deterministic-mcp");
   assert.equal(got.ok, true);
   assert.equal(got.executor.selection_rank, EXECUTOR_SELECTION_RANK.deterministic);
+  assert.equal(got.executor.context_mode, CONTEXT_MODES.cairnstone_native);
+  assert.equal(got.executor.requires_compiled_context, false);
+  assert.ok(got.executor.supported_ref_types.includes("stone_hash"));
   const health = executorHealth();
   assert.equal(health.ok, true);
   assert.equal(health.total, 5);
+
+  const copilot = getExecutorProfile("exec:github-copilot");
+  assert.equal(copilot.executor.context_mode, CONTEXT_MODES.compiled_context);
+  assert.equal(copilot.executor.requires_compiled_context, true);
+  const cursor = getExecutorProfile("exec:cursor-cloud");
+  assert.equal(cursor.executor.context_mode, CONTEXT_MODES.cairnstone_native);
+  const afo = getExecutorProfile("exec:afo-specialist");
+  assert.equal(afo.executor.context_mode, CONTEXT_MODES.compiled_context);
+  const delegate = getExecutorProfile("exec:cairnstone-delegate");
+  assert.equal(delegate.executor.context_mode, CONTEXT_MODES.cairnstone_native);
 });
 
 test("executor_route: selection order — deterministic when fully deterministic", () => {
@@ -245,10 +264,12 @@ test("executor_route: selection order — deterministic when fully deterministic
   assert.equal(route.route_receipt.selection_reason, "fully_deterministic");
   assert.equal(route.route_receipt.authorization_state, "requires_human_commit");
   assert.equal(route.route_receipt.dispatched, false);
+  assert.equal(route.route_receipt.context_mode, CONTEXT_MODES.cairnstone_native);
+  assert.equal(route.route_receipt.context_resolution, CONTEXT_RESOLUTION.reference_only_native);
   assertAuthorityClosed(route);
 });
 
-test("executor_route: coding agent when repo.edit/pr required", () => {
+test("executor_route: coding agent when repo.edit/pr required prefers native cursor", () => {
   const route = routeExecutor({
     required_capabilities: ["repo.read", "repo.edit", "repo.pr"],
     attachment_refs: [REPO_REF],
@@ -257,8 +278,12 @@ test("executor_route: coding agent when repo.edit/pr required", () => {
     actor_id: ACTOR
   });
   assert.equal(route.ok, true);
-  assert.ok(["exec:github-copilot", "exec:cursor-cloud"].includes(route.route_receipt.selected_executor_id));
+  // 10d.1: capability-equal coding agents → prefer cairnstone_native (cursor)
+  assert.equal(route.route_receipt.selected_executor_id, "exec:cursor-cloud");
   assert.match(route.route_receipt.selection_reason, /coding_agent/);
+  assert.equal(route.route_receipt.context_mode, CONTEXT_MODES.cairnstone_native);
+  assert.equal(route.route_receipt.context_resolution, CONTEXT_RESOLUTION.reference_only_native);
+  assert.equal(route.route_receipt.compiled_pack_required, false);
   assert.equal(route.dispatched, false);
 });
 
@@ -271,6 +296,8 @@ test("executor_route: narrow specialist before inexpensive model when capability
   assert.equal(route.ok, true);
   assert.equal(route.route_receipt.selected_executor_id, "exec:afo-specialist");
   assert.equal(route.route_receipt.selection_reason, "narrow_specialist_capability_fit");
+  assert.equal(route.route_receipt.context_mode, CONTEXT_MODES.compiled_context);
+  assert.equal(route.route_receipt.context_resolution, CONTEXT_RESOLUTION.compiled_transmitted);
 });
 
 test("executor_route: never dispatches; manual requires preferred", () => {
@@ -543,4 +570,169 @@ test("broker registry: 10d tools + risk classes; not automatic-read", () => {
     "cairnstone_model_route"
   );
   assert.equal(byId.cairnstone_executor_route.handler, "cairnstone_executor_route");
+});
+
+// --- V7.7.10d.1 native vs compiled context ---
+
+test("10d.1: route receipt records context_resolution for deterministic native", () => {
+  const route = routeExecutor({
+    required_capabilities: ["stone.read"],
+    attachment_refs: [OBJECT_REF],
+    actor_id: ACTOR
+  });
+  assert.equal(route.ok, true);
+  assert.equal(route.route_receipt.selected_executor_id, "exec:deterministic-mcp");
+  assert.equal(route.route_receipt.context_mode, CONTEXT_MODES.cairnstone_native);
+  assert.equal(route.route_receipt.context_resolution, CONTEXT_RESOLUTION.reference_only_native);
+  assert.equal(route.route_receipt.requires_compiled_context, false);
+  assert.equal(route.route_receipt.compiled_pack_required, false);
+  assert.match(route.route_receipt.context_resolution_reason, /cairnstone_aware/);
+});
+
+test("10d.1: native preferred when capability-equal; compiled when only compiled fits", () => {
+  const nativePreferred = routeExecutor({
+    required_capabilities: ["repo.read", "repo.edit", "repo.pr"],
+    attachment_refs: [REPO_REF],
+    policy_preset: "balanced",
+    actor_id: ACTOR
+  });
+  assert.equal(nativePreferred.route_receipt.selected_executor_id, "exec:cursor-cloud");
+  assert.equal(nativePreferred.route_receipt.context_mode, CONTEXT_MODES.cairnstone_native);
+
+  // Only compiled executors eligible (AFO for github.api+d1; or force compiled via budget)
+  const compiledOnly = routeExecutor({
+    required_capabilities: ["github.api", "d1.inspect"],
+    policy_preset: "balanced",
+    actor_id: ACTOR
+  });
+  assert.equal(compiledOnly.route_receipt.selected_executor_id, "exec:afo-specialist");
+  assert.equal(compiledOnly.route_receipt.context_mode, CONTEXT_MODES.compiled_context);
+  assert.equal(compiledOnly.route_receipt.context_resolution, CONTEXT_RESOLUTION.compiled_transmitted);
+  assert.equal(compiledOnly.route_receipt.compiled_pack_required, true);
+
+  // Budget forbids native → coding work selects github-copilot
+  const forcedCompiled = routeExecutor({
+    required_capabilities: ["repo.read", "repo.edit", "repo.pr"],
+    attachment_refs: [REPO_REF],
+    budget_envelope: { require_compiled_context: true },
+    actor_id: ACTOR
+  });
+  assert.equal(forcedCompiled.ok, true);
+  assert.equal(forcedCompiled.route_receipt.selected_executor_id, "exec:github-copilot");
+  assert.equal(forcedCompiled.route_receipt.context_mode, CONTEXT_MODES.compiled_context);
+});
+
+test("10d.1: human preferred_executor not overridden by native preference", () => {
+  const preferred = routeExecutor({
+    required_capabilities: ["repo.read", "repo.edit", "repo.pr"],
+    preferred_executor: "exec:github-copilot",
+    actor_id: ACTOR
+  });
+  assert.equal(preferred.ok, true);
+  assert.equal(preferred.route_receipt.selected_executor_id, "exec:github-copilot");
+  assert.equal(preferred.route_receipt.selection_reason, "preferred_executor");
+  assert.equal(preferred.route_receipt.context_mode, CONTEXT_MODES.compiled_context);
+  assert.match(preferred.route_receipt.context_resolution_reason, /human_preferred/);
+});
+
+test("10d.1: dispatch native omits compiled pack", async () => {
+  const db = makeDb();
+  await proposeTaskRun(db, {
+    task_run_id: "tr:native-ctx",
+    requested_by: ACTOR,
+    attachment_refs: [OBJECT_REF],
+    required_capabilities: ["stone.read"],
+    note: "resolve from refs"
+  });
+  const dispatched = await dispatchTaskRun(db, {
+    task_run_id: "tr:native-ctx",
+    human_commit: true,
+    committed_by: ACTOR,
+    preferred_executor: "exec:deterministic-mcp",
+    access_grant_ids: ["ag:smoke-grant"]
+  });
+  assert.equal(dispatched.ok, true);
+  assert.equal(dispatched.context_mode, CONTEXT_MODES.cairnstone_native);
+  assert.equal(dispatched.context_resolution, CONTEXT_RESOLUTION.reference_only_native);
+  assert.equal(dispatched.dispatch_context.compiled_pack_included, false);
+  assert.equal(dispatched.dispatch_context.compiled_pack, null);
+  assert.equal(dispatched.dispatch_context.envelope.envelope_kind, "min_task_envelope");
+  assert.equal(dispatched.dispatch_context.envelope.compiled_body_omitted, true);
+  assert.deepEqual(dispatched.dispatch_context.envelope.access_grant_ids, ["ag:smoke-grant"]);
+  assert.equal(dispatched.adapter_receipt.compiled_pack_included, false);
+  assert.equal(dispatched.route_receipt.context_resolution, CONTEXT_RESOLUTION.reference_only_native);
+});
+
+test("10d.1: dispatch compiled includes bounded pack + receipt digest", async () => {
+  const db = makeDb();
+  await proposeTaskRun(db, {
+    task_run_id: "tr:compiled-ctx",
+    requested_by: ACTOR,
+    attachment_refs: [REPO_REF],
+    required_capabilities: ["repo.read", "repo.edit", "repo.pr"],
+    note: "open a PR"
+  });
+  const dispatched = await dispatchTaskRun(db, {
+    task_run_id: "tr:compiled-ctx",
+    human_commit: true,
+    committed_by: ACTOR,
+    preferred_executor: "exec:github-copilot",
+    base_commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  });
+  assert.equal(dispatched.ok, true);
+  assert.equal(dispatched.context_mode, CONTEXT_MODES.compiled_context);
+  assert.equal(dispatched.context_resolution, CONTEXT_RESOLUTION.compiled_transmitted);
+  assert.equal(dispatched.dispatch_context.compiled_pack_included, true);
+  assert.equal(dispatched.dispatch_context.compiled_pack.schema, COMPILED_CONTEXT_PACK_SCHEMA);
+  assert.ok(dispatched.dispatch_context.compiled_pack.receipt_digest);
+  assert.ok(Array.isArray(dispatched.dispatch_context.compiled_pack.omissions));
+  assert.ok(dispatched.dispatch_context.compiled_pack.omissions.length >= 1);
+  assert.equal(
+    dispatched.dispatch_context.compiled_pack.immutable_base_sha,
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  );
+  assert.ok(dispatched.dispatch_context.compiled_pack.body_chars <= COMPILED_CONTEXT_BUDGET.max_body_chars);
+  assert.equal(dispatched.adapter_receipt.compiled_pack_included, true);
+});
+
+test("10d.1: fail closed if huge compiled pack forced past budget", () => {
+  const huge = "x".repeat(COMPILED_CONTEXT_BUDGET.max_body_chars + 100);
+  const built = buildDispatchContextEnvelope({
+    executor_id: "exec:github-copilot",
+    task_run: {
+      task_run_id: "tr:huge",
+      attachment_refs: [REPO_REF],
+      note: "dump"
+    },
+    compiled_body: huge
+  });
+  assert.equal(built.ok, false);
+  assert.equal(built.error, "compiled_context_budget_exceeded");
+});
+
+test("10d.1: native executor rejects compiled body dump", () => {
+  const dumped = buildDispatchContextEnvelope({
+    executor_id: "exec:cursor-cloud",
+    task_run: { task_run_id: "tr:no-dump", attachment_refs: [REPO_REF] },
+    compiled_body: "large compiled prompt should not be sent to native executor"
+  });
+  assert.equal(dumped.ok, false);
+  assert.equal(dumped.error, "native_executor_rejects_compiled_body_dump");
+});
+
+test("10d.1: resolveContextResolution helper", () => {
+  const native = resolveContextResolution(getExecutorProfile("exec:deterministic-mcp").executor);
+  assert.equal(native.context_resolution, CONTEXT_RESOLUTION.reference_only_native);
+  const compiled = resolveContextResolution(getExecutorProfile("exec:afo-specialist").executor);
+  assert.equal(compiled.context_resolution, CONTEXT_RESOLUTION.compiled_transmitted);
+  assert.equal(compiled.compiled_pack_required, true);
+});
+
+test("10d.1: adapter contracts expose context_mode", () => {
+  assert.equal(COPILOT_ADAPTER_CONTRACT.context_mode, CONTEXT_MODES.compiled_context);
+  assert.equal(CURSOR_ADAPTER_CONTRACT.context_mode, CONTEXT_MODES.cairnstone_native);
+  assert.equal(AFO_ADAPTER_CONTRACT.context_mode, CONTEXT_MODES.compiled_context);
+  const contract = getAdapterContract("exec:cursor-cloud");
+  assert.equal(contract.context_mode, CONTEXT_MODES.cairnstone_native);
+  assert.equal(contract.contract.omit_compiled_prompt_dump_when_native, true);
 });

@@ -5,13 +5,30 @@
 **START HERE gate (10c COMPLETE):** `b60b14a06a737719a4147cd8cb913c304772b1b5bc217b549f6fefbe506cb65b`  
 **Amendment (Give Access):** `eab0bdb8304f0d5439b659bdbedf2715fe4894a1d9958814f4db13a8de89b22f`  
 **Fabric plan (10d authority):** `4ccf169f4fd6e94109c1ac66e3492069beade5206c73f2ce1b3ad6d061eabfaf`  
-**Runtime:** worker **0.5.42** (baseline tip: `35dac65f336a8f3afd8b62bf5d225c53f01b4e41` / **0.5.41**)
+**START HERE gate (10d COMPLETE):** `7a9fb4b06a4ba9879e3f431cc906a2994f65028a6cac7b278072c103bd5c4d4d`  
+**10d.1 trigger AC1:** `msg:v7710d-native-executor-context-followup-20260915-chatgpt` · stone `811dd6519ae7e24dab49a332def0e055dce34408c8cedbbba7d84b2f59f6ed17`  
+**Runtime:** worker **0.5.43** (10d.1 native vs compiled context; baseline tip `939e9d8cc6fdface58331a6c06bac73d6e73ea7b` / **0.5.42**)
 
 ## What this plane is
 
 Makes Assign/Ask-to-work Task Run **proposals from 10b dispatchable** under an **executor registry + capability-aware router**, distinct from the conversational **model router** (`cairnstone_model_route`).
 
 Dispatch requires an **explicit human commit**. Matching intent, proposing a Task Run, or selecting a chat model **never** launches work.
+
+### V7.7.10d.1 — Native vs compiled context
+
+**Never duplicate/compile large context into an executor prompt when that executor is CairnStone-aware and can resolve the canonical refs itself.**
+
+| Mode | When | Dispatch payload |
+|------|------|------------------|
+| `cairnstone_native` | Executor has authorized CairnStone connection | **Minimum task envelope** + typed refs / Scope / Task Run id / immutable repo SHA / bounded access grants. **No large compiled prompt dump.** Route records `context_resolution=reference_only_native`. |
+| `compiled_context` | Executor cannot access CairnStone | **Bounded provenance-preserving compiled pack** (budgets, omissions, receipt digest). Route records `context_resolution=compiled_transmitted`. |
+
+Profile fields (`cairnstone-executor-profile-v1`): `context_mode`, `requires_compiled_context`, `supported_ref_types[]`, optional `context_resolution_endpoint`.
+
+Seed defaults: `exec:deterministic-mcp`, `exec:cairnstone-delegate`, `exec:cursor-cloud` → **native**; `exec:github-copilot`, `exec:afo-specialist` → **compiled**.
+
+Route preference: all else equal, prefer CairnStone-native. Does **not** override capability fit, risk class, budget, or human `preferred_executor`.
 
 ## Hard invariants
 
@@ -25,25 +42,29 @@ Dispatch requires an **explicit human commit**. Matching intent, proposing a Tas
 8. Task Run completion ≠ accepted state.
 9. No raw API keys in Task Runs, Stones, AC1, or conversation text.
 10. No Console proposal cards (10e) or DO/WS event plane (10f) in this slice.
+11. Native access still bounded by Give Access / grants — not blanket vault. Refs/Scope do not grant execution/mutation authority.
+12. Native dispatch **rejects** compiled body dumps; compiled packs **fail closed** past budget.
 
 ## Schemas
 
 | Schema | Role |
 |--------|------|
-| `cairnstone-executor-profile-v1` | Seed executor registry profiles |
-| `cairnstone-executor-route-receipt-v1` | Capability-aware route receipt (proposal evidence) |
+| `cairnstone-executor-profile-v1` | Seed executor registry profiles (+ context_mode fields) |
+| `cairnstone-executor-route-receipt-v1` | Capability-aware route receipt (proposal evidence + context_resolution) |
 | `cairnstone-task-run-v1` | Durable Task Run (propose → dispatch → async status) |
 | `cairnstone-executor-adapter-job-v1` / `…-receipt-v1` | Adapter job/receipt stubs |
+| `cairnstone-executor-dispatch-envelope-v1` | Min task envelope (native) or compiled envelope wrapper |
+| `cairnstone-executor-compiled-context-pack-v1` | Bounded compiled pack + omissions + receipt digest |
 
 ## Executor registry (seed)
 
-| executor_id | class | notes |
-|-------------|-------|-------|
-| `exec:deterministic-mcp` | deterministic MCP/tool | bounded allowlisted read on dispatch |
-| `exec:cairnstone-delegate` | delegated model/profile | points at existing delegate; does not auto-run |
-| `exec:afo-specialist` | AFO specialist | adapter contract + stub |
-| `exec:github-copilot` | coding agent | contract + dry-run stub |
-| `exec:cursor-cloud` | coding agent | contract + dry-run stub |
+| executor_id | class | context_mode | notes |
+|-------------|-------|--------------|-------|
+| `exec:deterministic-mcp` | deterministic MCP/tool | `cairnstone_native` | bounded allowlisted read on dispatch |
+| `exec:cairnstone-delegate` | delegated model/profile | `cairnstone_native` | points at existing delegate; does not auto-run |
+| `exec:afo-specialist` | AFO specialist | `compiled_context` | adapter contract + stub |
+| `exec:github-copilot` | coding agent | `compiled_context` | contract + dry-run stub |
+| `exec:cursor-cloud` | coding agent | `cairnstone_native` | contract + dry-run stub; MCP-capable |
 
 ## Surfaces
 
@@ -66,6 +87,8 @@ Dispatch requires an **explicit human commit**. Matching intent, proposing a Tas
 5. premium general model only when needed  
 6. paid/external only when policy+budget allow  
 
+Within equal capability/cost/rank: prefer `cairnstone_native` over `compiled_context`.
+
 Policy presets: `economy | balanced | best | manual`.
 
 ### Task Run statuses
@@ -80,20 +103,22 @@ Child `attachment_refs` / `object_refs` / `required_capabilities` must be ⊆ pa
 
 ### Adapters
 
-- **deterministic-mcp:** may execute one allowlisted read (`cairnstone_executor_list|get|health`, `cairnstone_health`) and attach receipt.
-- **coding / AFO / cursor / copilot / delegate:** record async stub job with `adapter_live=false` / `dry_run=true`.
+- **deterministic-mcp:** may execute one allowlisted read (`cairnstone_executor_list|get|health`, `cairnstone_health`) and attach receipt; **reference_only_native** envelope.
+- **coding / AFO / cursor / copilot / delegate:** record async stub job with `adapter_live=false` / `dry_run=true`; native executors omit compiled pack; compiled executors attach bounded pack receipt.
 
 ## Migration
 
 `0023_v7710d_task_run_dispatch.sql` — rebuilds `task_runs` for expanded enums + dispatch columns; adds `executor_route_receipts`.
 
+**10d.1:** no new migration — `context_mode` / `context_resolution` live on existing JSON route_receipt / adapter receipt fields.
+
 ## Broker
 
-Registry **87 → 94** (+7). Route/list/get/health/status = **read**; propose/cancel = **mutation** scoped_grant; dispatch = **mutation** / **human_confirmation**.
+Registry **87 → 94** (+7 in 10d). **10d.1 adds no new MCP tools** (extends existing route/dispatch).
 
 ## Out of scope
 
-- Console Dispatch/Approve cards (10e)
+- Console Dispatch/Approve cards (10e) — **held**
 - Live Durable Objects / WebSocket agent tree (10f)
 - Real wallet/x402 settlement
 - Live Copilot/Cursor launch requiring secrets
@@ -102,7 +127,8 @@ Registry **87 → 94** (+7). Route/list/get/health/status = **read**; propose/ca
 ## Files
 
 - `src/executor-profile.js`, `src/executor-adapters.js`, `src/task-run.js`
-- `src/index.js` (VERSION `0.5.42`), `src/model-router.js`
+- `src/index.js` (VERSION `0.5.43`), `src/model-router.js`
 - `migrations/0023_v7710d_task_run_dispatch.sql`
 - `test/v7710d-executor-routing.test.js`
 - `project-memory/v7710d-execution-routing-implementation-note.md`
+- `project-memory/v7710d1-native-context-implementation-note.md`

@@ -9,9 +9,22 @@
 import { parseObjectRef } from "./attachment-refs.js";
 import {
   routeExecutor,
+  getExecutorProfile,
+  resolveContextResolution,
   EXECUTOR_ROUTE_RECEIPT_SCHEMA
 } from "./executor-profile.js";
 import { invokeExecutorAdapter } from "./executor-adapters.js";
+
+function enrichRouteReceiptContext(routeReceipt) {
+  if (!routeReceipt || !routeReceipt.selected_executor_id) return routeReceipt;
+  if (routeReceipt.context_mode && routeReceipt.context_resolution) return routeReceipt;
+  const got = getExecutorProfile(routeReceipt.selected_executor_id);
+  if (!got.ok) return routeReceipt;
+  const resolved = resolveContextResolution(got.executor, {
+    selection_reason: routeReceipt.selection_reason || null
+  });
+  return { ...routeReceipt, ...resolved };
+}
 
 export const TASK_RUN_SCHEMA = "cairnstone-task-run-v1";
 
@@ -666,6 +679,11 @@ export async function dispatchTaskRun(db, {
   allowlisted_tool_id = null,
   allowlisted_tool_args = null,
   base_commit_sha = null,
+  access_grant_ids = null,
+  scope_hints = null,
+  compiled_body = null,
+  compiled_pack_budget = null,
+  force_compiled_pack = false,
   env = null,
   invokeAllowlistedRead = null,
   now = null
@@ -720,14 +738,15 @@ export async function dispatchTaskRun(db, {
 
   let route = null;
   if (route_receipt && isObject(route_receipt) && route_receipt.selected_executor_id) {
+    const enriched = enrichRouteReceiptContext({
+      ...route_receipt,
+      authorization_state: "requires_human_commit",
+      accepted_state_authority: false
+    });
     route = {
       ok: true,
-      route_receipt: {
-        ...route_receipt,
-        authorization_state: "requires_human_commit",
-        accepted_state_authority: false
-      },
-      selected_executor: { executor_id: route_receipt.selected_executor_id }
+      route_receipt: enriched,
+      selected_executor: { executor_id: enriched.selected_executor_id }
     };
   } else {
     route = routeExecutor({
@@ -770,13 +789,19 @@ export async function dispatchTaskRun(db, {
     allowlisted_tool_id: allowlisted_tool_id || "cairnstone_executor_list",
     allowlisted_tool_args: allowlisted_tool_args || {},
     base_commit_sha,
+    access_grant_ids,
+    scope_hints,
+    compiled_body,
+    compiled_pack_budget,
+    force_compiled_pack,
     now: createdAt
   });
 
-  if (!adapterResult.ok && selectedExecutorId === "exec:deterministic-mcp") {
+  // Fail closed on context budget / native dump rejection for any executor
+  if (!adapterResult.ok) {
     return {
       ok: false,
-      error: "adapter_invocation_failed",
+      error: adapterResult.error || "adapter_invocation_failed",
       detail: adapterResult,
       route_receipt: route.route_receipt,
       ...authorityClosedFields({ dispatched: false, executor_invoked: false })
@@ -848,6 +873,13 @@ export async function dispatchTaskRun(db, {
     route_receipt: route.route_receipt,
     adapter_job: adapterResult.job || null,
     adapter_receipt: adapterResult.receipt || null,
+    dispatch_context: adapterResult.dispatch_context || null,
+    context_mode: adapterResult.dispatch_context?.context_mode
+      || route.route_receipt.context_mode
+      || null,
+    context_resolution: adapterResult.dispatch_context?.context_resolution
+      || route.route_receipt.context_resolution
+      || null,
     ...authorityClosedFields({
       dispatched: true,
       executor_invoked: true
@@ -1017,6 +1049,11 @@ export async function dispatchTaskRunFromBody(body = {}, env = {}) {
     allowlisted_tool_id: body.allowlisted_tool_id || null,
     allowlisted_tool_args: body.allowlisted_tool_args || null,
     base_commit_sha: body.base_commit_sha || null,
+    access_grant_ids: body.access_grant_ids || null,
+    scope_hints: body.scope_hints || null,
+    compiled_body: body.compiled_body || null,
+    compiled_pack_budget: body.compiled_pack_budget || null,
+    force_compiled_pack: body.force_compiled_pack === true,
     env,
     invokeAllowlistedRead: null
   });
@@ -1105,7 +1142,7 @@ export const TASK_RUN_LIST_TOOL_DEFINITION = Object.freeze({
 
 export const TASK_RUN_DISPATCH_TOOL_DEFINITION = Object.freeze({
   name: TASK_RUN_BROKER_TOOL_IDS.dispatch,
-  description: "V7.7.10d: human-commit dispatch of a proposed Task Run. Requires human_commit:true + committed_by. Runs executor_route, records selection, invokes adapter (deterministic allowlisted read or coding/AFO stub). NEVER auto-dispatch from model/intent/propose. accepted_state_authority=false.",
+  description: "V7.7.10d/d.1: human-commit dispatch of a proposed Task Run. Requires human_commit:true + committed_by. Runs executor_route, records selection + context_resolution, invokes adapter with min envelope (cairnstone_native) or bounded compiled pack (compiled_context). NEVER auto-dispatch from model/intent/propose. accepted_state_authority=false.",
   inputSchema: {
     type: "object",
     required: ["task_run_id", "human_commit", "committed_by"],
@@ -1122,7 +1159,12 @@ export const TASK_RUN_DISPATCH_TOOL_DEFINITION = Object.freeze({
       route_receipt: { type: "object" },
       allowlisted_tool_id: { type: "string" },
       allowlisted_tool_args: { type: "object" },
-      base_commit_sha: { type: "string" }
+      base_commit_sha: { type: "string" },
+      access_grant_ids: { type: "array", items: { type: "string" } },
+      scope_hints: { type: "array", items: { type: "string" } },
+      compiled_body: { type: "string", description: "Optional bounded compiled body for compiled_context executors only; rejected for cairnstone_native" },
+      compiled_pack_budget: { type: "object" },
+      force_compiled_pack: { type: "boolean" }
     },
     additionalProperties: false
   }
