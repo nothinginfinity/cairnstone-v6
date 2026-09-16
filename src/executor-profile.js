@@ -485,10 +485,28 @@ export function inferRequiredCapabilities({
   return [...caps].sort();
 }
 
+export const HOST_SATISFIED_COMPILED_CAPABILITIES = Object.freeze(["stone.read"]);
+
+function isCompiledContextProfile(profile) {
+  return profile?.context_mode === CONTEXT_MODES.compiled_context
+    || profile?.requires_compiled_context === true;
+}
+
 function profileCoversCapabilities(profile, required) {
   const have = new Set(profile.capabilities || []);
-  const missing = required.filter(c => !have.has(c));
-  return { ok: missing.length === 0, missing };
+  const compiled = isCompiledContextProfile(profile);
+  const hostSet = new Set(compiled ? HOST_SATISFIED_COMPILED_CAPABILITIES : []);
+  const host_satisfied = [];
+  const missing = [];
+  for (const c of required) {
+    if (have.has(c)) continue;
+    if (hostSet.has(c)) {
+      host_satisfied.push(c);
+      continue;
+    }
+    missing.push(c);
+  }
+  return { ok: missing.length === 0, missing, host_satisfied };
 }
 
 function isFullyDeterministic(required) {

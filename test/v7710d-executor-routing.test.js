@@ -736,3 +736,75 @@ test("10d.1: adapter contracts expose context_mode", () => {
   assert.equal(contract.context_mode, CONTEXT_MODES.cairnstone_native);
   assert.equal(contract.contract.omit_compiled_prompt_dump_when_native, true);
 });
+
+test("10d.2: compiled Copilot does not advertise stone.read", () => {
+  const copilot = getExecutorProfile("exec:github-copilot");
+  assert.equal(copilot.ok, true);
+  assert.equal(copilot.executor.context_mode, CONTEXT_MODES.compiled_context);
+  assert.equal(copilot.executor.capabilities.includes("stone.read"), false);
+});
+
+test("10d.2: preferred github-copilot accepts host-satisfied stone.read", () => {
+  const route = routeExecutor({
+    required_capabilities: ["repo.edit", "repo.pr"],
+    attachment_refs: [OBJECT_REF, REPO_REF],
+    policy_preset: "manual",
+    preferred_executor: "exec:github-copilot",
+    actor_id: ACTOR
+  });
+  assert.equal(route.ok, true);
+  assert.equal(route.route_receipt.selected_executor_id, "exec:github-copilot");
+  assert.equal(route.route_receipt.context_resolution, CONTEXT_RESOLUTION.compiled_transmitted);
+  assert.equal(route.route_receipt.compiled_pack_required, true);
+  assert.ok(route.route_receipt.required_capabilities.includes("stone.read"));
+  assert.equal(route.route_receipt.accepted_state_authority, false);
+  assert.equal(route.route_receipt.dispatched, false);
+});
+
+test("10d.2: propose+dispatch preferred github-copilot succeeds as dry-run stub", async () => {
+  const db = makeDb();
+  await proposeTaskRun(db, {
+    task_run_id: "tr:copilot-host-satisfied",
+    requested_by: ACTOR,
+    attachment_refs: [OBJECT_REF, REPO_REF],
+    required_capabilities: ["repo.edit", "repo.pr"],
+    policy_preset: "manual",
+    note: "open a PR"
+  });
+  const dispatched = await dispatchTaskRun(db, {
+    task_run_id: "tr:copilot-host-satisfied",
+    human_commit: true,
+    committed_by: ACTOR,
+    preferred_executor: "exec:github-copilot"
+  });
+  assert.equal(dispatched.ok, true);
+  assert.equal(dispatched.task_run.selected_executor_id, "exec:github-copilot");
+  assert.equal(dispatched.adapter_receipt.dry_run, true);
+  assert.equal(dispatched.accepted_state_authority, false);
+  assert.equal(dispatched.route_receipt.accepted_state_authority, false);
+});
+
+test("10d.2: buildDispatchContextEnvelope stays bounded for github-copilot refs", () => {
+  const route = routeExecutor({
+    required_capabilities: ["repo.edit", "repo.pr"],
+    attachment_refs: [OBJECT_REF, REPO_REF],
+    policy_preset: "manual",
+    preferred_executor: "exec:github-copilot",
+    actor_id: ACTOR
+  });
+  assert.equal(route.ok, true);
+  const built = buildDispatchContextEnvelope({
+    executor_id: "exec:github-copilot",
+    task_run: {
+      task_run_id: "tr:copilot-pack",
+      attachment_refs: [OBJECT_REF, REPO_REF],
+      required_capabilities: ["repo.edit", "repo.pr"],
+      note: "open a PR"
+    },
+    route_receipt: route.route_receipt
+  });
+  assert.equal(built.ok, true);
+  assert.equal(built.context_resolution, CONTEXT_RESOLUTION.compiled_transmitted);
+  assert.equal(built.compiled_pack_included, true);
+  assert.ok(built.compiled_pack.body_chars <= COMPILED_CONTEXT_BUDGET.max_body_chars);
+});
