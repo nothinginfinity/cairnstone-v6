@@ -7,7 +7,7 @@
 **Fabric plan (10d authority):** `4ccf169f4fd6e94109c1ac66e3492069beade5206c73f2ce1b3ad6d061eabfaf`  
 **START HERE gate (10d COMPLETE):** `7a9fb4b06a4ba9879e3f431cc906a2994f65028a6cac7b278072c103bd5c4d4d`  
 **10d.1 trigger AC1:** `msg:v7710d-native-executor-context-followup-20260915-chatgpt` · stone `811dd6519ae7e24dab49a332def0e055dce34408c8cedbbba7d84b2f59f6ed17`  
-**Runtime:** worker **0.5.43** (10d.1 native vs compiled context; baseline tip `939e9d8cc6fdface58331a6c06bac73d6e73ea7b` / **0.5.42**)
+**Runtime:** worker **0.5.43** live; **10d.2** host-satisfied `stone.read` for compiled_context (amendment on tip `9270d703a52206698a8674ce8962077ec0f555e1`; version bump on deploy)
 
 ## What this plane is
 
@@ -112,9 +112,11 @@ Child `attachment_refs` / `object_refs` / `required_capabilities` must be ⊆ pa
 
 **10d.1:** no new migration — `context_mode` / `context_resolution` live on existing JSON route_receipt / adapter receipt fields.
 
+**10d.2:** no new migration — host-satisfied compiled capabilities are in-process cover-check only.
+
 ## Broker
 
-Registry **87 → 94** (+7 in 10d). **10d.1 adds no new MCP tools** (extends existing route/dispatch).
+Registry **87 → 94** (+7 in 10d). **10d.1/10d.2 add no new MCP tools** (extends existing route/dispatch).
 
 ## Out of scope
 
@@ -132,3 +134,7 @@ Registry **87 → 94** (+7 in 10d). **10d.1 adds no new MCP tools** (extends exi
 - `test/v7710d-executor-routing.test.js`
 - `project-memory/v7710d-execution-routing-implementation-note.md`
 - `project-memory/v7710d1-native-context-implementation-note.md`
+
+## V7.7.10d.2 — compiled host-satisfied `stone.read`
+
+Preferred `github-copilot` must remain `compiled_context` and must **not** advertise `stone.read` (that would imply CairnStone-native MCP access). Attachment/`msg`/`stone` refs still infer `stone.read`; for compiled profiles the host satisfies that capability by materializing a bounded receipted pack. Fail closed on other missing executor-held capabilities. No live Copilot adapter invented.
