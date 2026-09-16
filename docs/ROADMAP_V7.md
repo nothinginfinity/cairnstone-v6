@@ -666,6 +666,14 @@ Conversation Session is operational D1 only (`accepted_state_authority: false`);
 
 ---
 
+### V7.7.11 — Mobile Home Surface / Installable PWA Dashboard
+
+Status: **PLANNED / AFTER V7.7.10 ACCEPTANCE.** Start inside `nothinginfinity/cairnstone-v6-console`, using the proven InfinityPaste PWA pattern. First deliver an installable iPhone Home Screen PWA and compact CairnStone dashboard, then test a generalized `Source + View + Action + Appearance` surface schema. Do **not** create a standalone repo until the schema proves useful across at least three distinct sources/products including a non-CairnStone source and the renderer/configuration lifecycle is clearly separable from Console releases. No new accepted-state or execution authority is introduced.
+
+Canonical detailed plan: `docs/V7_7_11_MOBILE_HOME_SURFACE.md`.
+
+---
+
 ## V7.8 — CairnStone Federation / StoneLink
 
 Status: **PLANNED / AFTER V7.7 ACCEPTANCE.** V7.8 is a federation layer over the V7.7 Scope model, not a replacement for current V7.7 work. The working protocol name is **StoneLink**. Initial federation is discovery-first and read-only-first; public discovery never implies public mutation.
@@ -965,6 +973,8 @@ V7.5 x402 paid sub-agent runtime (IN PROGRESS — V7.5.0 contract/quote boundary
 V7.6 Context Efficiency & MCP Surface Optimization (COMPLETE + LIVE-ACCEPTED — profiler + Tool Vault + sparse authority + compact reads + canonical instruction runtime brief + optimized_sparse default flip closed; legacy_full rollback proven)
         ↓
 V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (ACTIVE EVOLUTION — V7.7.7f complete/live; V7.7.8 Progressive Grounded Chat LOD next; V7.7.9 Console UX Architecture after)
+        ↓
+V7.7.11 Mobile Home Surface / Installable PWA Dashboard (PLANNED — Console-first iPhone PWA + compact dashboard; standalone repo gated on multi-source proof)
         ↓
 V7.8 CairnStone Federation / StoneLink (PLANNED / AFTER V7.7 ACCEPTANCE — public node manifest → DNS/.well-known discovery → external read-only Scope → signed external Stone envelopes → cross-vault grounded search/Q&A → federated AC1 → capability tiers → federation security gate)
         ↓
