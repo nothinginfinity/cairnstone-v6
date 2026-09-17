@@ -80,11 +80,15 @@ export function projectAgentTree(taskRuns = []) {
   }
 
   const roots = [];
+  const orphans = [];
   for (const node of nodesById.values()) {
+    if (!node.parent_task_run_id) {
+      roots.push(node);
+      continue;
+    }
     const parent = node.parent_task_run_id ? nodesById.get(node.parent_task_run_id) : null;
     if (!parent) {
-      node.parent_task_run_id = null;
-      roots.push(node);
+      orphans.push(node);
       continue;
     }
     parent.children.push(node);
@@ -118,6 +122,7 @@ export function projectAgentTree(taskRuns = []) {
     max_delegation_depth: TASK_RUN_MAX_DELEGATION_DEPTH,
     roots: cappedRoots,
     total_roots: cappedRoots.length,
+    orphaned_count: orphans.length,
     ...authorityClosedFields()
   };
 }
@@ -125,7 +130,6 @@ export function projectAgentTree(taskRuns = []) {
 export function listEventsFromTaskRuns(taskRuns = [], { since = null, limit = DEFAULT_LIST } = {}) {
   const lim = Number.isInteger(limit) ? Math.max(1, Math.min(MAX_LIST, limit)) : DEFAULT_LIST;
   const sinceValue = typeof since === "string" && since.trim() ? since.trim() : null;
-
   const events = (taskRuns || [])
     .map(eventFromTaskRun)
     .filter(event => !sinceValue || (event.occurred_at && event.occurred_at > sinceValue))
@@ -188,14 +192,34 @@ export async function listEventPlaneFromBody(body = {}, env = {}) {
   return listEventsFromTaskRuns(taskRuns, { since: body.since || null, limit: body.limit });
 }
 
-async function listChildrenForParent(db, actorId, parentId, limit = MAX_LIST) {
-  const children = await listTaskRuns(db, {
-    actor_id: actorId,
-    parent_task_run_id: parentId,
-    limit
-  });
-  if (!children?.ok) return children;
-  return { ok: true, task_runs: children.task_runs || [] };
+function selectDescendantsFromRuns(taskRuns, rootId, maxDepth) {
+  const byParent = new Map();
+  for (const run of taskRuns || []) {
+    const parentId = normalizedParentId(run);
+    if (!parentId) continue;
+    const bucket = byParent.get(parentId) || [];
+    bucket.push(run);
+    byParent.set(parentId, bucket);
+  }
+
+  const seen = new Set([rootId]);
+  const out = [];
+  let frontier = [rootId];
+  for (let depth = 1; depth <= maxDepth; depth += 1) {
+    if (frontier.length === 0) break;
+    const next = [];
+    for (const parentId of frontier) {
+      const children = byParent.get(parentId) || [];
+      for (const child of children) {
+        if (!child?.task_run_id || seen.has(child.task_run_id)) continue;
+        seen.add(child.task_run_id);
+        out.push(child);
+        next.push(child.task_run_id);
+      }
+    }
+    frontier = next;
+  }
+  return out;
 }
 
 export async function agentTreeFromBody(body = {}, env = {}) {
@@ -205,22 +229,21 @@ export async function agentTreeFromBody(body = {}, env = {}) {
   if (body.root_task_run_id) {
     const root = await getTaskRun(bindings.db, body.root_task_run_id, body.actor_id);
     if (!root?.ok) return root;
-    const all = [root.task_run];
-
-    const levelOne = await listChildrenForParent(bindings.db, body.actor_id, root.task_run.task_run_id, body.limit);
-    if (!levelOne.ok) return levelOne;
-    all.push(...levelOne.task_runs);
-
-    if (TASK_RUN_MAX_DELEGATION_DEPTH >= 2) {
-      for (const child of levelOne.task_runs) {
-        if (!child?.task_run_id) continue;
-        const levelTwo = await listChildrenForParent(bindings.db, body.actor_id, child.task_run_id, body.limit);
-        if (!levelTwo.ok) return levelTwo;
-        all.push(...levelTwo.task_runs);
-      }
+    if (!root.task_run?.task_run_id) {
+      return { ok: false, error: "task_run_not_found", task_run_id: body.root_task_run_id };
     }
-
-    return projectAgentTree(all);
+    const rootNode = { ...root.task_run, parent_task_run_id: null };
+    const listed = await listTaskRuns(bindings.db, {
+      actor_id: body.actor_id,
+      limit: MAX_LIST
+    });
+    if (!listed?.ok) return listed;
+    const descendants = selectDescendantsFromRuns(
+      listed.task_runs || [],
+      rootNode.task_run_id,
+      TASK_RUN_MAX_DELEGATION_DEPTH
+    );
+    return projectAgentTree([rootNode, ...descendants]);
   }
 
   const listed = await listTaskRuns(bindings.db, {
@@ -241,7 +264,7 @@ export const EVENT_PLANE_LIST_TOOL_DEFINITION = Object.freeze({
       actor_id: { type: "string" },
       task_run_id: { type: "string" },
       status: { type: "string" },
-      since: { type: "string" },
+      since: { type: "string", description: "Exclusive lower bound on occurred_at (ISO-8601 UTC string)." },
       limit: { type: "number", minimum: 1, maximum: MAX_LIST }
     },
     additionalProperties: false

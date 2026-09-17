@@ -7,7 +7,8 @@ import {
   eventFromTaskRun,
   projectAgentTree,
   listEventsFromTaskRuns,
-  subscribeHonesty
+  subscribeHonesty,
+  agentTreeFromBody
 } from "../src/event-plane.js";
 import { mcpToolsForProfile } from "../src/index.js";
 
@@ -79,6 +80,136 @@ test("listEventsFromTaskRuns returns ok true and empty events for empty input", 
   const listed = listEventsFromTaskRuns([]);
   assert.equal(listed.ok, true);
   assert.deepEqual(listed.events, []);
+});
+
+test("listEventsFromTaskRuns applies since filter and limit clamp", () => {
+  const listed = listEventsFromTaskRuns([
+    { task_run_id: "tr:old", status: "proposed", dispatch_state: "not_dispatched", updated_at: "2026-01-01T00:00:00.000Z" },
+    { task_run_id: "tr:new", status: "running", dispatch_state: "running", updated_at: "2026-01-03T00:00:00.000Z" },
+    { task_run_id: "tr:mid", status: "queued", dispatch_state: "dispatched", updated_at: "2026-01-02T00:00:00.000Z" }
+  ], { since: "2026-01-01T12:00:00.000Z", limit: 1 });
+  assert.equal(listed.events.length, 1);
+  assert.equal(listed.events[0].task_run_id, "tr:new");
+});
+
+function makeTaskRunRow(overrides = {}) {
+  return {
+    task_run_id: overrides.task_run_id,
+    schema: "cairnstone-task-run-v1",
+    status: overrides.status || "queued",
+    conversation_id: null,
+    parent_turn_id: null,
+    requested_by: overrides.requested_by || "console:jared",
+    assignee_actor_id: overrides.assignee_actor_id || null,
+    requested_intent: "ask-to-work",
+    intent_mode: "propose-action",
+    attachment_refs_json: "[]",
+    object_refs_json: "[]",
+    note: null,
+    dispatch_state: overrides.dispatch_state || "dispatched",
+    selected_executor_id: null,
+    executor_route_reason: null,
+    required_capabilities_json: "[]",
+    policy_preset: null,
+    budget_envelope_json: null,
+    parent_task_run_id: overrides.parent_task_run_id || null,
+    child_task_run_ids_json: "[]",
+    delegation_depth: 0,
+    route_receipt_id: null,
+    route_receipt_json: null,
+    adapter_job_id: null,
+    receipt_refs_json: "[]",
+    artifact_refs_json: "[]",
+    pr_refs_json: "[]",
+    test_refs_json: "[]",
+    result_summary: null,
+    failure_reason: null,
+    human_committed_by: null,
+    human_committed_at: null,
+    started_at: null,
+    completed_at: null,
+    created_at: overrides.created_at || "2026-01-01T00:00:00.000Z",
+    updated_at: overrides.updated_at || "2026-01-01T00:00:00.000Z",
+    cancelled_at: null,
+    accepted_state_authority: 0
+  };
+}
+
+function makeDb(rows = []) {
+  const byId = new Map(rows.map(row => [row.task_run_id, row]));
+  return {
+    prepare(sql) {
+      const args = [];
+      return {
+        bind(...bound) {
+          args.push(...bound);
+          return this;
+        },
+        async first() {
+          if (!sql.includes("WHERE task_run_id = ?")) return null;
+          return byId.get(args[0]) || null;
+        },
+        async all() {
+          if (!sql.includes("FROM task_runs")) return { results: [] };
+          const [actorA, actorB, actorC, statusA, statusB, _convA, _convB, _assigneeA, _assigneeB, parentA, parentB, limit] = args;
+          const filtered = rows.filter((row) => {
+            const actorMatch = row.requested_by === actorA || row.assignee_actor_id === actorB || row.human_committed_by === actorC;
+            if (!actorMatch) return false;
+            if (statusA !== null && row.status !== statusB) return false;
+            if (parentA !== null && row.parent_task_run_id !== parentB) return false;
+            return true;
+          });
+          return { results: filtered.slice(0, limit) };
+        }
+      };
+    }
+  };
+}
+
+test("agentTreeFromBody root_task_run_id loads descendants through capped depth", async () => {
+  const db = makeDb([
+    makeTaskRunRow({ task_run_id: "tr:root", requested_by: "console:jared", parent_task_run_id: null }),
+    makeTaskRunRow({ task_run_id: "tr:child", requested_by: "console:jared", parent_task_run_id: "tr:root" }),
+    makeTaskRunRow({ task_run_id: "tr:grandchild", requested_by: "console:jared", parent_task_run_id: "tr:child" }),
+    makeTaskRunRow({ task_run_id: "tr:too-deep", requested_by: "console:jared", parent_task_run_id: "tr:grandchild" })
+  ]);
+  const result = await agentTreeFromBody({
+    actor_id: "console:jared",
+    root_task_run_id: "tr:root"
+  }, { CAIRNSTONE_DB: db });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.roots.length, 1);
+  assert.equal(result.roots[0].task_run_id, "tr:root");
+  assert.equal(result.roots[0].children[0].task_run_id, "tr:child");
+  assert.equal(result.roots[0].children[0].children[0].task_run_id, "tr:grandchild");
+  assert.equal(result.roots[0].children[0].children[0].children.length, 0);
+});
+
+test("agentTreeFromBody root traversal is not truncated by small response limit", async () => {
+  const db = makeDb([
+    makeTaskRunRow({ task_run_id: "tr:root", requested_by: "console:jared", parent_task_run_id: null }),
+    makeTaskRunRow({ task_run_id: "tr:child", requested_by: "console:jared", parent_task_run_id: "tr:root" }),
+    makeTaskRunRow({ task_run_id: "tr:grandchild", requested_by: "console:jared", parent_task_run_id: "tr:child" })
+  ]);
+  const result = await agentTreeFromBody({
+    actor_id: "console:jared",
+    root_task_run_id: "tr:root",
+    limit: 1
+  }, { CAIRNSTONE_DB: db });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.roots[0].children[0].task_run_id, "tr:child");
+  assert.equal(result.roots[0].children[0].children[0].task_run_id, "tr:grandchild");
+});
+
+test("agentTreeFromBody returns task_run_not_found for unknown root", async () => {
+  const result = await agentTreeFromBody({
+    actor_id: "console:jared",
+    root_task_run_id: "tr:missing"
+  }, { CAIRNSTONE_DB: makeDb([]) });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "task_run_not_found");
 });
 
 test("event plane MCP tools are exposed on mcpTools()", () => {
