@@ -1,4 +1,5 @@
 export const RETENTION_SCHEMA = "cairnstone-context-retention-v1";
+export const REHYDRATION_SCHEMA = "cairnstone-rehydration-v1";
 
 export const RETENTION_ACTIONS = Object.freeze({
   PIN: "PIN",
@@ -17,6 +18,21 @@ export const CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION = Object.freeze({
       actor_id: { type: "string" },
       candidates: { type: "array", items: { type: "object" } },
       items: { type: "array", items: { type: "object" } }
+    },
+    additionalProperties: false
+  }
+});
+
+export const CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION = Object.freeze({
+  name: "cairnstone_context_retention_rehydrate",
+  description: "V7.7.10g.3: read-only exact lazy rehydration router over refs and/or candidates. Returns deterministic routes only and never writes storage or moves HEADs.",
+  inputSchema: {
+    type: "object",
+    required: ["actor_id"],
+    properties: {
+      actor_id: { type: "string" },
+      refs: { type: "array", items: { type: "string" } },
+      candidates: { type: "array", items: { type: "object" } }
     },
     additionalProperties: false
   }
@@ -161,6 +177,59 @@ function isRedundantSuccessfulRead(candidate = {}, artifactClass, flags = {}) {
     && candidate.success === true
     && (flags.redundant_successful_read === true || flags.redundant === true)
     && Boolean(newerImmutableRef);
+}
+
+function firstNonEmptyRefFromCandidate(candidate = {}) {
+  const nestedCandidate = candidate?.candidate && typeof candidate.candidate === "object"
+    ? candidate.candidate
+    : null;
+  return firstNonEmptyString([
+    candidate.rehydration_ref,
+    candidate.repo_ref,
+    candidate.object_ref,
+    candidate.content_ref,
+    candidate.stone_ref,
+    candidate.receipt_ref,
+    candidate.checkpoint_ref,
+    candidate.receipt_id,
+    candidate.checkpoint_id,
+    candidate.ref,
+    nestedCandidate?.rehydration_ref,
+    nestedCandidate?.repo_ref,
+    nestedCandidate?.object_ref,
+    nestedCandidate?.content_ref,
+    nestedCandidate?.stone_ref,
+    nestedCandidate?.receipt_ref,
+    nestedCandidate?.checkpoint_ref,
+    nestedCandidate?.receipt_id,
+    nestedCandidate?.checkpoint_id,
+    nestedCandidate?.ref
+  ]);
+}
+
+function normalizeRefOrCandidate(refOrCandidate) {
+  if (typeof refOrCandidate === "string") return { ref: refOrCandidate.trim(), candidate: null };
+  if (!refOrCandidate || typeof refOrCandidate !== "object") return { ref: null, candidate: null };
+  return {
+    ref: firstNonEmptyRefFromCandidate(refOrCandidate),
+    candidate: refOrCandidate
+  };
+}
+
+function rehydrationResult(result = {}) {
+  return {
+    schema: REHYDRATION_SCHEMA,
+    ...result,
+    ...authorityClosedFields()
+  };
+}
+
+function isExactRepoSnapshotRef(ref) {
+  return /^repo:[^/\s]+\/[^@\s]+@[0-9a-f]{40}\/.+$/i.test(ref);
+}
+
+function isRepoRef(ref) {
+  return /^repo:[^/\s]+\/[^/\s]+(?:@[^/\s]+)?(?:\/.*)?$/i.test(ref);
 }
 
 export function classifyCandidate(candidate = {}) {
@@ -346,4 +415,78 @@ export function previewRetentionFromBody(body = {}) {
   const directCandidates = Array.isArray(body.candidates) ? body.candidates : [];
   const ledgerCandidates = Array.isArray(body.items) ? compileRetentionLedger(body.items) : [];
   return previewRetention({ candidates: [...directCandidates, ...ledgerCandidates] });
+}
+
+export function rehydrateRoute(refOrCandidate) {
+  const { ref, candidate } = normalizeRefOrCandidate(refOrCandidate);
+
+  if (typeof ref === "string" && (ref.startsWith("stone:") || /^[0-9a-f]{64}$/i.test(ref))) {
+    return rehydrationResult({ ok: true, route: "stone_expand", exact: true, ref });
+  }
+
+  if (candidate?.object_ref?.startsWith?.("stone:")) {
+    return rehydrationResult({ ok: true, route: "stone_expand", exact: true, ref: candidate.object_ref });
+  }
+
+  if (typeof ref === "string" && isExactRepoSnapshotRef(ref)) {
+    return rehydrationResult({ ok: true, route: "repo_at_sha", exact: true, snapshot: true, ref });
+  }
+
+  if (typeof ref === "string" && isRepoRef(ref)) {
+    return rehydrationResult({
+      ok: false,
+      exact: false,
+      error: "mutable_head_ref_refused",
+      reason: "would replace snapshot with current mutable state",
+      ref
+    });
+  }
+
+  if (
+    typeof ref === "string"
+    && (ref.startsWith("receipt:") || ref.startsWith("checkpoint:"))
+  ) {
+    return rehydrationResult({ ok: true, route: "receipt_or_checkpoint", exact: true, ref });
+  }
+
+  if (candidate && (firstNonEmptyString([candidate.receipt_id]) || firstNonEmptyString([candidate.checkpoint_id]))) {
+    return rehydrationResult({
+      ok: true,
+      route: "receipt_or_checkpoint",
+      exact: true,
+      ref: firstNonEmptyString([candidate.receipt_id, candidate.checkpoint_id])
+    });
+  }
+
+  return rehydrationResult({ ok: false, exact: false, error: "rehydration_unavailable", ref });
+}
+
+export function planRehydration(decisionsOrCandidates = []) {
+  return (Array.isArray(decisionsOrCandidates) ? decisionsOrCandidates : []).map((entry = {}) => {
+    const decision = entry?.action ? entry : classifyCandidate(entry);
+    if (
+      (decision.action === RETENTION_ACTIONS.KEEP_REF
+        || decision.action === RETENTION_ACTIONS.DROP_FROM_ACTIVE_CONTEXT)
+      && firstNonEmptyRefFromCandidate(decision)
+    ) {
+      return { ...decision, rehydrate: rehydrateRoute(decision) };
+    }
+    return decision;
+  });
+}
+
+export function rehydrateRoutesFromBody(body = {}) {
+  if (!firstNonEmptyString([body.actor_id])) {
+    return { ok: false, error: "actor_id_required", ...authorityClosedFields() };
+  }
+
+  const refs = Array.isArray(body.refs) ? body.refs : [];
+  const candidates = Array.isArray(body.candidates) ? body.candidates : [];
+
+  return {
+    ok: true,
+    schema: REHYDRATION_SCHEMA,
+    routes: [...refs, ...candidates].map(rehydrateRoute),
+    ...authorityClosedFields()
+  };
 }
