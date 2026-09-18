@@ -233,6 +233,17 @@ test("rehydrateRoute refuses floating repo refs", () => {
   assert.equal(route.reason, "would replace snapshot with current mutable state");
 });
 
+test("rehydrateRoute prefers candidate stone refs over repo refs", () => {
+  const route = rehydrateRoute({
+    object_ref: "stone:deadbeef",
+    repo_ref: "repo:nothinginfinity/cairnstone-v6@main/src/index.js"
+  });
+
+  assert.equal(route.ok, true);
+  assert.equal(route.route, "stone_expand");
+  assert.equal(route.ref, "stone:deadbeef");
+});
+
 test("rehydrateRoute reports unavailable for missing refs", () => {
   const route = rehydrateRoute({ class: "repo_read" });
 

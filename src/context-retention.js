@@ -179,21 +179,27 @@ function isRedundantSuccessfulRead(candidate = {}, artifactClass, flags = {}) {
     && Boolean(newerImmutableRef);
 }
 
-function firstNonEmptyRefFromCandidate(candidate = {}) {
-  const nestedCandidate = candidate?.candidate && typeof candidate.candidate === "object"
-    ? candidate.candidate
+function nestedCandidateOf(candidate = {}) {
+  const source = candidate && typeof candidate === "object" ? candidate : {};
+  return source.candidate && typeof source.candidate === "object"
+    ? source.candidate
     : null;
+}
+
+function firstNonEmptyRefFromCandidate(candidate = {}) {
+  const source = candidate && typeof candidate === "object" ? candidate : {};
+  const nestedCandidate = nestedCandidateOf(source);
   return firstNonEmptyString([
-    candidate.rehydration_ref,
-    candidate.repo_ref,
-    candidate.object_ref,
-    candidate.content_ref,
-    candidate.stone_ref,
-    candidate.receipt_ref,
-    candidate.checkpoint_ref,
-    candidate.receipt_id,
-    candidate.checkpoint_id,
-    candidate.ref,
+    source.rehydration_ref,
+    source.repo_ref,
+    source.object_ref,
+    source.content_ref,
+    source.stone_ref,
+    source.receipt_ref,
+    source.checkpoint_ref,
+    source.receipt_id,
+    source.checkpoint_id,
+    source.ref,
     nestedCandidate?.rehydration_ref,
     nestedCandidate?.repo_ref,
     nestedCandidate?.object_ref,
@@ -216,6 +222,69 @@ function normalizeRefOrCandidate(refOrCandidate) {
   };
 }
 
+function firstStoneRefFromCandidate(candidate = {}) {
+  const source = candidate && typeof candidate === "object" ? candidate : {};
+  const nestedCandidate = nestedCandidateOf(source);
+  const directObjectRef = typeof source.object_ref === "string" && source.object_ref.startsWith("stone:")
+    ? source.object_ref
+    : null;
+  const directContentRef = typeof source.content_ref === "string" && source.content_ref.startsWith("stone:")
+    ? source.content_ref
+    : null;
+  const nestedObjectRef = typeof nestedCandidate?.object_ref === "string" && nestedCandidate.object_ref.startsWith("stone:")
+    ? nestedCandidate.object_ref
+    : null;
+  const nestedContentRef = typeof nestedCandidate?.content_ref === "string" && nestedCandidate.content_ref.startsWith("stone:")
+    ? nestedCandidate.content_ref
+    : null;
+  return firstNonEmptyString([
+    source.stone_ref,
+    directObjectRef,
+    directContentRef,
+    nestedCandidate?.stone_ref,
+    nestedObjectRef,
+    nestedContentRef
+  ]);
+}
+
+function firstRepoRefFromCandidate(candidate = {}) {
+  const source = candidate && typeof candidate === "object" ? candidate : {};
+  const nestedCandidate = nestedCandidateOf(source);
+  return firstNonEmptyString([
+    source.repo_ref,
+    typeof source.rehydration_ref === "string" && source.rehydration_ref.startsWith("repo:") ? source.rehydration_ref : null,
+    typeof source.object_ref === "string" && source.object_ref.startsWith("repo:") ? source.object_ref : null,
+    typeof source.content_ref === "string" && source.content_ref.startsWith("repo:") ? source.content_ref : null,
+    nestedCandidate?.repo_ref,
+    typeof nestedCandidate?.rehydration_ref === "string" && nestedCandidate.rehydration_ref.startsWith("repo:") ? nestedCandidate.rehydration_ref : null,
+    typeof nestedCandidate?.object_ref === "string" && nestedCandidate.object_ref.startsWith("repo:") ? nestedCandidate.object_ref : null,
+    typeof nestedCandidate?.content_ref === "string" && nestedCandidate.content_ref.startsWith("repo:") ? nestedCandidate.content_ref : null
+  ]);
+}
+
+function firstReceiptOrCheckpointRefFromCandidate(candidate = {}) {
+  const source = candidate && typeof candidate === "object" ? candidate : {};
+  const nestedCandidate = nestedCandidateOf(source);
+  return firstNonEmptyString([
+    source.receipt_ref,
+    source.checkpoint_ref,
+    source.receipt_id,
+    source.checkpoint_id,
+    typeof source.rehydration_ref === "string"
+      && (source.rehydration_ref.startsWith("receipt:") || source.rehydration_ref.startsWith("checkpoint:"))
+      ? source.rehydration_ref
+      : null,
+    nestedCandidate?.receipt_ref,
+    nestedCandidate?.checkpoint_ref,
+    nestedCandidate?.receipt_id,
+    nestedCandidate?.checkpoint_id,
+    typeof nestedCandidate?.rehydration_ref === "string"
+      && (nestedCandidate.rehydration_ref.startsWith("receipt:") || nestedCandidate.rehydration_ref.startsWith("checkpoint:"))
+      ? nestedCandidate.rehydration_ref
+      : null
+  ]);
+}
+
 function rehydrationResult(result = {}) {
   return {
     schema: REHYDRATION_SCHEMA,
@@ -224,12 +293,26 @@ function rehydrationResult(result = {}) {
   };
 }
 
-function isExactRepoSnapshotRef(ref) {
-  return /^repo:[^/\s]+\/[^@\s]+@[0-9a-f]{40}\/.+$/i.test(ref);
+function isHexOfLength(value, length) {
+  return typeof value === "string" && value.length === length && /^[0-9a-f]+$/i.test(value);
 }
 
-function isRepoRef(ref) {
-  return /^repo:[^/\s]+\/[^/\s]+(?:@[^/\s]+)?(?:\/.*)?$/i.test(ref);
+function isExactRepoSnapshotRef(ref) {
+  if (typeof ref !== "string" || !ref.startsWith("repo:")) return false;
+  const withoutPrefix = ref.slice("repo:".length);
+  const ownerSeparator = withoutPrefix.indexOf("/");
+  if (ownerSeparator <= 0) return false;
+  const owner = withoutPrefix.slice(0, ownerSeparator);
+  const repoAndRest = withoutPrefix.slice(ownerSeparator + 1);
+  const snapshotSeparator = repoAndRest.indexOf("@");
+  if (!owner || snapshotSeparator <= 0) return false;
+  const repo = repoAndRest.slice(0, snapshotSeparator);
+  const snapshotAndPath = repoAndRest.slice(snapshotSeparator + 1);
+  const pathSeparator = snapshotAndPath.indexOf("/");
+  if (!repo || pathSeparator <= 0) return false;
+  const snapshot = snapshotAndPath.slice(0, pathSeparator);
+  const path = snapshotAndPath.slice(pathSeparator + 1);
+  return isHexOfLength(snapshot, 40) && path.length > 0;
 }
 
 export function classifyCandidate(candidate = {}) {
@@ -419,20 +502,36 @@ export function previewRetentionFromBody(body = {}) {
 
 export function rehydrateRoute(refOrCandidate) {
   const { ref, candidate } = normalizeRefOrCandidate(refOrCandidate);
+  const stoneRef = firstStoneRefFromCandidate(candidate);
+  const repoRef = firstRepoRefFromCandidate(candidate);
+  const receiptOrCheckpointRef = firstReceiptOrCheckpointRefFromCandidate(candidate);
 
-  if (typeof ref === "string" && (ref.startsWith("stone:") || /^[0-9a-f]{64}$/i.test(ref))) {
+  if (stoneRef) {
+    return rehydrationResult({ ok: true, route: "stone_expand", exact: true, ref: stoneRef });
+  }
+
+  if (typeof ref === "string" && (ref.startsWith("stone:") || isHexOfLength(ref, 64))) {
     return rehydrationResult({ ok: true, route: "stone_expand", exact: true, ref });
   }
 
-  if (candidate?.object_ref?.startsWith?.("stone:")) {
-    return rehydrationResult({ ok: true, route: "stone_expand", exact: true, ref: candidate.object_ref });
+  if (repoRef) {
+    if (isExactRepoSnapshotRef(repoRef)) {
+      return rehydrationResult({ ok: true, route: "repo_at_sha", exact: true, snapshot: true, ref: repoRef });
+    }
+    return rehydrationResult({
+      ok: false,
+      exact: false,
+      error: "mutable_head_ref_refused",
+      reason: "would replace snapshot with current mutable state",
+      ref: repoRef
+    });
   }
 
   if (typeof ref === "string" && isExactRepoSnapshotRef(ref)) {
     return rehydrationResult({ ok: true, route: "repo_at_sha", exact: true, snapshot: true, ref });
   }
 
-  if (typeof ref === "string" && isRepoRef(ref)) {
+  if (typeof ref === "string" && ref.startsWith("repo:")) {
     return rehydrationResult({
       ok: false,
       exact: false,
@@ -442,20 +541,12 @@ export function rehydrateRoute(refOrCandidate) {
     });
   }
 
-  if (
-    typeof ref === "string"
-    && (ref.startsWith("receipt:") || ref.startsWith("checkpoint:"))
-  ) {
-    return rehydrationResult({ ok: true, route: "receipt_or_checkpoint", exact: true, ref });
+  if (receiptOrCheckpointRef) {
+    return rehydrationResult({ ok: true, route: "receipt_or_checkpoint", exact: true, ref: receiptOrCheckpointRef });
   }
 
-  if (candidate && (firstNonEmptyString([candidate.receipt_id]) || firstNonEmptyString([candidate.checkpoint_id]))) {
-    return rehydrationResult({
-      ok: true,
-      route: "receipt_or_checkpoint",
-      exact: true,
-      ref: firstNonEmptyString([candidate.receipt_id, candidate.checkpoint_id])
-    });
+  if (typeof ref === "string" && (ref.startsWith("receipt:") || ref.startsWith("checkpoint:"))) {
+    return rehydrationResult({ ok: true, route: "receipt_or_checkpoint", exact: true, ref });
   }
 
   return rehydrationResult({ ok: false, exact: false, error: "rehydration_unavailable", ref });
