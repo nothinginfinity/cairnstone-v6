@@ -3,13 +3,18 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION,
+  CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION,
   RETENTION_SCHEMA,
+  REHYDRATION_SCHEMA,
   RETENTION_ACTIONS,
   classifyCandidate,
   compileRetentionLedger,
+  planRehydration,
   previewRetention,
   previewRetentionFromBody,
-  previewRetentionFromLedger
+  previewRetentionFromLedger,
+  rehydrateRoute,
+  rehydrateRoutesFromBody
 } from "../src/context-retention.js";
 
 test("HEAD/stone/receipt/grant/secret classes are pinned", () => {
@@ -204,6 +209,124 @@ test("context retention preview MCP definition is shaped and registered", () => 
   const indexSource = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
   assert.match(indexSource, /previewRetentionFromBody/);
   assert.match(indexSource, /cairnstone_context_retention_preview/);
+});
+
+test("rehydrateRoute accepts exact repo sha snapshots", () => {
+  const route = rehydrateRoute("repo:nothinginfinity/cairnstone-v6@0123456789abcdef0123456789abcdef01234567/src/index.js");
+
+  assert.equal(route.ok, true);
+  assert.equal(route.schema, REHYDRATION_SCHEMA);
+  assert.equal(route.route, "repo_at_sha");
+  assert.equal(route.exact, true);
+  assert.equal(route.snapshot, true);
+  assert.equal(route.accepted_state_authority, false);
+  assert.equal(route.chain_heads_mutated, false);
+  assert.equal(route.storage_deleted, false);
+});
+
+test("rehydrateRoute refuses floating repo refs", () => {
+  const route = rehydrateRoute("repo:nothinginfinity/cairnstone-v6@main/src/index.js");
+
+  assert.equal(route.ok, false);
+  assert.equal(route.exact, false);
+  assert.equal(route.error, "mutable_head_ref_refused");
+  assert.equal(route.reason, "would replace snapshot with current mutable state");
+});
+
+test("rehydrateRoute prefers candidate stone refs over repo refs", () => {
+  const route = rehydrateRoute({
+    object_ref: "stone:deadbeef",
+    repo_ref: "repo:nothinginfinity/cairnstone-v6@main/src/index.js"
+  });
+
+  assert.equal(route.ok, true);
+  assert.equal(route.route, "stone_expand");
+  assert.equal(route.ref, "stone:deadbeef");
+});
+
+test("rehydrateRoute treats raw receipt refs as receipt routes before repo parsing", () => {
+  const route = rehydrateRoute("receipt:repo:nothinginfinity/cairnstone-v6@main/src/index.js");
+
+  assert.equal(route.ok, true);
+  assert.equal(route.route, "receipt_or_checkpoint");
+  assert.equal(route.ref, "receipt:repo:nothinginfinity/cairnstone-v6@main/src/index.js");
+});
+
+test("rehydrateRoute prefers candidate receipt refs over floating repo refs", () => {
+  const route = rehydrateRoute({
+    receipt_ref: "receipt:repo:nothinginfinity/cairnstone-v6@main/src/index.js",
+    repo_ref: "repo:nothinginfinity/cairnstone-v6@main/src/index.js"
+  });
+
+  assert.equal(route.ok, true);
+  assert.equal(route.route, "receipt_or_checkpoint");
+  assert.equal(route.ref, "receipt:repo:nothinginfinity/cairnstone-v6@main/src/index.js");
+});
+
+test("rehydrateRoute reports unavailable for missing refs", () => {
+  const route = rehydrateRoute({ class: "repo_read" });
+
+  assert.equal(route.ok, false);
+  assert.equal(route.exact, false);
+  assert.equal(route.error, "rehydration_unavailable");
+});
+
+test("planRehydration only attaches routes for KEEP_REF and DROP entries with refs", () => {
+  const planned = planRehydration([
+    {
+      action: RETENTION_ACTIONS.KEEP_REF,
+      repo_ref: "repo:nothinginfinity/cairnstone-v6@0123456789abcdef0123456789abcdef01234567/src/index.js"
+    },
+    {
+      action: RETENTION_ACTIONS.DROP_FROM_ACTIVE_CONTEXT,
+      object_ref: "stone:deadbeef"
+    },
+    {
+      action: RETENTION_ACTIONS.KEEP_FULL,
+      repo_ref: "repo:nothinginfinity/cairnstone-v6@0123456789abcdef0123456789abcdef01234567/src/index.js"
+    },
+    {
+      action: RETENTION_ACTIONS.PIN,
+      object_ref: "stone:feedface"
+    }
+  ]);
+
+  assert.equal(planned[0].rehydrate.route, "repo_at_sha");
+  assert.equal(planned[1].rehydrate.route, "stone_expand");
+  assert.equal("rehydrate" in planned[2], false);
+  assert.equal("rehydrate" in planned[3], false);
+});
+
+test("planRehydration classifies raw candidates before attaching routes", () => {
+  const planned = planRehydration([{
+    class: "repo_read",
+    flags: { rehydratable: true },
+    repo_ref: "repo:nothinginfinity/cairnstone-v6@0123456789abcdef0123456789abcdef01234567/src/index.js"
+  }]);
+
+  assert.equal(planned[0].action, RETENTION_ACTIONS.KEEP_REF);
+  assert.equal(planned[0].rehydrate.route, "repo_at_sha");
+});
+
+test("context retention rehydrate MCP definition is shaped and registered", () => {
+  assert.equal(CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION.name, "cairnstone_context_retention_rehydrate");
+  assert.deepEqual(CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION.inputSchema.required, ["actor_id"]);
+  assert.equal(CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION.inputSchema.additionalProperties, false);
+  assert.equal(CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION.inputSchema.properties.actor_id.type, "string");
+  assert.equal(CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION.inputSchema.properties.refs.type, "array");
+  assert.equal(CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION.inputSchema.properties.candidates.type, "array");
+
+  const routes = rehydrateRoutesFromBody({
+    actor_id: "console:jared",
+    refs: ["repo:nothinginfinity/cairnstone-v6@0123456789abcdef0123456789abcdef01234567/src/index.js"]
+  });
+  assert.equal(routes.ok, true);
+  assert.equal(routes.schema, REHYDRATION_SCHEMA);
+  assert.equal(routes.routes[0].route, "repo_at_sha");
+
+  const indexSource = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  assert.match(indexSource, /rehydrateRoutesFromBody/);
+  assert.match(indexSource, /cairnstone_context_retention_rehydrate/);
 });
 
 test("context-retention module has no D1 or set_head mutation calls", () => {
