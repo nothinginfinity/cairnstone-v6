@@ -518,6 +518,10 @@ export function rehydrateRoute(refOrCandidate) {
     return rehydrationResult({ ok: true, route: "receipt_or_checkpoint", exact: true, ref });
   }
 
+  if (receiptOrCheckpointRef) {
+    return rehydrationResult({ ok: true, route: "receipt_or_checkpoint", exact: true, ref: receiptOrCheckpointRef });
+  }
+
   if (repoRef) {
     if (isExactRepoSnapshotRef(repoRef)) {
       return rehydrationResult({ ok: true, route: "repo_at_sha", exact: true, snapshot: true, ref: repoRef });
@@ -543,10 +547,6 @@ export function rehydrateRoute(refOrCandidate) {
       reason: "would replace snapshot with current mutable state",
       ref
     });
-  }
-
-  if (receiptOrCheckpointRef) {
-    return rehydrationResult({ ok: true, route: "receipt_or_checkpoint", exact: true, ref: receiptOrCheckpointRef });
   }
 
   return rehydrationResult({ ok: false, exact: false, error: "rehydration_unavailable", ref });

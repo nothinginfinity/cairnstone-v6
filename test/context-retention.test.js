@@ -252,6 +252,17 @@ test("rehydrateRoute treats raw receipt refs as receipt routes before repo parsi
   assert.equal(route.ref, "receipt:repo:nothinginfinity/cairnstone-v6@main/src/index.js");
 });
 
+test("rehydrateRoute prefers candidate receipt refs over floating repo refs", () => {
+  const route = rehydrateRoute({
+    receipt_ref: "receipt:repo:nothinginfinity/cairnstone-v6@main/src/index.js",
+    repo_ref: "repo:nothinginfinity/cairnstone-v6@main/src/index.js"
+  });
+
+  assert.equal(route.ok, true);
+  assert.equal(route.route, "receipt_or_checkpoint");
+  assert.equal(route.ref, "receipt:repo:nothinginfinity/cairnstone-v6@main/src/index.js");
+});
+
 test("rehydrateRoute reports unavailable for missing refs", () => {
   const route = rehydrateRoute({ class: "repo_read" });
 
