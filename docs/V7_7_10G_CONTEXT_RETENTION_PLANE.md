@@ -141,7 +141,9 @@ The ledger is a runtime projection, not accepted-state authority. It should be c
 
 ## Scorer interface
 
-V7.7.10g should define a provider-neutral scorer contract rather than a Jev-specific API.
+V7.7.10g should use the shared provider-neutral decision contract defined by **V7.7.10h — Semantic Capability Gateway / Decision Plane** once that contract exists, rather than creating a Jev-specific retention-only API. Until 10h is implemented, 10g.0/10g.1 may ship deterministic retention logic independently.
+
+For retention, the shared decision kind is `retain` over a bounded artifact candidate set, with allowed actions `PIN | KEEP_FULL | KEEP_REF | DROP_FROM_ACTIVE_CONTEXT`.
 
 An implementation may use:
 
@@ -213,10 +215,11 @@ This should integrate with context-cost telemetry so retention can be evaluated 
   - implement deterministic PIN/KEEP_REF rules before any external scorer;
   - add context-size telemetry.
 
-- **V7.7.10g.2 — Provider-neutral scorer adapter**
-  - define scorer interface;
+- **V7.7.10g.2 — Shared Decision Plane scorer integration**
+  - consume the provider-neutral `cairnstone-decision-v1` / `retain` contract from V7.7.10h;
   - first pilot may use Jev while retaining deterministic fallback;
   - redact secrets/capabilities and bound scorer-visible state;
+  - validate selections/actions against the deterministic retention candidate set;
   - record decision evidence/telemetry without granting authority.
 
 - **V7.7.10g.3 — Exact lazy rehydration**
@@ -255,5 +258,21 @@ V7.7.10g is complete only when live acceptance proves:
 - Do not use probabilistic retention to decide accepted-state authority.
 - Do not delete durable audit/provenance objects to save inference tokens.
 - Do not promote ordinary conversation history into accepted project memory merely because it survived retention.
+
+## Relationship to V7.7.10h
+
+V7.7.10g owns **working-set retention semantics**. V7.7.10h owns the reusable **decision/capability-routing contract**. This avoids duplicating one Jev adapter inside compaction and another inside tool routing.
+
+The intended sequence is compatible with incremental delivery:
+
+```text
+10f closes
+  -> 10g.0 / 10g.1 deterministic retention can begin
+  -> 10h.0 / 10h.1 shared decision contract + ask_jev pilot
+  -> 10g.2 adopts 10h decision interface
+  -> 10h expands to Tool Vault / Persistent Code Mode / retrieval / model-executor routing
+```
+
+Neither slice depends on Jev for correctness.
 
 Reference inspiration: https://github.com/tamaratran/fast-jev-compaction
