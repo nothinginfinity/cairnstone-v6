@@ -77,6 +77,16 @@ function hasImmutableRef(candidate = {}) {
   );
 }
 
+function hasRehydrationIdentity(candidate = {}) {
+  return Boolean(
+    candidate.object_ref
+    || candidate.content_ref
+    || candidate.repo_ref
+    || candidate.rehydration_ref
+    || candidate.stone_ref
+  );
+}
+
 function isRedundantSuccessfulRead(candidate = {}, artifactClass, flags = {}) {
   const newerImmutableRef = candidate.newer_immutable_ref || flags.newer_immutable_ref;
   return artifactClass === "repo_read"
@@ -89,6 +99,7 @@ export function classifyCandidate(candidate = {}) {
   const artifactClass = candidateClassOf(candidate);
   const flags = candidate.flags || {};
   const immutableRefPresent = hasImmutableRef(candidate);
+  const rehydrationIdentityPresent = hasRehydrationIdentity(candidate);
 
   if (
     PROTECTED_CLASSES.includes(artifactClass)
@@ -136,7 +147,7 @@ export function classifyCandidate(candidate = {}) {
   }
 
   if (isRedundantSuccessfulRead(candidate, artifactClass, flags)) {
-    if (immutableRefPresent) {
+    if (rehydrationIdentityPresent) {
       return {
         action: RETENTION_ACTIONS.DROP_FROM_ACTIVE_CONTEXT,
         candidate,
@@ -158,6 +169,7 @@ export function classifyCandidate(candidate = {}) {
   if (
     flags.rehydratable === true
     && immutableRefPresent
+    && rehydrationIdentityPresent
     && KEEP_REF_ELIGIBLE_CLASSES.has(artifactClass)
     && artifactClass !== "current_task"
   ) {

@@ -54,7 +54,8 @@ test("missing immutable ref cannot be dropped", () => {
     flags: { redundant: true, newer_immutable_ref: "repo:nothinginfinity/cairnstone-v6@def456/src/index.js" }
   });
 
-  assert.notEqual(decision.action, RETENTION_ACTIONS.DROP_FROM_ACTIVE_CONTEXT);
+  assert.equal(decision.action, RETENTION_ACTIONS.KEEP_FULL);
+  assert.equal(decision.reason, "missing_rehydration_identity");
 });
 
 test("previewRetention always reports authority closed", () => {
