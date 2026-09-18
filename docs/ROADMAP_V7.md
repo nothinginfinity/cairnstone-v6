@@ -677,6 +677,7 @@ Family slices (authoritative; do not invent alternate numbering):
 - `V7.7.10e` — Human Proposal / Commit Boundary
 - `V7.7.10f` — Live Event Plane + Agent Tree
 - `V7.7.10g` — Context Retention Plane / Semantic Working-Set GC (**planned after 10f acceptance**)
+- `V7.7.10h` — Semantic Capability Gateway / Decision Plane (**planned; shared decision layer for tools, retrieval, routing, and Persistent Code Mode**)
 
 Conversation Session is operational D1 only (`accepted_state_authority: false`); it never moves chain/path HEADs and never bulk-promotes chat history into project memory.
 
@@ -699,11 +700,66 @@ This extends V7.6's context-efficiency principle over time: V7.6 transmits less 
 Initial slices:
 - `V7.7.10g.0` — retention contract + protected classes;
 - `V7.7.10g.1` — compact artifact ledger + deterministic baseline;
-- `V7.7.10g.2` — provider-neutral scorer adapter, with Jev as an optional pilot;
+- `V7.7.10g.2` — shared Decision Plane scorer integration via V7.7.10h, with Jev as an optional pilot;
 - `V7.7.10g.3` — exact lazy rehydration;
 - `V7.7.10g.4` — cross-host/session acceptance + context-cost telemetry.
 
 Canonical detailed plan: `docs/V7_7_10G_CONTEXT_RETENTION_PLANE.md`.
+
+#### V7.7.10h — Semantic Capability Gateway / Decision Plane
+
+Status: **PLANNED / QUEUED AFTER V7.7.10f — implementation not started.**
+
+Add a provider-neutral decision layer for small, typed judgments between **deterministically valid candidates**. The initial `ask_jev` pilot is a tiny semantic gateway over Tool Vault and existing CairnStone policy, not a new authority system.
+
+Core pattern:
+
+```text
+task / Code Session / query
+  -> deterministic candidate generation
+  -> cairnstone-decision-v1
+  -> Jev / Workers AI / deterministic scorer
+  -> validated selection
+  -> exact tool/capability hydration
+  -> existing CairnStone policy / authorization
+  -> read, route, proposal, or stop
+```
+
+The scorer may rank/select only candidates supplied by CairnStone. It cannot invent tools, capabilities, models, executors, skills, mutation targets, or permissions.
+
+Initial decision kinds:
+
+- `tool_route`;
+- `snippet_rank`;
+- `retain`;
+- `expand`;
+- `model_route`;
+- `executor_route`;
+- `escalate`;
+- `next_action`.
+
+The `ask_jev` pilot should begin with three bounded modes:
+
+- `route` — recommend/rank valid capabilities/tools; execute nothing;
+- `hydrate` — return the exact selected Tool Vault contract + schema hash; execute nothing;
+- `read` — permit only already-classified `read + automatic` tools through the existing broker and receipt path.
+
+Mutation/execution/human-confirmation tools stop at the normal proposal/authorization boundary. **Jev never receives execution authority.**
+
+Persistent Code Mode is a priority integration. Code Session task/blocker/checkpoint/receipt/lease state can supply compact semantic context so the Decision Plane chooses the next useful read/retrieval/tool/model/executor path without growing one giant tool surface or chat transcript. V7.7.10g retention is another consumer of the same decision contract, with `retain` as a typed decision kind.
+
+This should remain inside `nothinginfinity/cairnstone-v6`. A separate `ask_jev` Remote MCP repo is deferred unless the façade later proves independently useful outside CairnStone, analogous to `afo-ask-copilot`.
+
+Initial slices:
+
+- `V7.7.10h.0` — decision contract + deterministic candidate envelope;
+- `V7.7.10h.1` — `ask_jev` route-only pilot;
+- `V7.7.10h.2` — Tool Vault hydrate + brokered automatic-read mode;
+- `V7.7.10h.3` — Persistent Code Mode integration;
+- `V7.7.10h.4` — shared consumers: 10g retention, snippet ranking, skills/model/executor ambiguity;
+- `V7.7.10h.5` — cross-host, scale, latency, cost, and routing-quality acceptance.
+
+Canonical detailed plan: `docs/V7_7_10H_SEMANTIC_CAPABILITY_GATEWAY.md`.
 
 ---
 
@@ -1156,6 +1212,8 @@ V7.5 paid sub-agent runtime (IN PROGRESS — x402 is the first payment adapter; 
 V7.6 Context Efficiency & MCP Surface Optimization (COMPLETE + LIVE-ACCEPTED — profiler + Tool Vault + sparse authority + compact reads + canonical instruction runtime brief + optimized_sparse default flip closed; legacy_full rollback proven)
         ↓
 V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (ACTIVE EVOLUTION — V7.7.7f complete/live; V7.7.8 Progressive Grounded Chat LOD next; V7.7.9 Console UX Architecture after)
+        ↓
+V7.7.10g/10h Context Retention + Semantic Capability Gateway (PLANNED — durable working-set GC + provider-neutral decision plane + ask_jev pilot + Persistent Code Mode / Tool Vault integration)
         ↓
 V7.7.11 Mobile Home Surface / Installable PWA Dashboard (PLANNED — Console-first iPhone PWA + compact dashboard; standalone repo gated on multi-source proof)
         ↓
