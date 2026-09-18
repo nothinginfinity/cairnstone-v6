@@ -87,8 +87,12 @@ function hasRehydrationIdentity(candidate = {}) {
   );
 }
 
+function newerImmutableRefOf(candidate = {}, flags = {}) {
+  return candidate.newer_immutable_ref || flags.newer_immutable_ref || null;
+}
+
 function isRedundantSuccessfulRead(candidate = {}, artifactClass, flags = {}) {
-  const newerImmutableRef = candidate.newer_immutable_ref || flags.newer_immutable_ref;
+  const newerImmutableRef = newerImmutableRefOf(candidate, flags);
   return artifactClass === "repo_read"
     && candidate.success === true
     && (flags.redundant_successful_read === true || flags.redundant === true)
@@ -98,6 +102,7 @@ function isRedundantSuccessfulRead(candidate = {}, artifactClass, flags = {}) {
 export function classifyCandidate(candidate = {}) {
   const artifactClass = candidateClassOf(candidate);
   const flags = candidate.flags || {};
+  const newerImmutableRef = newerImmutableRefOf(candidate, flags);
   const immutableRefPresent = hasImmutableRef(candidate);
   const rehydrationIdentityPresent = hasRehydrationIdentity(candidate);
 
@@ -152,6 +157,8 @@ export function classifyCandidate(candidate = {}) {
         action: RETENTION_ACTIONS.DROP_FROM_ACTIVE_CONTEXT,
         candidate,
         candidate_class: artifactClass,
+        newer_immutable_ref: newerImmutableRef,
+        rehydration_ref: newerImmutableRef,
         reason: "redundant_successful_read_newer_ref",
         ...authorityClosedFields()
       };

@@ -47,6 +47,22 @@ test("rehydratable repo read not current task is KEEP_REF", () => {
   assert.equal(decision.action, RETENTION_ACTIONS.KEEP_REF);
 });
 
+test("KEEP_REF allowlist keeps eligible classes and excludes ineligible ones", () => {
+  const eligible = classifyCandidate({
+    class: "search_expand",
+    flags: { rehydratable: true },
+    object_ref: "stone:abc123"
+  });
+  assert.equal(eligible.action, RETENTION_ACTIONS.KEEP_REF);
+
+  const ineligible = classifyCandidate({
+    class: "tool_result",
+    flags: { rehydratable: true },
+    object_ref: "stone:def456"
+  });
+  assert.equal(ineligible.action, RETENTION_ACTIONS.KEEP_FULL);
+});
+
 test("missing immutable ref cannot be dropped", () => {
   const decision = classifyCandidate({
     class: "repo_read",
@@ -56,6 +72,22 @@ test("missing immutable ref cannot be dropped", () => {
 
   assert.equal(decision.action, RETENTION_ACTIONS.KEEP_FULL);
   assert.equal(decision.reason, "missing_rehydration_identity");
+});
+
+test("redundant successful read drop carries replacement immutable ref", () => {
+  const decision = classifyCandidate({
+    class: "repo_read",
+    success: true,
+    repo_ref: "repo:nothinginfinity/cairnstone-v6@abc123/src/index.js",
+    flags: {
+      redundant: true,
+      newer_immutable_ref: "repo:nothinginfinity/cairnstone-v6@def456/src/index.js"
+    }
+  });
+
+  assert.equal(decision.action, RETENTION_ACTIONS.DROP_FROM_ACTIVE_CONTEXT);
+  assert.equal(decision.newer_immutable_ref, "repo:nothinginfinity/cairnstone-v6@def456/src/index.js");
+  assert.equal(decision.rehydration_ref, "repo:nothinginfinity/cairnstone-v6@def456/src/index.js");
 });
 
 test("previewRetention always reports authority closed", () => {
