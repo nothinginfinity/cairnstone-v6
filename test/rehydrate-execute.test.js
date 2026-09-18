@@ -1,11 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { RETENTION_ACTIONS, planRehydration } from "../src/context-retention.js";
 import {
-  RETENTION_ACTIONS,
-  planRehydration,
   executeRehydrate,
   parseExactRepoSnapshot
-} from "../src/context-retention.js";
+} from "../src/rehydrate-execute.js";
 
 const OLD_SHA = "6fed72f49c23c5caedadaba83df64135cfda4535";
 const OLD_REF = `repo:nothinginfinity/cairnstone-v6@${OLD_SHA}/src/context-retention.js`;
