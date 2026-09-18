@@ -8,6 +8,7 @@ import {
   classifyCandidate,
   compileRetentionLedger,
   previewRetention,
+  previewRetentionFromBody,
   previewRetentionFromLedger
 } from "../src/context-retention.js";
 
@@ -150,6 +151,17 @@ test("previewRetentionFromLedger keeps protected classes pinned and reports esti
   assert.equal(preview.decisions[0].action, RETENTION_ACTIONS.PIN);
   assert.equal(preview.decisions[0].accepted_state_authority, false);
   assert.equal(preview.telemetry.estimated_bytes_before, 64);
+});
+
+test("previewRetentionFromBody totals estimated bytes across direct and ledger candidates", () => {
+  const preview = previewRetentionFromBody({
+    actor_id: "console:jared",
+    candidates: [{ class: "repo_read", bytes: 16 }],
+    items: [{ message_id: "msg:retention-2", repo_ref: "repo:nothinginfinity/cairnstone-v6@def456/src/index.js", bytes: 32 }]
+  });
+
+  assert.equal(preview.decisions.length, 2);
+  assert.equal(preview.telemetry.estimated_bytes_before, 48);
 });
 
 test("context retention preview MCP definition is shaped and registered", () => {

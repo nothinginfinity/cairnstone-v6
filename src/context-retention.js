@@ -340,8 +340,9 @@ export function previewRetentionFromBody(body = {}) {
   const directCandidates = Array.isArray(body.candidates) ? body.candidates : [];
   const ledgerCandidates = Array.isArray(body.items) ? compileRetentionLedger(body.items) : [];
   if (ledgerCandidates.length === 0) return previewRetention({ candidates: directCandidates });
-  const preview = previewRetention({ candidates: [...directCandidates, ...ledgerCandidates] });
-  const estimatedBytesBefore = ledgerCandidates
+  const allCandidates = [...directCandidates, ...ledgerCandidates];
+  const preview = previewRetention({ candidates: allCandidates });
+  const estimatedBytesBefore = allCandidates
     .map(candidate => candidate.bytes)
     .filter(value => typeof value === "number" && Number.isFinite(value))
     .reduce((sum, value) => sum + value, 0);
