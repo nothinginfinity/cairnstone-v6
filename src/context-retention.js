@@ -25,14 +25,15 @@ export const CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION = Object.freeze({
 
 export const CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION = Object.freeze({
   name: "cairnstone_context_retention_rehydrate",
-  description: "V7.7.10g.3: read-only exact lazy rehydration router over refs and/or candidates. Returns deterministic routes only and never writes storage or moves HEADs.",
+  description: "V7.7.10g.3: exact lazy rehydration. Omitted/false execute returns deterministic routes only. execute:true performs exact snapshot read. Never writes storage or moves HEADs.",
   inputSchema: {
     type: "object",
     required: ["actor_id"],
     properties: {
       actor_id: { type: "string" },
       refs: { type: "array", items: { type: "string" } },
-      candidates: { type: "array", items: { type: "object" } }
+      candidates: { type: "array", items: { type: "object" } },
+      execute: { type: "boolean" }
     },
     additionalProperties: false
   }
@@ -577,6 +578,7 @@ export function rehydrateRoutesFromBody(body = {}) {
   return {
     ok: true,
     schema: REHYDRATION_SCHEMA,
+    execute: false,
     routes: [...refs, ...candidates].map(rehydrateRoute),
     ...authorityClosedFields()
   };
