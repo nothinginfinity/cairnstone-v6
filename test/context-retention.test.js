@@ -186,6 +186,13 @@ test("previewRetentionFromBody totals estimated bytes across direct and ledger c
   assert.equal(preview.telemetry.estimated_bytes_before, 48);
 });
 
+test("previewRetentionFromBody requires actor_id", () => {
+  const preview = previewRetentionFromBody({});
+  assert.equal(preview.ok, false);
+  assert.equal(preview.error, "actor_id_required");
+  assert.equal(preview.accepted_state_authority, false);
+});
+
 test("context retention preview MCP definition is shaped and registered", () => {
   assert.equal(CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION.name, "cairnstone_context_retention_preview");
   assert.deepEqual(CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION.inputSchema.required, ["actor_id"]);

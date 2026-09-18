@@ -340,6 +340,9 @@ export function previewRetentionFromLedger(items = []) {
 }
 
 export function previewRetentionFromBody(body = {}) {
+  if (!firstNonEmptyString([body.actor_id])) {
+    return { ok: false, error: "actor_id_required", ...authorityClosedFields() };
+  }
   const directCandidates = Array.isArray(body.candidates) ? body.candidates : [];
   const ledgerCandidates = Array.isArray(body.items) ? compileRetentionLedger(body.items) : [];
   return previewRetention({ candidates: [...directCandidates, ...ledgerCandidates] });
