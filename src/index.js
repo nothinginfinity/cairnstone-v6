@@ -206,10 +206,10 @@ import {
 } from "./event-plane.js";
 import {
   previewRetentionFromBody,
-  rehydrateRoutesFromBody,
   CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION,
   CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION
 } from "./context-retention.js";
+import { rehydrateDispatchFromBody } from "./rehydrate-execute.js";
 import {
   forwardWithNoteFromBody,
   FORWARD_NOTE_MCP_TOOL_DEFINITIONS
@@ -1333,7 +1333,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_task_run_cancel") return cancelTaskRunFromBody(args, env);
   if (name === "cairnstone_task_run_status") return taskRunStatusFromBody(args, env);
   if (name === "cairnstone_context_retention_preview") return previewRetentionFromBody(args);
-  if (name === "cairnstone_context_retention_rehydrate") return rehydrateRoutesFromBody(args);
+  if (name === "cairnstone_context_retention_rehydrate") return rehydrateDispatchFromBody(args, { env, fetchGitHubFile: (spec, callEnv) => fetchGitHubFile(spec, callEnv || env) });
   if (name === "cairnstone_event_list") return listEventPlaneFromBody(args, env);
   if (name === "cairnstone_agent_tree") return agentTreeFromBody(args, env);
   if (name === "cairnstone_executor_list") return listExecutorsFromBody(args, env);
