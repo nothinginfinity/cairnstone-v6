@@ -676,8 +676,34 @@ Family slices (authoritative; do not invent alternate numbering):
 - `V7.7.10d.1` — CairnStone-native vs compiled executor context (**this worker slice** on `0.5.43` — hold 10e)
 - `V7.7.10e` — Human Proposal / Commit Boundary
 - `V7.7.10f` — Live Event Plane + Agent Tree
+- `V7.7.10g` — Context Retention Plane / Semantic Working-Set GC (**planned after 10f acceptance**)
 
 Conversation Session is operational D1 only (`accepted_state_authority: false`); it never moves chain/path HEADs and never bulk-promotes chat history into project memory.
+
+#### V7.7.10g — Context Retention Plane / Semantic Working-Set GC
+
+Status: **PLANNED / AFTER V7.7.10f ACCEPTANCE — implementation not started.**
+
+Add a provider-neutral runtime retention layer for long-lived Conversation Sessions and Code Sessions. The plane may score old tool calls/results and other recoverable working artifacts for `PIN | KEEP_FULL | KEEP_REF | DROP_FROM_ACTIVE_CONTEXT`, but it only changes the next **model-visible context projection**. It never deletes or probabilistically redefines durable authority/provenance.
+
+The design is inspired by Jev-style compaction, but Jev/TypeSafe is an optional initial scorer rather than a required dependency. A compact CairnStone artifact ledger is evaluated first; deterministic policy protects authority, unresolved blockers, guards, and non-rehydratable evidence; optional scorer output is advisory; exact refs allow lazy rehydration.
+
+Hard invariant:
+
+> **Semantically lossy active context, structurally lossless durable state.**
+
+Chain/path HEADs, Stones, immutable Git provenance, accepted skills, Scope snapshots, access/authorization state, checkpoints, execution/Work Receipts, grounded-response identity/evidence, and other audit/security objects are outside destructive compaction authority. Secrets/capability bearers never enter scorer-visible state.
+
+This extends V7.6's context-efficiency principle over time: V7.6 transmits less at bootstrap; V7.7.10g keeps less inline as a session evolves, while exact underlying state remains recoverable.
+
+Initial slices:
+- `V7.7.10g.0` — retention contract + protected classes;
+- `V7.7.10g.1` — compact artifact ledger + deterministic baseline;
+- `V7.7.10g.2` — provider-neutral scorer adapter, with Jev as an optional pilot;
+- `V7.7.10g.3` — exact lazy rehydration;
+- `V7.7.10g.4` — cross-host/session acceptance + context-cost telemetry.
+
+Canonical detailed plan: `docs/V7_7_10G_CONTEXT_RETENTION_PLANE.md`.
 
 ---
 
