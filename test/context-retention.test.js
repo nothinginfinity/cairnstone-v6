@@ -110,6 +110,17 @@ test("previewRetention always reports authority closed", () => {
   assert.equal(preview.storage_deleted, false);
 });
 
+test("previewRetention reports estimated bytes for direct candidates when present", () => {
+  const preview = previewRetention({
+    candidates: [
+      { class: "repo_read", bytes: 12 },
+      { class: "tool_result" }
+    ]
+  });
+
+  assert.equal(preview.telemetry.estimated_bytes_before, 12);
+});
+
 test("compileRetentionLedger emits compact deterministic baseline rows", () => {
   const rows = compileRetentionLedger([{
     message_id: "msg:retention-1",

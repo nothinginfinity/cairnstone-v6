@@ -320,14 +320,9 @@ export function compileRetentionLedger(items = []) {
 }
 
 export function previewRetention({ candidates = [] } = {}) {
-  const decisions = (Array.isArray(candidates) ? candidates : []).map(classifyCandidate);
-  return previewResult(decisions);
-}
-
-export function previewRetentionFromLedger(items = []) {
-  const candidates = compileRetentionLedger(items);
-  const decisions = candidates.map(classifyCandidate);
-  const byteValues = candidates
+  const normalizedCandidates = Array.isArray(candidates) ? candidates : [];
+  const decisions = normalizedCandidates.map(classifyCandidate);
+  const byteValues = normalizedCandidates
     .map(candidate => candidate.bytes)
     .filter(value => typeof value === "number" && Number.isFinite(value));
   return previewResult(
@@ -336,21 +331,12 @@ export function previewRetentionFromLedger(items = []) {
   );
 }
 
+export function previewRetentionFromLedger(items = []) {
+  return previewRetention({ candidates: compileRetentionLedger(items) });
+}
+
 export function previewRetentionFromBody(body = {}) {
   const directCandidates = Array.isArray(body.candidates) ? body.candidates : [];
   const ledgerCandidates = Array.isArray(body.items) ? compileRetentionLedger(body.items) : [];
-  if (ledgerCandidates.length === 0) return previewRetention({ candidates: directCandidates });
-  const allCandidates = [...directCandidates, ...ledgerCandidates];
-  const preview = previewRetention({ candidates: allCandidates });
-  const estimatedBytesBefore = allCandidates
-    .map(candidate => candidate.bytes)
-    .filter(value => typeof value === "number" && Number.isFinite(value))
-    .reduce((sum, value) => sum + value, 0);
-  if (estimatedBytesBefore > 0) {
-    preview.telemetry = {
-      ...preview.telemetry,
-      estimated_bytes_before: estimatedBytesBefore
-    };
-  }
-  return preview;
+  return previewRetention({ candidates: [...directCandidates, ...ledgerCandidates] });
 }
