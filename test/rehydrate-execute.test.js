@@ -62,3 +62,30 @@ test("receipt route stays fail-closed", async () => {
   const result = await executeRehydrate("receipt:abc", {});
   assert.equal(result.reason, "receipt_lookup_not_wired");
 });
+
+test("dispatch omitted execute is route-only; execute true uses exact sha", async () => {
+  const { rehydrateDispatchFromBody } = await import("../src/rehydrate-execute.js");
+  const preview = rehydrateDispatchFromBody({
+    actor_id: "console:jared",
+    refs: [OLD_REF]
+  });
+  assert.equal(preview.execute, false);
+  assert.equal(preview.routes[0].route, "repo_at_sha");
+  assert.equal(preview.routes[0].content, undefined);
+  const calls = [];
+  const executed = await rehydrateDispatchFromBody({
+    actor_id: "console:jared",
+    execute: true,
+    refs: [OLD_REF, "repo:nothinginfinity/cairnstone-v6@main/src/context-retention.js"]
+  }, {
+    fetchGitHubFile: async (spec) => {
+      calls.push(spec.ref);
+      return { content: "OLD", fetch: { sha256: "dff097992e73df8ba6a3400772cb2203a2b411b1ed8c8117dd7c676e7198e5f9", bytes: 10058 } };
+    }
+  });
+  assert.equal(executed.execute, true);
+  assert.deepEqual(calls, [OLD_SHA]);
+  assert.equal(executed.routes[0].content_sha256, "dff097992e73df8ba6a3400772cb2203a2b411b1ed8c8117dd7c676e7198e5f9");
+  assert.equal(executed.routes[0].bytes, 10058);
+  assert.equal(executed.routes[1].error, "mutable_head_ref_refused");
+});
