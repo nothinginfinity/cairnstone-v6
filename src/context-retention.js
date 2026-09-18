@@ -514,6 +514,10 @@ export function rehydrateRoute(refOrCandidate) {
     return rehydrationResult({ ok: true, route: "stone_expand", exact: true, ref });
   }
 
+  if (typeof ref === "string" && (ref.startsWith("receipt:") || ref.startsWith("checkpoint:"))) {
+    return rehydrationResult({ ok: true, route: "receipt_or_checkpoint", exact: true, ref });
+  }
+
   if (repoRef) {
     if (isExactRepoSnapshotRef(repoRef)) {
       return rehydrationResult({ ok: true, route: "repo_at_sha", exact: true, snapshot: true, ref: repoRef });
@@ -543,10 +547,6 @@ export function rehydrateRoute(refOrCandidate) {
 
   if (receiptOrCheckpointRef) {
     return rehydrationResult({ ok: true, route: "receipt_or_checkpoint", exact: true, ref: receiptOrCheckpointRef });
-  }
-
-  if (typeof ref === "string" && (ref.startsWith("receipt:") || ref.startsWith("checkpoint:"))) {
-    return rehydrationResult({ ok: true, route: "receipt_or_checkpoint", exact: true, ref });
   }
 
   return rehydrationResult({ ok: false, exact: false, error: "rehydration_unavailable", ref });

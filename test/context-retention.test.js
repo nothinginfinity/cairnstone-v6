@@ -244,6 +244,14 @@ test("rehydrateRoute prefers candidate stone refs over repo refs", () => {
   assert.equal(route.ref, "stone:deadbeef");
 });
 
+test("rehydrateRoute treats raw receipt refs as receipt routes before repo parsing", () => {
+  const route = rehydrateRoute("receipt:repo:nothinginfinity/cairnstone-v6@main/src/index.js");
+
+  assert.equal(route.ok, true);
+  assert.equal(route.route, "receipt_or_checkpoint");
+  assert.equal(route.ref, "receipt:repo:nothinginfinity/cairnstone-v6@main/src/index.js");
+});
+
 test("rehydrateRoute reports unavailable for missing refs", () => {
   const route = rehydrateRoute({ class: "repo_read" });
 
