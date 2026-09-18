@@ -45,6 +45,14 @@ const PINNED_CONTEXT_CLASSES = new Set([
   "recent_turn"
 ]);
 
+const KEEP_REF_ELIGIBLE_CLASSES = new Set([
+  "repo_read",
+  "search_expand",
+  "web_evidence",
+  "hydrated_tool_schema",
+  "recoverable_ops_context"
+]);
+
 function authorityClosedFields() {
   return {
     accepted_state_authority: false,
@@ -150,6 +158,7 @@ export function classifyCandidate(candidate = {}) {
   if (
     flags.rehydratable === true
     && immutableRefPresent
+    && KEEP_REF_ELIGIBLE_CLASSES.has(artifactClass)
     && artifactClass !== "current_task"
   ) {
     return {
