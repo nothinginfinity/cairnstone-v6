@@ -200,6 +200,11 @@ import {
   TASK_RUN_MCP_TOOL_DEFINITIONS
 } from "./task-run.js";
 import {
+  listEventPlaneFromBody,
+  agentTreeFromBody,
+  EVENT_PLANE_MCP_TOOL_DEFINITIONS
+} from "./event-plane.js";
+import {
   forwardWithNoteFromBody,
   FORWARD_NOTE_MCP_TOOL_DEFINITIONS
 } from "./forward-note.js";
@@ -1321,6 +1326,8 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_task_run_dispatch") return dispatchTaskRunFromBody(args, env);
   if (name === "cairnstone_task_run_cancel") return cancelTaskRunFromBody(args, env);
   if (name === "cairnstone_task_run_status") return taskRunStatusFromBody(args, env);
+  if (name === "cairnstone_event_list") return listEventPlaneFromBody(args, env);
+  if (name === "cairnstone_agent_tree") return agentTreeFromBody(args, env);
   if (name === "cairnstone_executor_list") return listExecutorsFromBody(args, env);
   if (name === "cairnstone_executor_get") return getExecutorFromBody(args, env);
   if (name === "cairnstone_executor_health") return executorHealthFromBody(args, env);
@@ -1603,6 +1610,7 @@ function mcpTools() {
     ...ATTACHMENT_REF_MCP_TOOL_DEFINITIONS,
     ...ACCESS_GRANT_MCP_TOOL_DEFINITIONS,
     ...TASK_RUN_MCP_TOOL_DEFINITIONS,
+    ...EVENT_PLANE_MCP_TOOL_DEFINITIONS,
     ...EXECUTOR_MCP_TOOL_DEFINITIONS,
     ...FORWARD_NOTE_MCP_TOOL_DEFINITIONS,
     ...INTENT_ROUTE_MCP_TOOL_DEFINITIONS,
