@@ -367,11 +367,26 @@ Target examples include `repo-debugger`, `release-reviewer`, `cairnstone-maintai
 
 V7.4 acceptance should prove the same profile can run on at least two compatible providers, use the same permitted MCP/tool surface, preserve the same CairnStone authority boundary, and produce comparable receipts/evidence while provider/model remains an outer runtime choice.
 
-### V7.5 — x402 / paid sub-agent runtime
+### V7.5 — Paid sub-agent runtime (x402 first adapter)
 
 Status: **IN PROGRESS — V7.5.0 contract/quote boundary STARTED; real settlement NOT YET AUTHORIZED.** Canonical project-memory HEAD: `0d4346fa4a9e352256654c42fddc58e5b0c3883a79560026fbd6d4fa9c74142e` (`project-memory/v750-paid-subagent-contract-start.md`). The first candidate paid capability is the already live-accepted `repo-debugger` profile. V7.5.0 intentionally freezes identities, ordering, replay rules, and the x402 integration boundary before any wallet signing or settlement is enabled.
 
 Expose selected V7.4 profiles as bounded, metered agent services callable by other agents or applications.
+
+#### V7.5 architecture amendment — x402 is the first payment adapter, not the service identity
+
+V7.5 remains the first paid-agent implementation path, but the durable CairnStone service/job contract must be **payment-rail neutral**. x402 is the first accepted adapter because the existing x402 policy plane and quote-preview work already exist; it must not become part of the semantic identity of the agent service itself.
+
+Architecture invariants:
+
+- stable service/job/request/result identities belong to CairnStone and must survive a change of payment adapter;
+- x402, MPP, AP2/UCP/card/bank/stablecoin flows, managed facilitators, and future rails are adapter/provider choices, not accepted-state authority;
+- wallet custody, signature mechanics, facilitator operation, global procurement, and rail-specific settlement logic remain outside CairnStone behind bounded adapters;
+- payment authorization never grants mutation/execution authority, and model/provider choice never grants economic authority;
+- price/settlement evidence may come from an external payment policy plane, but the durable job must bind that evidence to the exact principal, capability/job identity, accepted context, budget, result, and replay state;
+- V7.7.10 Task Runs / Conversation Sessions / Persistent Code Sessions are the durable execution fabric that later economic authority must bind to rather than creating a parallel paid-job subsystem.
+
+Compatibility note: existing V7.5.0 x402-specific quote fields may remain for the first adapter and acceptance path. Generalization should happen through an explicit adapter-neutral contract/version rather than silently changing the meaning of already accepted V7.5 identities.
 
 #### V7.5.0 — Paid service contract + deterministic quote boundary
 
@@ -661,8 +676,34 @@ Family slices (authoritative; do not invent alternate numbering):
 - `V7.7.10d.1` — CairnStone-native vs compiled executor context (**this worker slice** on `0.5.43` — hold 10e)
 - `V7.7.10e` — Human Proposal / Commit Boundary
 - `V7.7.10f` — Live Event Plane + Agent Tree
+- `V7.7.10g` — Context Retention Plane / Semantic Working-Set GC (**planned after 10f acceptance**)
 
 Conversation Session is operational D1 only (`accepted_state_authority: false`); it never moves chain/path HEADs and never bulk-promotes chat history into project memory.
+
+#### V7.7.10g — Context Retention Plane / Semantic Working-Set GC
+
+Status: **PLANNED / AFTER V7.7.10f ACCEPTANCE — implementation not started.**
+
+Add a provider-neutral runtime retention layer for long-lived Conversation Sessions and Code Sessions. The plane may score old tool calls/results and other recoverable working artifacts for `PIN | KEEP_FULL | KEEP_REF | DROP_FROM_ACTIVE_CONTEXT`, but it only changes the next **model-visible context projection**. It never deletes or probabilistically redefines durable authority/provenance.
+
+The design is inspired by Jev-style compaction, but Jev/TypeSafe is an optional initial scorer rather than a required dependency. A compact CairnStone artifact ledger is evaluated first; deterministic policy protects authority, unresolved blockers, guards, and non-rehydratable evidence; optional scorer output is advisory; exact refs allow lazy rehydration.
+
+Hard invariant:
+
+> **Semantically lossy active context, structurally lossless durable state.**
+
+Chain/path HEADs, Stones, immutable Git provenance, accepted skills, Scope snapshots, access/authorization state, checkpoints, execution/Work Receipts, grounded-response identity/evidence, and other audit/security objects are outside destructive compaction authority. Secrets/capability bearers never enter scorer-visible state.
+
+This extends V7.6's context-efficiency principle over time: V7.6 transmits less at bootstrap; V7.7.10g keeps less inline as a session evolves, while exact underlying state remains recoverable.
+
+Initial slices:
+- `V7.7.10g.0` — retention contract + protected classes;
+- `V7.7.10g.1` — compact artifact ledger + deterministic baseline;
+- `V7.7.10g.2` — provider-neutral scorer adapter, with Jev as an optional pilot;
+- `V7.7.10g.3` — exact lazy rehydration;
+- `V7.7.10g.4` — cross-host/session acceptance + context-cost telemetry.
+
+Canonical detailed plan: `docs/V7_7_10G_CONTEXT_RETENTION_PLANE.md`.
 
 ---
 
@@ -951,6 +992,148 @@ V7.9 extends the skills/control plane; it does not replace Tool Vault, V7.3 auth
 
 ---
 
+## V7.10 — Economic Authority + Verifiable Work Receipts
+
+Status: **PLANNED / ARCHITECTURE-ACCEPTED DIRECTION — implementation not started.** This milestone generalizes V7.5 paid-agent work over the persistent job/session fabric introduced in V7.7.10. It does **not** create a CairnStone wallet, facilitator, or global marketplace.
+
+### Goal
+
+Make the commercial object a durable, bounded, verifiable job rather than a raw model call or a rail-specific payment event.
+
+The core chain is:
+
+```text
+principal / organization
+  -> capability / resource grant
+  -> persistent job or session
+  -> profile + runtime actor
+  -> exact Scope / package / accepted authority
+  -> economic authority / budget
+  -> execution + optional external purchases
+  -> verification
+  -> Work Receipt
+  -> capture / settlement state
+```
+
+The model may propose economic actions. CairnStone policy/authority decides whether they are permitted. Economic authority belongs to a durable job/session/capability and is never attached directly to an LLM, provider credential, wallet, or payment rail.
+
+### V7.10.0 — Rail-neutral `cairnstone-economic-authority-v1`
+
+Define an explicit economic authority envelope that can bind to `task_run_id`, `conversation_id`, `code_session_id`, a resource/access grant, or another durable capability identity.
+
+The envelope should include at minimum:
+
+- principal / organization identity and grantor;
+- bound durable object/job/session identity;
+- allowed spend modes and adapter classes;
+- total budget, per-purchase ceiling, optional counterparty/category limits, currency/asset constraints, and expiry;
+- delegation/sub-purchase depth and whether child jobs may spend from the parent budget;
+- human-commit thresholds and explicitly bounded automatic-spend policy;
+- replay/idempotency identity and revocation/consumption state;
+- policy/version identity and immutable receipt references.
+
+Supported economic modes must remain semantically distinct: `exact`, `upto`, `session`, `allowance`, and `subscription`. Outcome-based pricing may be added only after V7.10.3 defines a sufficiently strong outcome-verification contract.
+
+### V7.10.1 — Authorize/reserve -> execute -> verify -> capture/settle lifecycle
+
+For higher-value or long-running work, support a lifecycle where authorization/reservation precedes execution and final capture/settlement can depend on verified delivery:
+
+```text
+quote / terms
+  -> authorize or reserve bounded funds
+  -> execute durable job
+  -> verify delivery / result
+  -> capture / settle
+  -> finalize Work Receipt
+```
+
+Low-value exact-pay-before-execute flows remain valid when the selected adapter and policy allow them. The lifecycle is policy-driven, not hard-coded to one rail.
+
+### V7.10.2 — Bounded external procurement inside a job
+
+A CairnStone job may purchase external paid resources or specialist sub-services under its economic authority without forcing the principal to manage every microtransaction.
+
+Requirements:
+
+- supplier discovery/selection is bounded and provenance-bearing;
+- every external purchase consumes the parent budget under explicit ceilings;
+- child payment/service receipts remain linked to the parent job;
+- failed or replayed child purchases cannot double-spend the parent authority;
+- the final receipt exposes aggregate cost plus inspectable sub-cost/receipt references;
+- supplier/payment adapters never gain accepted-state, mutation, or execution authority merely because they were paid.
+
+### V7.10.3 — `cairnstone-work-receipt-v1`
+
+Define one receipt that proves what authority was used, what work happened, what was purchased, what result was produced, and what was actually settled.
+
+Bind at minimum:
+
+- principal / organization and economic actor chain;
+- `task_run_id` / conversation / code-session identity;
+- profile + version and runtime actor;
+- Scope, `package_id`, accepted-authority digest, and relevant content identities;
+- access/capability/resource grants plus mutation/execution policy;
+- economic authority / budget envelope, payment adapter/rail, quote/authorization/reservation identity;
+- supplier discovery/selection evidence where external resources were used;
+- provider/model attempts and governed tool/execution receipts;
+- external purchase receipts and sub-costs;
+- result digest, citations/evidence coverage, and acceptance state;
+- context-race, replay/idempotency, verification, and handoff/actor-chain state;
+- capture/settlement/refund/dispute state as applicable.
+
+Receipts should expose three separate verification domains rather than collapsing them into one score:
+
+1. **supplier verification** — endpoint/payment/delivery/reputation evidence for an external supplier;
+2. **execution verification** — exact profile/context/capabilities/mutations/tool calls/handoffs used by CairnStone;
+3. **outcome verification** — whether the requested result/deliverable satisfied the defined evidence/acceptance contract.
+
+### V7.10.4 — First-class resource/context authority
+
+Extend the existing Give Access / Access Grant model so resource authority is explicit and composable with economic authority.
+
+A resource/context grant may represent free sharing, organization-internal access, metered access, or paid access to authoritative Stones, Scopes, knowledge packs, artifacts, or other bounded resources. Economic authorization may gate access, but payment never promotes the resource into accepted state and never implies execute/mutate permission.
+
+Keep these authority dimensions distinct:
+
+```text
+resource authority != execution authority != mutation authority != economic authority
+```
+
+### V7.10.5 — One canonical service descriptor, many publication adapters
+
+Define one canonical CairnStone service descriptor as the source for generated external publication surfaces rather than manually maintaining separate listings.
+
+Adapters may publish/derive:
+
+- x402 Bazaar / facilitator discovery metadata;
+- Circle or other x402 discovery surfaces;
+- MPP-compatible service/payment metadata;
+- ERC-8004 registration / reputation / validation pointers;
+- A2A AgentCard and MCP/OpenAPI capability descriptions;
+- `llms.txt` / documentation discovery surfaces;
+- StoneLink public node/service metadata where appropriate.
+
+These surfaces are discovery/transport projections, never a second accepted-state authority. CairnStone should **publish into** external markets/indexes rather than trying to own a global marketplace.
+
+### V7.10.6 — Acceptance metrics + market-quality gate
+
+Do not use raw payment/transaction count as the primary success metric. High machine-payment counts can include scripts, farming, retries, self-payments, or other activity that does not prove durable agent commerce.
+
+Track at minimum:
+
+- distinct paying principals / organizations;
+- completed **and verified** jobs;
+- repeat buyers / repeat principals;
+- revenue and cost per verified job;
+- autonomous external sub-purchases per job and their success rate;
+- receipt verification/coverage quality;
+- replay/double-charge prevention;
+- refund/dispute/failure rate where applicable.
+
+V7.10 acceptance should prove at least two payment adapters or payment modes against the same durable job/economic-authority identity, one bounded external sub-purchase, one paid resource/context grant, one verification-gated capture flow, and one complete Work Receipt whose identity/provenance survives a provider/model swap.
+
+---
+
 ## Phase ordering
 
 ```text
@@ -968,7 +1151,7 @@ V7.3 Permissioned Agent Loop + MCP Tool Broker (COMPLETE — V7.3.0 through V7.3
         ↓
 V7.4 Cross-project agent profiles (COMPLETE — V7.4.0 + generalized profile system + V7.4.1 true cross-project acceptance)
         ↓
-V7.5 x402 paid sub-agent runtime (IN PROGRESS — V7.5.0 contract/quote boundary started; settlement gated)
+V7.5 paid sub-agent runtime (IN PROGRESS — x402 is the first payment adapter; durable service/job identity is rail-neutral; settlement gated)
         ↓
 V7.6 Context Efficiency & MCP Surface Optimization (COMPLETE + LIVE-ACCEPTED — profiler + Tool Vault + sparse authority + compact reads + canonical instruction runtime brief + optimized_sparse default flip closed; legacy_full rollback proven)
         ↓
@@ -979,6 +1162,8 @@ V7.7.11 Mobile Home Surface / Installable PWA Dashboard (PLANNED — Console-fir
 V7.8 CairnStone Federation / StoneLink (PLANNED / AFTER V7.7 ACCEPTANCE — public node manifest → DNS/.well-known discovery → external read-only Scope → signed external Stone envelopes → cross-vault grounded search/Q&A → federated AC1 → capability tiers → federation security gate)
         ↓
 V7.9 Skills vNext / Capability Recipes (PLANNED — behavioral guardrails → operational skills → abstract capability contracts → verification-bearing recipes → external-skill adaptation → cross-model/host acceptance)
+        ↓
+V7.10 Economic Authority + Verifiable Work Receipts (PLANNED — rail-neutral economic authority → durable budget/job binding → bounded external procurement → Work Receipt → paid resource/context authority → publication adapters → commercial acceptance metrics)
 ```
 
 Do not skip V7.0.
