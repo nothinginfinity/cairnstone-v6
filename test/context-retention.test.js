@@ -315,6 +315,7 @@ test("context retention rehydrate MCP definition is shaped and registered", () =
   assert.equal(CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION.inputSchema.properties.actor_id.type, "string");
   assert.equal(CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION.inputSchema.properties.refs.type, "array");
   assert.equal(CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION.inputSchema.properties.candidates.type, "array");
+  assert.equal(CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION.inputSchema.properties.execute.type, "boolean");
 
   const routes = rehydrateRoutesFromBody({
     actor_id: "console:jared",
@@ -325,7 +326,8 @@ test("context retention rehydrate MCP definition is shaped and registered", () =
   assert.equal(routes.routes[0].route, "repo_at_sha");
 
   const indexSource = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
-  assert.match(indexSource, /rehydrateRoutesFromBody/);
+  assert.match(indexSource, /rehydrateDispatchFromBody/);
+  assert.match(indexSource, /from \"\.\/rehydrate-execute\.js\"/);
   assert.match(indexSource, /cairnstone_context_retention_rehydrate/);
 });
 
