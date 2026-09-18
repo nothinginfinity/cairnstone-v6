@@ -578,6 +578,7 @@ export function rehydrateRoutesFromBody(body = {}) {
   return {
     ok: true,
     schema: REHYDRATION_SCHEMA,
+    execute: false,
     routes: [...refs, ...candidates].map(rehydrateRoute),
     ...authorityClosedFields()
   };
