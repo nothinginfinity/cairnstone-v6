@@ -121,6 +121,17 @@ test("previewRetention reports estimated bytes for direct candidates when presen
   assert.equal(preview.telemetry.estimated_bytes_before, 12);
 });
 
+test("previewRetention ignores negative direct candidate bytes in telemetry", () => {
+  const preview = previewRetention({
+    candidates: [
+      { class: "repo_read", bytes: -1 },
+      { class: "tool_result", bytes: 5 }
+    ]
+  });
+
+  assert.equal(preview.telemetry.estimated_bytes_before, 5);
+});
+
 test("compileRetentionLedger emits compact deterministic baseline rows", () => {
   const rows = compileRetentionLedger([{
     message_id: "msg:retention-1",

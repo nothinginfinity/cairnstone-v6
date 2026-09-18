@@ -120,6 +120,10 @@ function firstFiniteNumber(values = []) {
   return null;
 }
 
+function isNonNegativeFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 function asBoolean(value) {
   return value === true;
 }
@@ -324,7 +328,7 @@ export function previewRetention({ candidates = [] } = {}) {
   const decisions = normalizedCandidates.map(classifyCandidate);
   const byteValues = normalizedCandidates
     .map(candidate => candidate.bytes)
-    .filter(value => typeof value === "number" && Number.isFinite(value));
+    .filter(isNonNegativeFiniteNumber);
   return previewResult(
     decisions,
     byteValues.length ? { estimated_bytes_before: byteValues.reduce((sum, value) => sum + value, 0) } : {}
