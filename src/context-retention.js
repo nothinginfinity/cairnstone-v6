@@ -7,6 +7,21 @@ export const RETENTION_ACTIONS = Object.freeze({
   DROP_FROM_ACTIVE_CONTEXT: "DROP_FROM_ACTIVE_CONTEXT"
 });
 
+export const CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION = Object.freeze({
+  name: "cairnstone_context_retention_preview",
+  description: "V7.7.10g.1: read-only retention preview over direct candidates and/or compact ledger items. Never writes storage or moves HEADs.",
+  inputSchema: {
+    type: "object",
+    required: ["actor_id"],
+    properties: {
+      actor_id: { type: "string" },
+      candidates: { type: "array", items: { type: "object" } },
+      items: { type: "array", items: { type: "object" } }
+    },
+    additionalProperties: false
+  }
+});
+
 export const PROTECTED_CLASSES = Object.freeze([
   "chain_head",
   "path_head",
@@ -89,6 +104,51 @@ function hasRehydrationIdentity(candidate = {}) {
 
 function newerImmutableRefOf(candidate = {}, flags = {}) {
   return candidate.newer_immutable_ref || flags.newer_immutable_ref || null;
+}
+
+function firstNonEmptyString(values = []) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function firstFiniteNumber(values = []) {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  }
+  return null;
+}
+
+function asBoolean(value) {
+  return value === true;
+}
+
+function ledgerClassOf(item = {}, currentTask = false, currentBlocker = false, repoRef = null) {
+  return candidateClassOf(item)
+    || (currentBlocker ? "unresolved_blocker" : null)
+    || (currentTask ? "current_task" : null)
+    || (repoRef ? "repo_read" : null)
+    || null;
+}
+
+function previewTelemetry(decisions = [], extras = {}) {
+  return {
+    before_count: decisions.length,
+    pin_count: decisions.filter((decision) => decision.action === RETENTION_ACTIONS.PIN).length,
+    drop_count: decisions.filter((decision) => decision.action === RETENTION_ACTIONS.DROP_FROM_ACTIVE_CONTEXT).length,
+    ...extras
+  };
+}
+
+function previewResult(decisions = [], telemetryExtras = {}) {
+  return {
+    ok: true,
+    schema: RETENTION_SCHEMA,
+    decisions,
+    telemetry: previewTelemetry(decisions, telemetryExtras),
+    ...authorityClosedFields()
+  };
 }
 
 function isRedundantSuccessfulRead(candidate = {}, artifactClass, flags = {}) {
@@ -198,17 +258,98 @@ export function classifyCandidate(candidate = {}) {
   };
 }
 
+export function compileRetentionLedger(items = []) {
+  return (Array.isArray(items) ? items : []).map((item = {}) => {
+    const currentTask = asBoolean(item.current_task) || asBoolean(item.flags?.current_task);
+    const currentBlocker = asBoolean(item.current_blocker) || asBoolean(item.flags?.current_blocker);
+    const rehydratable = asBoolean(item.rehydratable) || asBoolean(item.flags?.rehydratable);
+    const referencedByActiveTurn = asBoolean(item.referenced_by_active_turn)
+      || asBoolean(item.flags?.referenced_by_active_turn);
+    const repoRef = firstNonEmptyString([
+      item.repo_ref,
+      typeof item.object_ref === "string" && item.object_ref.startsWith("repo:") ? item.object_ref : null
+    ]);
+    const objectRef = firstNonEmptyString([
+      item.object_ref,
+      item.content_ref,
+      item.rehydration_ref,
+      item.stone_ref
+    ]);
+    const bytes = firstFiniteNumber([
+      item.bytes,
+      item.byte_length,
+      item.size_bytes,
+      item.estimated_bytes_before
+    ]);
+    const tokenEstimate = firstFiniteNumber([
+      item.token_estimate,
+      item.estimated_tokens,
+      item.tokens
+    ]);
+
+    const row = {
+      id: firstNonEmptyString([
+        item.id,
+        item.turn_id,
+        item.message_id,
+        item.code_session_id,
+        item.conversation_id,
+        item.task_run_id,
+        item.checkpoint_id,
+        item.receipt_id
+      ]),
+      class: ledgerClassOf(item, currentTask, currentBlocker, repoRef),
+      current_task: currentTask,
+      current_blocker: currentBlocker,
+      rehydratable,
+      referenced_by_active_turn: referencedByActiveTurn,
+      accepted_state_authority: false,
+      flags: {
+        current_blocker: currentBlocker,
+        rehydratable,
+        referenced_by_active_turn: referencedByActiveTurn
+      }
+    };
+
+    if (bytes !== null) row.bytes = bytes;
+    else if (tokenEstimate !== null) row.token_estimate = tokenEstimate;
+    if (objectRef) row.object_ref = objectRef;
+    if (repoRef) row.repo_ref = repoRef;
+    return row;
+  });
+}
+
 export function previewRetention({ candidates = [] } = {}) {
   const decisions = (Array.isArray(candidates) ? candidates : []).map(classifyCandidate);
-  return {
-    ok: true,
-    schema: RETENTION_SCHEMA,
+  return previewResult(decisions);
+}
+
+export function previewRetentionFromLedger(items = []) {
+  const candidates = compileRetentionLedger(items);
+  const decisions = candidates.map(classifyCandidate);
+  const byteValues = candidates
+    .map(candidate => candidate.bytes)
+    .filter(value => typeof value === "number" && Number.isFinite(value));
+  return previewResult(
     decisions,
-    telemetry: {
-      before_count: decisions.length,
-      pin_count: decisions.filter((decision) => decision.action === RETENTION_ACTIONS.PIN).length,
-      drop_count: decisions.filter((decision) => decision.action === RETENTION_ACTIONS.DROP_FROM_ACTIVE_CONTEXT).length
-    },
-    ...authorityClosedFields()
-  };
+    byteValues.length ? { estimated_bytes_before: byteValues.reduce((sum, value) => sum + value, 0) } : {}
+  );
+}
+
+export function previewRetentionFromBody(body = {}) {
+  const directCandidates = Array.isArray(body.candidates) ? body.candidates : [];
+  const ledgerCandidates = Array.isArray(body.items) ? compileRetentionLedger(body.items) : [];
+  if (ledgerCandidates.length === 0) return previewRetention({ candidates: directCandidates });
+  const preview = previewRetention({ candidates: [...directCandidates, ...ledgerCandidates] });
+  const estimatedBytesBefore = ledgerCandidates
+    .map(candidate => candidate.bytes)
+    .filter(value => typeof value === "number" && Number.isFinite(value))
+    .reduce((sum, value) => sum + value, 0);
+  if (estimatedBytesBefore > 0) {
+    preview.telemetry = {
+      ...preview.telemetry,
+      estimated_bytes_before: estimatedBytesBefore
+    };
+  }
+  return preview;
 }

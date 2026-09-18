@@ -205,6 +205,10 @@ import {
   EVENT_PLANE_MCP_TOOL_DEFINITIONS
 } from "./event-plane.js";
 import {
+  previewRetentionFromBody,
+  CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION
+} from "./context-retention.js";
+import {
   forwardWithNoteFromBody,
   FORWARD_NOTE_MCP_TOOL_DEFINITIONS
 } from "./forward-note.js";
@@ -1326,6 +1330,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_task_run_dispatch") return dispatchTaskRunFromBody(args, env);
   if (name === "cairnstone_task_run_cancel") return cancelTaskRunFromBody(args, env);
   if (name === "cairnstone_task_run_status") return taskRunStatusFromBody(args, env);
+  if (name === "cairnstone_context_retention_preview") return previewRetentionFromBody(args);
   if (name === "cairnstone_event_list") return listEventPlaneFromBody(args, env);
   if (name === "cairnstone_agent_tree") return agentTreeFromBody(args, env);
   if (name === "cairnstone_executor_list") return listExecutorsFromBody(args, env);
@@ -1610,6 +1615,7 @@ function mcpTools() {
     ...ATTACHMENT_REF_MCP_TOOL_DEFINITIONS,
     ...ACCESS_GRANT_MCP_TOOL_DEFINITIONS,
     ...TASK_RUN_MCP_TOOL_DEFINITIONS,
+    CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION,
     ...EVENT_PLANE_MCP_TOOL_DEFINITIONS,
     ...EXECUTOR_MCP_TOOL_DEFINITIONS,
     ...FORWARD_NOTE_MCP_TOOL_DEFINITIONS,

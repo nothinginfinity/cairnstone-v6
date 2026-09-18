@@ -2,10 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION,
   RETENTION_SCHEMA,
   RETENTION_ACTIONS,
   classifyCandidate,
-  previewRetention
+  compileRetentionLedger,
+  previewRetention,
+  previewRetentionFromLedger
 } from "../src/context-retention.js";
 
 test("HEAD/stone/receipt/grant/secret classes are pinned", () => {
@@ -104,6 +107,62 @@ test("previewRetention always reports authority closed", () => {
   assert.equal(preview.chain_heads_mutated, false);
   assert.equal(preview.path_heads_mutated, false);
   assert.equal(preview.storage_deleted, false);
+});
+
+test("compileRetentionLedger emits compact deterministic baseline rows", () => {
+  const rows = compileRetentionLedger([{
+    message_id: "msg:retention-1",
+    repo_ref: "repo:nothinginfinity/cairnstone-v6@abc123/src/index.js",
+    bytes: 128,
+    rehydratable: true,
+    referenced_by_active_turn: true,
+    accepted_state_authority: true
+  }]);
+
+  assert.deepEqual(rows, [{
+    id: "msg:retention-1",
+    class: "repo_read",
+    current_task: false,
+    current_blocker: false,
+    rehydratable: true,
+    referenced_by_active_turn: true,
+    accepted_state_authority: false,
+    flags: {
+      current_blocker: false,
+      rehydratable: true,
+      referenced_by_active_turn: true
+    },
+    bytes: 128,
+    repo_ref: "repo:nothinginfinity/cairnstone-v6@abc123/src/index.js"
+  }]);
+});
+
+test("previewRetentionFromLedger keeps protected classes pinned and reports estimated bytes", () => {
+  const preview = previewRetentionFromLedger([{
+    id: "sec:1",
+    class: "secret",
+    bytes: 64,
+    rehydratable: true,
+    object_ref: "stone:deadbeef",
+    referenced_by_active_turn: true
+  }]);
+
+  assert.equal(preview.decisions[0].action, RETENTION_ACTIONS.PIN);
+  assert.equal(preview.decisions[0].accepted_state_authority, false);
+  assert.equal(preview.telemetry.estimated_bytes_before, 64);
+});
+
+test("context retention preview MCP definition is shaped and registered", () => {
+  assert.equal(CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION.name, "cairnstone_context_retention_preview");
+  assert.deepEqual(CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION.inputSchema.required, ["actor_id"]);
+  assert.equal(CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION.inputSchema.additionalProperties, false);
+  assert.equal(CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION.inputSchema.properties.actor_id.type, "string");
+  assert.equal(CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION.inputSchema.properties.candidates.type, "array");
+  assert.equal(CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION.inputSchema.properties.items.type, "array");
+
+  const indexSource = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  assert.match(indexSource, /previewRetentionFromBody/);
+  assert.match(indexSource, /cairnstone_context_retention_preview/);
 });
 
 test("context-retention module has no D1 or set_head mutation calls", () => {
