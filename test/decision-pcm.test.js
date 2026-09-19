@@ -107,6 +107,27 @@ test("schema disagreement on mapped automatic tool fail-closes PCM", async () =>
   assert.equal(result.status, "schema_disagreement");
 });
 
+test("scoped_grant missing canonical mcpTools definition fail-closes", async () => {
+  const result = await routePcmDecision(context({
+    next_safe_continuation: { action: "read_only_continue", rationale: "stable", safe_to_continue: true }
+  }), { decisionRegistry: REG, mcpToolDefinitions: CATALOG.filter((t) => t.name !== "cairnstone_code_session_compile_context") });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "unavailable");
+});
+
+test("scoped_grant schema drift fail-closes", async () => {
+  const result = await routePcmDecision(context({
+    next_safe_continuation: { action: "read_only_continue", rationale: "stable", safe_to_continue: true }
+  }), {
+    decisionRegistry: REG,
+    mcpToolDefinitions: CATALOG.map((t) => t.name === "cairnstone_code_session_compile_context"
+      ? { ...t, inputSchema: { type: "object", properties: { other: { type: "string" } } } }
+      : t)
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "schema_disagreement");
+});
+
 test("missing context fails closed", async () => {
   const result = await routePcmDecision({ ok: false }, DEPS);
   assert.equal(result.ok, false);
