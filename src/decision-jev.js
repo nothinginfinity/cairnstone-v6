@@ -1,7 +1,21 @@
-import { parseScorerResponse } from "./decision-scorer.js";
-
 const MAX_CANDIDATES = 25;
 const MAX_TASK_CHARS = 4000;
+
+function parseSelected(payload) {
+  const raw = typeof payload === "string" ? payload : JSON.stringify(payload || {});
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end <= start) return { ok: false, error: "malformed_model_output" };
+  try {
+    const parsed = JSON.parse(raw.slice(start, end + 1));
+    if (!parsed || typeof parsed.selected_id !== "string" || !parsed.selected_id.trim()) {
+      return { ok: false, error: "selected_id_missing" };
+    }
+    return { ok: true, selected_id: parsed.selected_id.trim(), confidence: parsed.confidence ?? null };
+  } catch {
+    return { ok: false, error: "malformed_model_output" };
+  }
+}
 
 export function jevConfigured(env) {
   return Boolean(env && typeof env.JEV_URL === "string" && env.JEV_URL.trim());
@@ -38,7 +52,7 @@ export async function scoreWithJev({ env, task, kind, candidates, fetchImpl } = 
       return { ok: false, error: `jev_http_${response && response.status ? response.status : "failed"}` };
     }
     const payload = typeof response.json === "function" ? await response.json() : response;
-    const parsed = parseScorerResponse({ response: typeof payload === "string" ? payload : JSON.stringify(payload) });
+    const parsed = parseSelected(payload);
     if (!parsed.ok) return parsed;
     return { ok: true, selected_id: parsed.selected_id, confidence: parsed.confidence, model: "jev" };
   } catch (error) {
