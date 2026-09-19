@@ -1,4 +1,4 @@
-import { sha256Text, stableJson } from "./agent-bootstrap.js";
+import { toolContractFromBody } from "./tool-catalog.js";
 
 export const HYDRATE_MAX_CANDIDATES = 25;
 
@@ -38,32 +38,51 @@ export function seedAutomaticReadCandidates(registry = [], { task = "", limit = 
   return scored.slice(0, limit).map(({ _score, ...c }) => c);
 }
 
-export async function hydrateSelectedContract(selected, registry = []) {
-  if (!selected || !selected.id) return { ok: false, error: "selected_required" };
-  const entry = (Array.isArray(registry) ? registry : []).find((e) => e && e.tool_id === selected.id);
-  if (!entry) return { ok: false, error: "contract_not_in_registry", tool_id: selected.id };
-  if (entry.risk_class !== "read" || entry.authorization !== "automatic") {
+export async function hydrateSelectedContract(selected, { registry = [], mcpToolDefinitions = [] } = {}) {
+  if (!selected || !selected.id) return { ok: false, error: "selected_required", execution_authority: false };
+  const contract = await toolContractFromBody(
+    { name: selected.id },
+    null,
+    { mcpToolDefinitions, registry }
+  );
+  if (!contract.ok) {
+    return { ok: false, error: contract.error || "contract_not_found", tool_id: selected.id, execution_authority: false };
+  }
+  if (contract.classification_status === "schema_disagreement") {
+    return {
+      ok: false,
+      error: "schema_disagreement",
+      tool_id: selected.id,
+      schema_hash: contract.schema_hash,
+      registry_schema_hash: contract.registry_schema_hash,
+      execution_authority: false
+    };
+  }
+  if (contract.classification_status !== "classified" || contract.risk_class !== "read" || contract.authorization !== "automatic") {
     return {
       ok: false,
       error: "hydrate_not_automatic_read",
       tool_id: selected.id,
-      risk_class: entry.risk_class,
-      authorization: entry.authorization,
+      classification_status: contract.classification_status,
+      risk_class: contract.risk_class,
+      authorization: contract.authorization,
       execution_authority: false
     };
   }
-  const schema_hash = "sha256:" + (await sha256Text(stableJson(entry.input_schema || {})));
   return {
     ok: true,
     execution_authority: false,
     contract: {
-      name: entry.tool_id,
-      description: entry.description || null,
-      input_schema: entry.input_schema,
-      schema_hash,
-      risk_class: entry.risk_class,
-      authorization: entry.authorization,
-      broker_eligible: true
+      name: contract.name,
+      description: contract.description || null,
+      input_schema: contract.input_schema,
+      schema_hash: contract.schema_hash,
+      registry_schema_hash: contract.registry_schema_hash,
+      classification_status: contract.classification_status,
+      risk_class: contract.risk_class,
+      authorization: contract.authorization,
+      broker_eligible: contract.broker_eligible,
+      schema_source: "canonical_mcpTools"
     }
   };
 }
