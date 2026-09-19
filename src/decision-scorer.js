@@ -5,6 +5,7 @@ import {
   DECISION_KINDS
 } from "./decision-plane.js";
 import { scoreWithJev } from "./decision-jev.js";
+import { seedAutomaticReadCandidates, hydrateSelectedContract } from "./decision-hydrate.js";
 
 export const DEFAULT_SCORER_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const MODEL_ALLOWLIST = new Set([DEFAULT_SCORER_MODEL]);
@@ -13,15 +14,15 @@ const MAX_CANDIDATES = 25;
 
 export const CAPABILITY_ROUTE_TOOL_DEFINITION = Object.freeze({
   name: "cairnstone_capability_route",
-  description: "V7.7.10h.2: route-only decision plane. Deterministic unique winners skip the model. Ambiguous sets use Workers AI by default. mode=jev is an optional adapter and is never the auto path. Never executes tools or moves HEADs.",
+  description: "V7.7.10h.3: route or hydrate a bounded Tool Vault decision. Unique winners skip the model. mode=hydrate seeds automatic-read candidates from the broker when none are supplied and attaches schema_hash. Never executes tools or moves HEADs.",
   inputSchema: {
     type: "object",
-    required: ["kind", "candidates"],
+    required: ["kind"],
     properties: {
       kind: { type: "string", enum: ["tool_route", "snippet_rank", "retain", "expand", "model_route", "executor_route", "escalate", "next_action"] },
       task: { type: "string" },
       candidates: { type: "array", items: { type: "object" } },
-      mode: { type: "string", enum: ["auto", "deterministic", "model", "jev"] },
+      mode: { type: "string", enum: ["auto", "deterministic", "model", "jev", "hydrate"] },
       model: { type: "string" },
       candidate_set_digest: { type: "string" }
     },
@@ -162,13 +163,43 @@ export async function routeDecisionFromBody(body = {}, env = null) {
   if (!body || typeof body !== "object") {
     return { ok: false, error: "body_required", schema: DECISION_SCHEMA };
   }
-  return routeDecision({
+  const registry = env && Array.isArray(env.decisionRegistry) ? env.decisionRegistry : [];
+  const mcpToolDefinitions = env && Array.isArray(env.mcpToolDefinitions) ? env.mcpToolDefinitions : [];
+  let candidates = Array.isArray(body.candidates) ? body.candidates : [];
+  if (body.mode === "hydrate") {
+    if (body.kind !== "tool_route") {
+      return { ok: false, error: "hydrate_requires_tool_route", schema: DECISION_SCHEMA, execution_authority: false };
+    }
+    if (!candidates.length) {
+      candidates = seedAutomaticReadCandidates(registry, { task: body.task || "" });
+    }
+  } else if (!candidates.length) {
+    return { ok: false, error: "candidates_required", schema: DECISION_SCHEMA, execution_authority: false };
+  }
+  const routeMode = body.mode === "hydrate" ? "deterministic" : (body.mode || "auto");
+  const routed = await routeDecision({
     kind: body.kind,
     task: body.task || "",
-    candidates: body.candidates || [],
-    mode: body.mode || "auto",
+    candidates,
+    mode: routeMode,
     model: body.model || DEFAULT_SCORER_MODEL,
     candidate_set_digest: body.candidate_set_digest || null,
     env
   });
+  if (body.mode !== "hydrate") return routed;
+  if (!routed || !routed.ok || !routed.selected) {
+    return { ...routed, hydrated: { ok: false, error: "no_selected_contract" }, execution_authority: false };
+  }
+  const hydrated = await hydrateSelectedContract(routed.selected, { registry, mcpToolDefinitions });
+  if (!hydrated.ok) {
+    return {
+      ...routed,
+      ok: false,
+      selected: null,
+      hydrated,
+      error: hydrated.error,
+      execution_authority: false
+    };
+  }
+  return { ...routed, hydrated, execution_authority: false };
 }
