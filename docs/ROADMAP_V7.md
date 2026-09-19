@@ -708,9 +708,9 @@ Canonical detailed plan: `docs/V7_7_10G_CONTEXT_RETENTION_PLANE.md`.
 
 #### V7.7.10h — Semantic Capability Gateway / Decision Plane
 
-Status: **PLANNED / QUEUED AFTER V7.7.10f — implementation not started.**
+Status: **IN PROGRESS — V7.7.10h.0 deterministic/provider-neutral decision contract is under implementation; first-party Workers AI scoring follows.**
 
-Add a provider-neutral decision layer for small, typed judgments between **deterministically valid candidates**. The initial `ask_jev` pilot is a tiny semantic gateway over Tool Vault and existing CairnStone policy, not a new authority system.
+Add a provider-neutral decision layer for small, typed judgments between **deterministically valid candidates**. CairnStone owns the contract, candidate generation, validation, policy, and authority. Workers AI is the default first-party model-assisted scorer path; Jev/BYOK scorers are optional interchangeable adapters, not correctness dependencies.
 
 Core pattern:
 
@@ -718,7 +718,7 @@ Core pattern:
 task / Code Session / query
   -> deterministic candidate generation
   -> cairnstone-decision-v1
-  -> Jev / Workers AI / deterministic scorer
+  -> deterministic clear winner / Workers AI / optional Jev-BYOK scorer
   -> validated selection
   -> exact tool/capability hydration
   -> existing CairnStone policy / authorization
@@ -738,13 +738,13 @@ Initial decision kinds:
 - `escalate`;
 - `next_action`.
 
-The `ask_jev` pilot should begin with three bounded modes:
+The provider-neutral CairnStone gateway should begin with three bounded modes:
 
 - `route` — recommend/rank valid capabilities/tools; execute nothing;
 - `hydrate` — return the exact selected Tool Vault contract + schema hash; execute nothing;
 - `read` — permit only already-classified `read + automatic` tools through the existing broker and receipt path.
 
-Mutation/execution/human-confirmation tools stop at the normal proposal/authorization boundary. **Jev never receives execution authority.**
+Mutation/execution/human-confirmation tools stop at the normal proposal/authorization boundary. **No scorer receives execution authority.**
 
 Persistent Code Mode is a priority integration. Code Session task/blocker/checkpoint/receipt/lease state can supply compact semantic context so the Decision Plane chooses the next useful read/retrieval/tool/model/executor path without growing one giant tool surface or chat transcript. V7.7.10g retention is another consumer of the same decision contract, with `retain` as a typed decision kind.
 
@@ -753,7 +753,7 @@ This should remain inside `nothinginfinity/cairnstone-v6`. A separate `ask_jev` 
 Initial slices:
 
 - `V7.7.10h.0` — decision contract + deterministic candidate envelope;
-- `V7.7.10h.1` — `ask_jev` route-only pilot;
+- `V7.7.10h.1` — CairnStone-native Workers AI scorer + route-only semantic pilot, with deterministic skip/fallback;
 - `V7.7.10h.2` — Tool Vault hydrate + brokered automatic-read mode;
 - `V7.7.10h.3` — Persistent Code Mode integration;
 - `V7.7.10h.4` — shared consumers: 10g retention, snippet ranking, skills/model/executor ambiguity;
@@ -763,11 +763,23 @@ Canonical detailed plan: `docs/V7_7_10H_SEMANTIC_CAPABILITY_GATEWAY.md`.
 
 ---
 
-### V7.7.11 — Mobile Home Surface / Installable PWA Dashboard
+### V7.7.11 — Mobile Home Surface / Installable PWA Dashboard + Guided/Adaptive UI
 
 Status: **PLANNED / AFTER V7.7.10 ACCEPTANCE.** Start inside `nothinginfinity/cairnstone-v6-console`, using the proven InfinityPaste PWA pattern. First deliver an installable iPhone Home Screen PWA and compact CairnStone dashboard, then test a generalized `Source + View + Action + Appearance` surface schema. Do **not** create a standalone repo until the schema proves useful across at least three distinct sources/products including a non-CairnStone source and the renderer/configuration lifecycle is clearly separable from Console releases. No new accepted-state or execution authority is introduced.
 
-Canonical detailed plan: `docs/V7_7_11_MOBILE_HOME_SURFACE.md`.
+Later family slices extend that surface safely:
+
+- `V7.7.11e` — Guided Mode / Conversational Cursor + Simple Stone workflows over stable semantic UI targets;
+- `V7.7.11f` — Simple Stone Library / portability;
+- `V7.7.11g` — **Safe Adaptive UI / Surface Composer**: bounded component/action catalog, declarative validated surface specs, deterministic-first composition, and optional V7.7.10h/Jev advisory selection among application-supplied UI candidates.
+
+11g is inspired by `vercel-labs/json-render` at immutable upstream commit `3ad381881194e7011ad3ccd6d668033495a06c29`, preserved under CairnStone reference chain `reference:vercel-labs/json-render`. CairnStone adapts the catalog/spec/renderer/validation/action-separation pattern; it does not make json-render or Jev a correctness dependency. The stable V7.7.9 shell and Human Commit / Authorize boundary remain outside adaptive model control.
+
+Canonical detailed plans:
+
+- `docs/V7_7_11_MOBILE_HOME_SURFACE.md`
+- `docs/V7_7_11E_GUIDED_MODE_SIMPLE_STONES.md`
+- `docs/V7_7_11G_SAFE_ADAPTIVE_UI_SURFACE.md`.
 
 ---
 
@@ -1213,9 +1225,9 @@ V7.6 Context Efficiency & MCP Surface Optimization (COMPLETE + LIVE-ACCEPTED —
         ↓
 V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (ACTIVE EVOLUTION — V7.7.7f complete/live; V7.7.8 Progressive Grounded Chat LOD next; V7.7.9 Console UX Architecture after)
         ↓
-V7.7.10g/10h Context Retention + Semantic Capability Gateway (PLANNED — durable working-set GC + provider-neutral decision plane + ask_jev pilot + Persistent Code Mode / Tool Vault integration)
+V7.7.10g/10h Context Retention + Semantic Capability Gateway (IN PROGRESS — deterministic decision contract -> first-party Workers AI scorer -> optional Jev/BYOK adapters -> Persistent Code Mode / Tool Vault integration)
         ↓
-V7.7.11 Mobile Home Surface / Installable PWA Dashboard (PLANNED — Console-first iPhone PWA + compact dashboard; standalone repo gated on multi-source proof)
+V7.7.11 Mobile Home / Guided Mode / Safe Adaptive UI (PLANNED — Console-first iPhone PWA + compact dashboard + semantic guide targets + declarative bounded surface composer; standalone repo gated on multi-source proof)
         ↓
 V7.8 CairnStone Federation / StoneLink (PLANNED / AFTER V7.7 ACCEPTANCE — public node manifest → DNS/.well-known discovery → external read-only Scope → signed external Stone envelopes → cross-vault grounded search/Q&A → federated AC1 → capability tiers → federation security gate)
         ↓
