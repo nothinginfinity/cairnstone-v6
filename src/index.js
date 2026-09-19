@@ -1395,7 +1395,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_code_session_get") return getCodeSessionFromBody(args, env);
   if (name === "cairnstone_code_session_pause") return pauseCodeSessionFromBody(args, env);
   if (name === "cairnstone_code_session_resume") return resumeCodeSessionFromBody(args, env);
-  if (name === "cairnstone_code_session_compile_context") return compileCodeSessionContextFromBody(args, env);
+  if (name === "cairnstone_code_session_compile_context") return compileCodeSessionContextFromBody(args, { ...env, decisionRegistry: DEFAULT_TOOL_BROKER_REGISTRY, mcpToolDefinitions: mcpTools() });
   if (name === "cairnstone_code_session_console_view") return codeSessionConsoleViewFromBody(args, env);
   if (name === "cairnstone_code_checkpoint_create") return createCodeCheckpointFromBody(args, env);
   if (name === "cairnstone_code_checkpoint_get") return getCodeCheckpointFromBody(args, env);
