@@ -2773,7 +2773,7 @@ export async function compileCodeSessionContextFromBody(body = {}, env = {}) {
   });
   if (!auth.ok) return auth;
 
-  return compileCodeSessionContext(bindings.db, {
+  const compiled = await compileCodeSessionContext(bindings.db, {
     code_session_id: session.code_session_id,
     actor_id: actor.value,
     permissions: {
@@ -2782,6 +2782,13 @@ export async function compileCodeSessionContextFromBody(body = {}, env = {}) {
       path_prefix: auth.path_prefix || null
     }
   });
+  if (!compiled?.ok || body.include_decision !== true) return compiled;
+  const { routePcmDecision } = await import("./decision-pcm.js");
+  compiled.pcm_decision = await routePcmDecision(compiled, {
+    decisionRegistry: env.decisionRegistry || [],
+    mcpToolDefinitions: env.mcpToolDefinitions || []
+  });
+  return compiled;
 }
 
 export async function createCodeCheckpointFromBody(body = {}, env = {}) {
