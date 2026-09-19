@@ -71,6 +71,8 @@ import {
   EXECUTOR_HEALTH_TOOL_DEFINITION,
   EXECUTOR_ROUTE_TOOL_DEFINITION
 } from "./executor-profile.js";
+import { CAPABILITY_ROUTE_TOOL_DEFINITION } from "./decision-scorer.js";
+import { ASK_JEV_TOOL_DEFINITION } from "./decision-jev.js";
 
 export const AGENT_CONTEXT_SCHEMA = "cairnstone-agent-context-v1";
 export const MODEL_REQUEST_SCHEMA = "cairnstone-model-request-v1";
@@ -2153,6 +2155,28 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
       },
       additionalProperties: false
     }
+  }),
+  // V7.7.10h.2b — route-only decision plane. Read + automatic so live fail-closed
+  // (unconfigured Jev / ambiguous unresolved) can be invoked without mutation authority.
+  Object.freeze({
+    tool_id: "cairnstone_capability_route",
+    connector: "cairnstone",
+    handler: "cairnstone_capability_route",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: CAPABILITY_ROUTE_TOOL_DEFINITION.description,
+    input_schema: CAPABILITY_ROUTE_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "ask_jev",
+    connector: "cairnstone",
+    handler: "ask_jev",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: ASK_JEV_TOOL_DEFINITION.description,
+    input_schema: ASK_JEV_TOOL_DEFINITION.inputSchema
   })
 ]);
 
