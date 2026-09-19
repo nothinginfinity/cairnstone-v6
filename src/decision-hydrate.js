@@ -24,7 +24,7 @@ export function scoreVaultCandidate(entry, task) {
 
 export function seedAutomaticReadCandidates(registry = [], { task = "", limit = HYDRATE_MAX_CANDIDATES } = {}) {
   const pool = (Array.isArray(registry) ? registry : [])
-    .filter((e) => e && e.available !== false && e.risk_class === "read" && e.authorization === "automatic")
+    .filter((e) => e && e.available === true && e.risk_class === "read" && e.authorization === "automatic")
     .map((e) => ({
       id: e.tool_id,
       capability: e.handler || e.tool_id,
@@ -73,6 +73,14 @@ export async function hydrateSelectedContract(selected, deps = {}) {
       classification_status: entry ? "classified" : "unclassified",
       risk_class,
       authorization,
+      execution_authority: false
+    };
+  }
+  if (entry.available !== true) {
+    return {
+      ok: false,
+      error: "hydrate_not_broker_eligible",
+      tool_id: selected.id,
       execution_authority: false
     };
   }
