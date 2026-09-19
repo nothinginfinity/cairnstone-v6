@@ -164,9 +164,17 @@ export async function routeDecisionFromBody(body = {}, env = null) {
     return { ok: false, error: "body_required", schema: DECISION_SCHEMA };
   }
   const registry = env && Array.isArray(env.decisionRegistry) ? env.decisionRegistry : [];
+  const mcpToolDefinitions = env && Array.isArray(env.mcpToolDefinitions) ? env.mcpToolDefinitions : [];
   let candidates = Array.isArray(body.candidates) ? body.candidates : [];
-  if (!candidates.length && body.kind === "tool_route") {
-    candidates = seedAutomaticReadCandidates(registry, { task: body.task || "" });
+  if (body.mode === "hydrate") {
+    if (body.kind !== "tool_route") {
+      return { ok: false, error: "hydrate_requires_tool_route", schema: DECISION_SCHEMA, execution_authority: false };
+    }
+    if (!candidates.length) {
+      candidates = seedAutomaticReadCandidates(registry, { task: body.task || "" });
+    }
+  } else if (!candidates.length) {
+    return { ok: false, error: "candidates_required", schema: DECISION_SCHEMA, execution_authority: false };
   }
   const routeMode = body.mode === "hydrate" ? "deterministic" : (body.mode || "auto");
   const routed = await routeDecision({
@@ -178,8 +186,20 @@ export async function routeDecisionFromBody(body = {}, env = null) {
     candidate_set_digest: body.candidate_set_digest || null,
     env
   });
-  if (body.mode === "hydrate" && routed && routed.ok && routed.selected) {
-    routed.hydrated = await hydrateSelectedContract(routed.selected, registry);
+  if (body.mode !== "hydrate") return routed;
+  if (!routed || !routed.ok || !routed.selected) {
+    return { ...routed, hydrated: { ok: false, error: "no_selected_contract" }, execution_authority: false };
   }
-  return routed;
+  const hydrated = await hydrateSelectedContract(routed.selected, { registry, mcpToolDefinitions });
+  if (!hydrated.ok) {
+    return {
+      ...routed,
+      ok: false,
+      selected: null,
+      hydrated,
+      error: hydrated.error,
+      execution_authority: false
+    };
+  }
+  return { ...routed, hydrated, execution_authority: false };
 }
