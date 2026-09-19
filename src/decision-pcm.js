@@ -36,11 +36,26 @@ export function derivePcmNextActionCandidates(context = {}) {
 
 export async function resolveMappedTool(mapped, deps = {}) {
   if (!mapped) return { status: "none", tool_route: null };
-  const entry = (deps.decisionRegistry || []).find((item) => item && item.tool_id === mapped.id) || null;
-  if (!entry) {
+  const validated = await hydrateSelectedContract({ id: mapped.id }, deps);
+  if (validated.ok) {
+    return {
+      status: "hydrated",
+      tool_route: {
+        ok: true,
+        selected: { id: mapped.id, capability: mapped.capability },
+        hydrated: validated,
+        execution_authority: false
+      }
+    };
+  }
+  if (validated.error === "schema_disagreement") {
+    return { status: "schema_disagreement", tool_route: { ok: false, hydrated: validated, selected: mapped } };
+  }
+  if (validated.error === "contract_not_found") {
     return { status: "unavailable", tool_route: { ok: false, error: "mapped_tool_unavailable", selected: mapped } };
   }
-  if (entry.authorization !== "automatic" || entry.risk_class !== "read" || entry.available !== true) {
+  const entry = (deps.decisionRegistry || deps.registry || []).find((item) => item && item.tool_id === mapped.id) || null;
+  if (validated.error === "hydrate_not_automatic_read" && entry && entry.risk_class === "read" && entry.authorization === "scoped_grant") {
     return {
       status: "needs_scoped_grant",
       tool_route: {
@@ -52,20 +67,7 @@ export async function resolveMappedTool(mapped, deps = {}) {
       }
     };
   }
-  const routed = await routeDecisionFromBody({
-    kind: "tool_route",
-    mode: "hydrate",
-    task: `${mapped.id} ${mapped.capability} ${mapped.id}`,
-    candidates: [{ id: mapped.id, capability: mapped.capability, tool: mapped.id, eligible: true }]
-  }, deps);
-  if (!routed?.ok || !routed.hydrated?.ok) {
-    const err = routed?.hydrated?.error || routed?.error || "hydrate_failed";
-    return {
-      status: err === "schema_disagreement" ? "schema_disagreement" : "fail_closed",
-      tool_route: routed
-    };
-  }
-  return { status: "hydrated", tool_route: routed };
+  return { status: "fail_closed", tool_route: { ok: false, hydrated: validated, selected: mapped } };
 }
 
 export async function routePcmDecision(context = {}, deps = {}) {
