@@ -542,8 +542,8 @@ test("invokeExecutorAdapter dry-run for cursor", async () => {
 
 test("broker registry: 10d tools + risk classes; not automatic-read", () => {
   const registry = toolRegistryFromBody({});
-  assert.equal(registry.total, 94);
-  assert.equal(DEFAULT_TOOL_BROKER_REGISTRY.length, 94);
+  assert.equal(registry.total, 96);
+  assert.equal(DEFAULT_TOOL_BROKER_REGISTRY.length, 96);
 
   const byId = Object.fromEntries(DEFAULT_TOOL_BROKER_REGISTRY.map(e => [e.tool_id, e]));
   assert.equal(byId[EXECUTOR_BROKER_TOOL_IDS.route].risk_class, "read");
