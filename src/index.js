@@ -1341,8 +1341,8 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_task_run_status") return taskRunStatusFromBody(args, env);
   if (name === "cairnstone_context_retention_preview") return previewRetentionFromBody(args);
   if (name === "cairnstone_context_retention_rehydrate") return rehydrateDispatchFromBody(args, { env, fetchGitHubFile: (spec, callEnv) => fetchGitHubFile(spec, callEnv || env) });
-  if (name === "cairnstone_capability_route") return routeDecisionFromBody(args, { ...env, decisionRegistry: DEFAULT_TOOL_BROKER_REGISTRY });
-  if (name === "ask_jev") return routeDecisionFromBody({ ...args, mode: "jev" }, { ...env, decisionRegistry: DEFAULT_TOOL_BROKER_REGISTRY });
+  if (name === "cairnstone_capability_route") return routeDecisionFromBody(args, { ...env, decisionRegistry: DEFAULT_TOOL_BROKER_REGISTRY, mcpToolDefinitions: mcpTools() });
+  if (name === "ask_jev") return routeDecisionFromBody({ ...args, mode: "jev" }, { ...env, decisionRegistry: DEFAULT_TOOL_BROKER_REGISTRY, mcpToolDefinitions: mcpTools() });
   if (name === "cairnstone_event_list") return listEventPlaneFromBody(args, env);
   if (name === "cairnstone_agent_tree") return agentTreeFromBody(args, env);
   if (name === "cairnstone_executor_list") return listExecutorsFromBody(args, env);
