@@ -1567,3 +1567,58 @@ test("V7.7.7d: compile context includes workspace.tree_stats and git_transport",
   assert.equal(context.chain_heads_mutated, false);
   assert.equal(db.headMutationAttempts.length, 0);
 });
+
+test("two authorized actors compile the same session and share next_action; omitted include_decision skips PCM", async () => {
+  const db = new FakeCodeSessionD1();
+  const r2 = new FakeR2();
+  const { env } = await seedWorkspace(db, r2, {
+    members: [{ actor_id: ACTOR_B, role: "drafter" }]
+  });
+  const ownerCap = await mintCap(ACTOR_A, "owner", ["write_draft", "ls", "read"]);
+  const created = await createCodeSessionFromBody({
+    ...baseCreateBody({
+      unresolved_issues: [{ summary: "Need blocker inspect", issue_id: "issue-block" }],
+      lifecycle: undefined
+    }),
+    workspace_capability: ownerCap
+  }, env);
+  assert.equal(created.ok, true);
+
+  const omitted = await compileCodeSessionContextFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: await mintCap(ACTOR_A, "owner", ["read", "ls"])
+  }, env);
+  assert.equal(omitted.ok, true);
+  assert.equal(omitted.pcm_decision, undefined);
+
+  const envWithVault = {
+    ...env,
+    decisionRegistry: DEFAULT_TOOL_BROKER_REGISTRY,
+    mcpToolDefinitions: [{
+      name: "cairnstone_find_v2",
+      inputSchema: DEFAULT_TOOL_BROKER_REGISTRY.find((e) => e.tool_id === "cairnstone_find_v2").input_schema
+    }]
+  };
+  const a = await compileCodeSessionContextFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_A,
+    workspace_capability: await mintCap(ACTOR_A, "owner", ["read", "ls"]),
+    include_decision: true
+  }, envWithVault);
+  const b = await compileCodeSessionContextFromBody({
+    code_session_id: CS_ID,
+    actor_id: ACTOR_B,
+    workspace_capability: await mintCap(ACTOR_B, "drafter", ["read", "ls"]),
+    include_decision: true
+  }, envWithVault);
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+  assert.ok(a.pcm_decision);
+  assert.ok(b.pcm_decision);
+  assert.equal(a.pcm_decision.next_action.selected.id, b.pcm_decision.next_action.selected.id);
+  assert.equal(a.pcm_decision.session_revision, b.pcm_decision.session_revision);
+  assert.notEqual(a.permissions.actor_id, b.permissions.actor_id);
+  assert.equal(a.pcm_decision.execution_authority, false);
+  assert.equal(a.pcm_decision.lease_authority, false);
+});
