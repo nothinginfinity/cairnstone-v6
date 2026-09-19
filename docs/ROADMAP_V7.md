@@ -708,9 +708,9 @@ Canonical detailed plan: `docs/V7_7_10G_CONTEXT_RETENTION_PLANE.md`.
 
 #### V7.7.10h — Semantic Capability Gateway / Decision Plane
 
-Status: **PLANNED / QUEUED AFTER V7.7.10f — implementation not started.**
+Status: **IN PROGRESS — V7.7.10h.0 deterministic/provider-neutral decision contract is under implementation; first-party Workers AI scoring follows.**
 
-Add a provider-neutral decision layer for small, typed judgments between **deterministically valid candidates**. The initial `ask_jev` pilot is a tiny semantic gateway over Tool Vault and existing CairnStone policy, not a new authority system.
+Add a provider-neutral decision layer for small, typed judgments between **deterministically valid candidates**. CairnStone owns the contract, candidate generation, validation, policy, and authority. Workers AI is the default first-party model-assisted scorer path; Jev/BYOK scorers are optional interchangeable adapters, not correctness dependencies.
 
 Core pattern:
 
@@ -718,7 +718,7 @@ Core pattern:
 task / Code Session / query
   -> deterministic candidate generation
   -> cairnstone-decision-v1
-  -> Jev / Workers AI / deterministic scorer
+  -> deterministic clear winner / Workers AI / optional Jev-BYOK scorer
   -> validated selection
   -> exact tool/capability hydration
   -> existing CairnStone policy / authorization
@@ -738,13 +738,13 @@ Initial decision kinds:
 - `escalate`;
 - `next_action`.
 
-The `ask_jev` pilot should begin with three bounded modes:
+The provider-neutral CairnStone gateway should begin with three bounded modes:
 
 - `route` — recommend/rank valid capabilities/tools; execute nothing;
 - `hydrate` — return the exact selected Tool Vault contract + schema hash; execute nothing;
 - `read` — permit only already-classified `read + automatic` tools through the existing broker and receipt path.
 
-Mutation/execution/human-confirmation tools stop at the normal proposal/authorization boundary. **Jev never receives execution authority.**
+Mutation/execution/human-confirmation tools stop at the normal proposal/authorization boundary. **No scorer receives execution authority.**
 
 Persistent Code Mode is a priority integration. Code Session task/blocker/checkpoint/receipt/lease state can supply compact semantic context so the Decision Plane chooses the next useful read/retrieval/tool/model/executor path without growing one giant tool surface or chat transcript. V7.7.10g retention is another consumer of the same decision contract, with `retain` as a typed decision kind.
 
@@ -753,7 +753,7 @@ This should remain inside `nothinginfinity/cairnstone-v6`. A separate `ask_jev` 
 Initial slices:
 
 - `V7.7.10h.0` — decision contract + deterministic candidate envelope;
-- `V7.7.10h.1` — `ask_jev` route-only pilot;
+- `V7.7.10h.1` — CairnStone-native Workers AI scorer + route-only semantic pilot, with deterministic skip/fallback;
 - `V7.7.10h.2` — Tool Vault hydrate + brokered automatic-read mode;
 - `V7.7.10h.3` — Persistent Code Mode integration;
 - `V7.7.10h.4` — shared consumers: 10g retention, snippet ranking, skills/model/executor ambiguity;
@@ -1225,7 +1225,7 @@ V7.6 Context Efficiency & MCP Surface Optimization (COMPLETE + LIVE-ACCEPTED —
         ↓
 V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (ACTIVE EVOLUTION — V7.7.7f complete/live; V7.7.8 Progressive Grounded Chat LOD next; V7.7.9 Console UX Architecture after)
         ↓
-V7.7.10g/10h Context Retention + Semantic Capability Gateway (PLANNED — durable working-set GC + provider-neutral decision plane + ask_jev pilot + Persistent Code Mode / Tool Vault integration)
+V7.7.10g/10h Context Retention + Semantic Capability Gateway (IN PROGRESS — deterministic decision contract -> first-party Workers AI scorer -> optional Jev/BYOK adapters -> Persistent Code Mode / Tool Vault integration)
         ↓
 V7.7.11 Mobile Home / Guided Mode / Safe Adaptive UI (PLANNED — Console-first iPhone PWA + compact dashboard + semantic guide targets + declarative bounded surface composer; standalone repo gated on multi-source proof)
         ↓
