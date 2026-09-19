@@ -3208,14 +3208,15 @@ export const CODE_SESSION_RESUME_TOOL_DEFINITION = Object.freeze({
 
 export const CODE_SESSION_COMPILE_CONTEXT_TOOL_DEFINITION = Object.freeze({
   name: CODE_SESSION_BROKER_TOOL_IDS.compile_context,
-  description: "V7.7.7a/b/c/d/e: compile bounded cairnstone-code-session-context-v1 including latest checkpoint, task ledger, live leases, tree/Git transport, environment manifest, sandbox attachment, and execution receipts for an authorized actor. Race-safe tip re-read; never infers currentness from timestamps when explicit pointers exist.",
+  description: "V7.7.7a/b/c/d/e + V7.7.10h.4: compile bounded cairnstone-code-session-context-v1. include_decision attaches pcm_decision only; never mutates session/lease/task/HEAD.",
   inputSchema: {
     type: "object",
     required: ["code_session_id", "actor_id", "workspace_capability"],
     properties: {
       code_session_id: { type: "string" },
       actor_id: { type: "string" },
-      workspace_capability: { type: "string" }
+      workspace_capability: { type: "string" },
+      include_decision: { type: "boolean" }
     },
     additionalProperties: false
   }
