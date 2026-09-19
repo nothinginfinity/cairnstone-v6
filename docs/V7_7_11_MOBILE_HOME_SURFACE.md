@@ -81,6 +81,26 @@ The schema should eventually describe other Home Screen surfaces such as GitHub,
 
 This experiment remains inside the CairnStone/Console workstream first. It must not create a second authority plane.
 
+## V7.7.11e–g — Guided workflows + portable recipes + Safe Adaptive UI
+
+The later V7.7.11 family extends the same mobile/Console surface without creating a second UI authority plane:
+
+- **V7.7.11e — Guided Mode / Conversational Cursor + Simple Stone Workflows** instruments stable semantic UI targets and lets CairnStone guide a user through existing Console workflows without blind coordinate automation.
+- **V7.7.11f — Simple Stone Library / portability** saves, versions, validates, imports/exports, and later shares those declarative workflows.
+- **V7.7.11g — Safe Adaptive UI / Surface Composer** turns the `Source + View + Action + Appearance` idea into a bounded component catalog + declarative surface spec + renderer architecture. It is inspired by the catalog/spec/validation patterns in `vercel-labs/json-render`, including its experimental Jev UI composer, but CairnStone remains the authority boundary and does not require json-render as a runtime dependency.
+
+V7.7.11g may use the V7.7.10h Decision Plane to choose among **application-supplied UI candidates** for visibility, grouping, ordering, or an allowed layout template. It may not invent executable component/action IDs, widen capabilities, approve a mutation, or bypass Human Commit.
+
+Canonical detailed contracts:
+
+- `docs/V7_7_11E_GUIDED_MODE_SIMPLE_STONES.md`
+- `docs/V7_7_11G_SAFE_ADAPTIVE_UI_SURFACE.md`
+
+External design-reference snapshot:
+
+- CairnStone chain `reference:vercel-labs/json-render`
+- upstream immutable commit `3ad381881194e7011ad3ccd6d668033495a06c29`
+
 ## Standalone-repo extraction gate
 
 Create a separate repository/product only when all are true:
