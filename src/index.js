@@ -215,6 +215,9 @@ import {
   CAPABILITY_ROUTE_TOOL_DEFINITION
 } from "./decision-scorer.js";
 import {
+  ASK_JEV_TOOL_DEFINITION
+} from "./decision-jev.js";
+import {
   forwardWithNoteFromBody,
   FORWARD_NOTE_MCP_TOOL_DEFINITIONS
 } from "./forward-note.js";
@@ -1339,6 +1342,7 @@ async function callMcpTool(name, args, env) {
   if (name === "cairnstone_context_retention_preview") return previewRetentionFromBody(args);
   if (name === "cairnstone_context_retention_rehydrate") return rehydrateDispatchFromBody(args, { env, fetchGitHubFile: (spec, callEnv) => fetchGitHubFile(spec, callEnv || env) });
   if (name === "cairnstone_capability_route") return routeDecisionFromBody(args, env);
+  if (name === "ask_jev") return routeDecisionFromBody({ ...args, mode: "jev" }, env);
   if (name === "cairnstone_event_list") return listEventPlaneFromBody(args, env);
   if (name === "cairnstone_agent_tree") return agentTreeFromBody(args, env);
   if (name === "cairnstone_executor_list") return listExecutorsFromBody(args, env);
@@ -1626,6 +1630,7 @@ function mcpTools() {
     CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION,
     CONTEXT_RETENTION_REHYDRATE_TOOL_DEFINITION,
     CAPABILITY_ROUTE_TOOL_DEFINITION,
+    ASK_JEV_TOOL_DEFINITION,
     ...EVENT_PLANE_MCP_TOOL_DEFINITIONS,
     ...EXECUTOR_MCP_TOOL_DEFINITIONS,
     ...FORWARD_NOTE_MCP_TOOL_DEFINITIONS,

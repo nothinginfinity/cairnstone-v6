@@ -4,6 +4,7 @@ import {
   DECISION_SCHEMA,
   DECISION_KINDS
 } from "./decision-plane.js";
+import { scoreWithJev } from "./decision-jev.js";
 
 export const DEFAULT_SCORER_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const MODEL_ALLOWLIST = new Set([DEFAULT_SCORER_MODEL]);
@@ -12,7 +13,7 @@ const MAX_CANDIDATES = 25;
 
 export const CAPABILITY_ROUTE_TOOL_DEFINITION = Object.freeze({
   name: "cairnstone_capability_route",
-  description: "V7.7.10h.1: route-only decision plane. Deterministic unique winners skip the model. Ambiguous supplied candidates may be ranked by Workers AI. Never executes tools or moves HEADs. Jev is not used.",
+  description: "V7.7.10h.2: route-only decision plane. Deterministic unique winners skip the model. Ambiguous sets use Workers AI by default. mode=jev is an optional adapter and is never the auto path. Never executes tools or moves HEADs.",
   inputSchema: {
     type: "object",
     required: ["kind", "candidates"],
@@ -20,7 +21,7 @@ export const CAPABILITY_ROUTE_TOOL_DEFINITION = Object.freeze({
       kind: { type: "string", enum: ["tool_route", "snippet_rank", "retain", "expand", "model_route", "executor_route", "escalate", "next_action"] },
       task: { type: "string" },
       candidates: { type: "array", items: { type: "object" } },
-      mode: { type: "string", enum: ["auto", "deterministic", "model"] },
+      mode: { type: "string", enum: ["auto", "deterministic", "model", "jev"] },
       model: { type: "string" },
       candidate_set_digest: { type: "string" }
     },
@@ -102,7 +103,8 @@ export async function routeDecision({
   mode = "auto",
   model = DEFAULT_SCORER_MODEL,
   candidate_set_digest = null,
-  env = null
+  env = null,
+  scoreJev = null
 } = {}) {
   const baseline = await decide({ kind, task, candidates, candidate_set_digest });
   if (baseline.ok && baseline.policy_outcome === "deterministic_winner") {
@@ -112,12 +114,16 @@ export async function routeDecision({
     return { ...baseline, mode: mode || "auto", scorer_attempted: false };
   }
 
-  const resolvedMode = ["auto", "deterministic", "model"].includes(mode) ? mode : "auto";
+  const resolvedMode = ["auto", "deterministic", "model", "jev"].includes(mode) ? mode : "auto";
   if (resolvedMode === "deterministic") {
     return { ...baseline, mode: resolvedMode, scorer_attempted: false };
   }
 
-  const scored = await scoreWithWorkersAi({ env, task, kind, candidates, model });
+  const useJev = resolvedMode === "jev";
+  const scored = useJev
+    ? await (typeof scoreJev === "function" ? scoreJev({ env, task, kind, candidates }) : scoreWithJev({ env, task, kind, candidates }))
+    : await scoreWithWorkersAi({ env, task, kind, candidates, model });
+  const scorerSource = useJev ? "jev" : "workers_ai";
   if (!scored.ok) {
     return {
       ...baseline,
@@ -126,7 +132,7 @@ export async function routeDecision({
       scorer_fallback: scored.error,
       receipt: {
         ...baseline.receipt,
-        scorer_source: "workers_ai",
+        scorer_source: scorerSource,
         fallback_reason: scored.error,
         policy_outcome: "ambiguous_no_winner"
       }
@@ -138,7 +144,7 @@ export async function routeDecision({
     task,
     candidates,
     selected_id: scored.selected_id,
-    scorer_source: "workers_ai",
+    scorer_source: scorerSource,
     confidence: scored.confidence,
     candidate_set_digest: candidate_set_digest || await digestCandidateSet(
       Array.isArray(candidates) ? candidates.filter((c) => c && c.eligible !== false) : []
