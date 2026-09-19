@@ -1,5 +1,9 @@
+import { DECISION_KINDS } from "./decision-plane.js";
+
 const MAX_CANDIDATES = 25;
 const MAX_TASK_CHARS = 4000;
+export const JEV_TIMEOUT_MS = 3000;
+export const JEV_MAX_RESPONSE_BYTES = 4096;
 
 function parseSelected(payload) {
   const raw = typeof payload === "string" ? payload : JSON.stringify(payload || {});
@@ -17,11 +21,18 @@ function parseSelected(payload) {
   }
 }
 
+function abortSignal(timeoutMs) {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return AbortSignal.timeout(timeoutMs);
+  }
+  return undefined;
+}
+
 export function jevConfigured(env) {
   return Boolean(env && typeof env.JEV_URL === "string" && env.JEV_URL.trim());
 }
 
-export async function scoreWithJev({ env, task, kind, candidates, fetchImpl } = {}) {
+export async function scoreWithJev({ env, task, kind, candidates, fetchImpl, timeoutMs = JEV_TIMEOUT_MS, maxBytes = JEV_MAX_RESPONSE_BYTES } = {}) {
   if (!jevConfigured(env)) return { ok: false, error: "jev_not_configured" };
   const fetchFn = fetchImpl || (typeof fetch === "function" ? fetch : null);
   if (typeof fetchFn !== "function") return { ok: false, error: "jev_fetch_unavailable" };
@@ -42,6 +53,7 @@ export async function scoreWithJev({ env, task, kind, candidates, fetchImpl } = 
     const response = await fetchFn(env.JEV_URL.trim(), {
       method: "POST",
       headers,
+      signal: abortSignal(timeoutMs),
       body: JSON.stringify({
         kind,
         task: String(task || "").slice(0, MAX_TASK_CHARS),
@@ -51,11 +63,26 @@ export async function scoreWithJev({ env, task, kind, candidates, fetchImpl } = 
     if (!response || response.ok === false) {
       return { ok: false, error: `jev_http_${response && response.status ? response.status : "failed"}` };
     }
-    const payload = typeof response.json === "function" ? await response.json() : response;
-    const parsed = parseSelected(payload);
+    let raw;
+    if (typeof response.text === "function") {
+      raw = await response.text();
+    } else if (typeof response.json === "function") {
+      raw = JSON.stringify(await response.json());
+    } else {
+      raw = typeof response === "string" ? response : JSON.stringify(response || {});
+    }
+    const bytes = typeof TextEncoder !== "undefined"
+      ? new TextEncoder().encode(raw).length
+      : raw.length;
+    if (bytes > maxBytes) return { ok: false, error: "jev_response_too_large", bytes, max_bytes: maxBytes };
+    const parsed = parseSelected(raw);
     if (!parsed.ok) return parsed;
     return { ok: true, selected_id: parsed.selected_id, confidence: parsed.confidence, model: "jev" };
   } catch (error) {
+    const name = error && error.name;
+    if (name === "TimeoutError" || name === "AbortError") {
+      return { ok: false, error: "jev_timeout" };
+    }
     return { ok: false, error: `jev_error:${String(error && error.message || error)}` };
   }
 }
@@ -67,7 +94,7 @@ export const ASK_JEV_TOOL_DEFINITION = Object.freeze({
     type: "object",
     required: ["kind", "candidates"],
     properties: {
-      kind: { type: "string" },
+      kind: { type: "string", enum: [...DECISION_KINDS] },
       task: { type: "string" },
       candidates: { type: "array", items: { type: "object" } },
       candidate_set_digest: { type: "string" }

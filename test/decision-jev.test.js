@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { routeDecision } from "../src/decision-scorer.js";
-import { scoreWithJev } from "../src/decision-jev.js";
+import { scoreWithJev, ASK_JEV_TOOL_DEFINITION, JEV_MAX_RESPONSE_BYTES } from "../src/decision-jev.js";
+import { DECISION_KINDS } from "../src/decision-plane.js";
 
 const TWO = [
   { id: "cairnstone_find_v2", capability: "stone.search" },
@@ -64,4 +65,37 @@ test("scoreWithJev maps HTTP failure", async () => {
   });
   assert.equal(scored.ok, false);
   assert.equal(scored.error, "jev_http_503");
+});
+
+test("scoreWithJev fails closed on oversize response", async () => {
+  const scored = await scoreWithJev({
+    env: { JEV_URL: "https://jev.example/score" },
+    kind: "tool_route",
+    candidates: TWO,
+    maxBytes: 16,
+    fetchImpl: async () => ({ ok: true, text: async () => '{\"selected_id\":\"cairnstone_find_v2\"}' })
+  });
+  assert.equal(scored.ok, false);
+  assert.equal(scored.error, "jev_response_too_large");
+  assert.ok(scored.bytes > 16);
+});
+
+test("scoreWithJev maps abort/timeout", async () => {
+  const scored = await scoreWithJev({
+    env: { JEV_URL: "https://jev.example/score" },
+    kind: "tool_route",
+    candidates: TWO,
+    fetchImpl: async () => {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+  });
+  assert.equal(scored.ok, false);
+  assert.equal(scored.error, "jev_timeout");
+});
+
+test("ask_jev kind enum matches DECISION_KINDS", () => {
+  assert.deepEqual(ASK_JEV_TOOL_DEFINITION.inputSchema.properties.kind.enum, [...DECISION_KINDS]);
+  assert.ok(JEV_MAX_RESPONSE_BYTES <= 4096);
 });
