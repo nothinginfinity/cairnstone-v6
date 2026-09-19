@@ -927,7 +927,7 @@ test("broker: ENVIRONMENT_SANDBOX tools are scoped_grant; none automatic-read; M
   const registry = toolRegistryFromBody({}, {}, { registry: DEFAULT_TOOL_BROKER_REGISTRY });
   assert.equal(registry.ok, true);
   // V7.7.10b adds 10 access-grant/attachment/task-run/forward tools (76 -> 86; V7.7.10c +1 intent router -> 87; V7.7.10d +7 executor/task-run tools -> 94).
-  assert.equal(registry.total, 94);
+  assert.equal(registry.total, 96);
 
   for (const toolId of ENVIRONMENT_SANDBOX_MUTATION_TOOL_IDS) {
     const entry = registry.tools.find(item => item.tool_id === toolId);
