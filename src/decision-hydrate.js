@@ -38,8 +38,10 @@ export function seedAutomaticReadCandidates(registry = [], { task = "", limit = 
   return scored.slice(0, limit).map(({ _score, ...c }) => c);
 }
 
-export async function hydrateSelectedContract(selected, { registry = [], mcpToolDefinitions = [] } = {}) {
+export async function hydrateSelectedContract(selected, deps = {}) {
   if (!selected || !selected.id) return { ok: false, error: "selected_required", execution_authority: false };
+  const registry = deps.registry || deps.decisionRegistry || [];
+  const mcpToolDefinitions = deps.mcpToolDefinitions || [];
   const contract = await toolContractFromBody(
     { name: selected.id },
     null,
