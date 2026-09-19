@@ -1,6 +1,6 @@
 # V7.7.10h — Semantic Capability Gateway / Decision Plane
 
-Status: **PLANNED / QUEUED AFTER V7.7.10f — implementation not started.**
+Status: **IN PROGRESS — V7.7.10h.0 decision contract is under implementation; first-party Workers AI scoring is the next planned scorer slice.**
 Relationship: V7.7.10g Context Retention is the first major consumer; V7.7.10h generalizes the same bounded decision pattern across tools, retrieval, models, executors, and Persistent Code Mode.
 
 ## Thesis
@@ -18,7 +18,7 @@ The motivating observation from Jev is not merely that a small model can compact
 
 The large reasoning model should do difficult synthesis/reasoning. The decision plane should perform **small typed judgments between deterministic choices**.
 
-CairnStone remains the gateway and authority boundary. Jev is a candidate decision engine inside it, not the authority system.
+CairnStone remains the gateway and authority boundary. CairnStone-native Workers AI is the default first-party model-assisted scorer path. Jev and BYOK small models remain optional interchangeable scorer adapters behind the same contract, never authority systems.
 
 ## Architectural position
 
@@ -32,8 +32,8 @@ deterministic candidate generation
         ↓
 cairnstone-decision-v1
         ↓
-optional scorer
-(Jev / Workers AI / BYOK small model / deterministic heuristic)
+decision ladder
+(deterministic clear winner -> Workers AI -> optional Jev/BYOK/stronger scorer)
         ↓
 validated typed decision
         ↓
@@ -64,11 +64,15 @@ Working canonical runtime primitive:
 
 - `cairnstone_capability_route` or equivalent provider-neutral name.
 
-Pilot façade:
+Canonical façade:
 
-- `ask_jev` — a deliberately tiny MCP surface proving the semantic-gateway pattern with Jev as the scorer.
+- `cairnstone_capability_route` (or equivalent provider-neutral name) — the CairnStone-owned semantic gateway over deterministic candidates, scorer adapters, Tool Vault hydration, and existing policy.
 
-The architecture must not depend on the public/pilot name `ask_jev`.
+Optional adapter façade:
+
+- `ask_jev` — an experimental/compatibility surface proving that Jev can back the same contract without becoming a dependency.
+
+The architecture must not depend on Jev, `ask_jev`, or any external scorer API.
 
 ## Decision kinds
 
@@ -115,9 +119,9 @@ The request/result must bind to a candidate-set digest and relevant registry/sna
 
 If deterministic policy already yields a clear winner, skip the scorer. This follows the proven V6.10 Skills Sub-Agent pattern: AI is an ambiguity resolver, not a mandatory tax on every route.
 
-## Tool-gateway / `ask_jev` pilot
+## Tool-gateway / provider-neutral pilot
 
-The first `ask_jev` pilot should expose one simple front door while keeping the actual tool surface behind CairnStone.
+The first pilot should expose one CairnStone-owned front door while keeping the actual tool surface behind CairnStone. The default model-assisted scorer should use Workers AI through the existing Cloudflare runtime; Jev remains an optional adapter for parity/benchmarking.
 
 Initial modes:
 
@@ -324,7 +328,7 @@ Example:
   -> exact result
 ```
 
-Jev should not be asked to perform arithmetic that an authoritative deterministic utility can perform. Its value is recognizing/selecting the route.
+No scorer should be asked to perform arithmetic that an authoritative deterministic utility can perform. The scorer's value is recognizing/selecting the route when deterministic routing is genuinely ambiguous.
 
 ## Model and executor routing
 
@@ -346,7 +350,7 @@ It may not weaken capability requirements, budget ceilings, authorization state,
 
 CairnStone is the MCP/capability gateway.
 
-Jev does **not**:
+A scorer — Workers AI, Jev, BYOK, or otherwise — does **not**:
 
 - hold MCP credentials;
 - receive reusable capability bearers;
@@ -389,13 +393,16 @@ A scorer confidence is evidence, not authorization.
 - deterministic-only baseline;
 - zero model/tool execution required.
 
-### V7.7.10h.1 — `ask_jev` pilot / semantic route mode
+### V7.7.10h.1 — CairnStone-native scorer / semantic route mode
 
-- Jev adapter behind provider-neutral interface;
-- `route` only;
-- validate selection against candidates;
-- deterministic fallback;
-- no execution/mutation authority.
+- first-party Workers AI adapter behind the provider-neutral decision interface;
+- deterministic clear winners bypass model inference entirely;
+- ambiguous bounded candidate sets may be ranked by Workers AI;
+- `route` only in the first cut;
+- validate every selection against candidate IDs + candidate-set digest;
+- deterministic fallback or safe unresolved result on timeout, malformed output, invented IDs, or provider failure;
+- no execution/mutation authority;
+- keep the scorer adapter interface open so Jev/BYOK/stronger models can later prove parity without changing decision semantics.
 
 ### V7.7.10h.2 — Tool Vault hydrate + brokered read
 
@@ -445,7 +452,7 @@ Benchmark:
 V7.7.10h is complete only when live acceptance proves:
 
 - one tiny gateway surface can resolve tasks into exact Tool Vault contracts without exposing the full catalog;
-- Jev/model selections are restricted to deterministic candidate IDs;
+- every model-assisted selection, including Workers AI/Jev/BYOK adapters, is restricted to deterministic candidate IDs;
 - deterministic clear winners bypass the model;
 - scorer failure returns deterministic fallback or a safe unresolved result;
 - route/hydrate modes execute nothing;
@@ -455,7 +462,7 @@ V7.7.10h is complete only when live acceptance proves:
 - secrets/capability bearers never enter scorer state;
 - Persistent Code Mode can use the decision plane without changing checkpoint/lease/task authority semantics;
 - V7.7.10g can reuse the same provider-neutral decision interface;
-- at least two scorer implementations (e.g. Jev + deterministic/Workers AI) can back the same contract without changing authority semantics;
+- the CairnStone-native Workers AI scorer and at least one alternate implementation (deterministic-only, Jev, or BYOK) can back the same contract without changing authority semantics;
 - a large Tool Vault does not cause linear boot-schema growth;
 - route receipts expose candidate-set identity, selection source, provider/model where used, confidence/scores, policy outcome, and any governed execution receipt;
 - accepted CairnStone state remains unchanged by route/hydrate/read decisions except when an independently authorized downstream mutation is explicitly performed through the existing authority path.
