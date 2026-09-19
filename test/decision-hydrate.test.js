@@ -113,6 +113,21 @@ test("hydrate fail-closes the whole decision when contract cannot hydrate", asyn
   assert.equal(result.selected, null);
 });
 
+test("available:false winner fail-closes hydrate", async () => {
+  const unavailable = [{ ...REG[0], available: false }];
+  const env = { decisionRegistry: unavailable, mcpToolDefinitions: CATALOG };
+  assert.deepEqual(seedAutomaticReadCandidates(unavailable, { task: "search stones" }), []);
+  const result = await routeDecisionFromBody({
+    kind: "tool_route",
+    mode: "hydrate",
+    task: "search",
+    candidates: [{ id: "cairnstone_find_v2", capability: "stone.search" }]
+  }, env);
+  assert.equal(result.ok, false);
+  assert.equal(result.selected, null);
+  assert.equal(result.hydrated.error, "hydrate_not_broker_eligible");
+});
+
 test("routeDecisionFromBody hydrate seeds vault then attaches contract", async () => {
   const result = await routeDecisionFromBody({
     kind: "tool_route",
