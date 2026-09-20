@@ -679,6 +679,7 @@ Family slices (authoritative; do not invent alternate numbering):
 - `V7.7.10g` — Context Retention Plane / Semantic Working-Set GC (**planned after 10f acceptance**)
 - `V7.7.10h` — Semantic Capability Gateway / Decision Plane (**planned; shared decision layer for tools, retrieval, routing, and Persistent Code Mode**)
 - `V7.7.10i` — Connector-Bound Identity + Zero-Friction Bootstrap (**P0 identity gate; advance before new Console feature expansion, multi-account onboarding, and federation**)
+- `V7.7.10j` — Role-Scoped Tool Belts / Capability Profiles (**design + read-only contract may proceed after 10i.0 review; account-bound mutation-capable activation remains gated on 10i identity**)
 
 Conversation Session is operational D1 only (`accepted_state_authority: false`); it never moves chain/path HEADs and never bulk-promotes chat history into project memory.
 
@@ -835,6 +836,104 @@ Acceptance must prove at minimum:
 - mutation/execution/economic authority remain governed by their existing explicit policy boundaries.
 
 Canonical detailed contract: `docs/V7_7_10I_CONNECTOR_BOUND_IDENTITY.md`.
+
+---
+
+### V7.7.10j — Role-Scoped Tool Belts / Capability Profiles
+
+Status: **PLANNED / CONTRACT + THREAT-MODEL NEXT — no production mutation-capable activation before V7.7.10i identity is implemented and accepted.** Design, linting, and read-only/draft-only prototypes may proceed after the 10i.0 independent review.
+
+Tool Belts make the agent's operational world an explicit CairnStone artifact. The model remains a replaceable reasoning engine; CairnStone defines the reachable action vocabulary, accepted procedures, authoritative knowledge, identity, policy, and evidence trail.
+
+Core constructed-agent model:
+
+```text
+model
+  + accepted Tool Belt       -> what this role may discover / hydrate / invoke
+  + accepted Skill Pack      -> how this role should operate
+  + Scope / Stones           -> what this role knows and which state is authoritative
+  + Account / Actor identity -> who is wielding the role
+  + grants / broker policy   -> what authority is actually usable now
+  + session / receipts       -> continuity, evidence, audit
+  = CairnStone-constructed agent
+```
+
+A Tool Belt is **not** merely an MCP URL and is **not** a second tool registry. It is a versioned, accepted, policy-constrained capability projection over the canonical Tool Vault / broker registry. Routes such as `/mcp/t/:belt` may be convenient transport/profile selectors, but the pathname is never identity or authority.
+
+Effective authority is always an intersection, never an additive grant:
+
+```text
+effective capability
+  = account grant
+  ∩ authenticated actor / connection principal
+  ∩ accepted Tool Belt policy
+  ∩ object / Scope grant
+  ∩ canonical broker policy + authorization mode
+  ∩ live tool availability / contract integrity
+  ∩ runtime / session state
+```
+
+A belt may narrow authority but can never widen it.
+
+#### Authority + storage invariants
+
+- Accepted/versioned belt artifacts are authority. D1/KV may cache compiled belts for performance but cache/config never becomes authority.
+- Belt manifests reference canonical Tool Vault tool IDs / abstract capability IDs and immutable accepted skill identities; they do not duplicate live tool schemas.
+- Canonical `schema_hash` and risk/authorization classification still come from the live Tool Vault + broker overlay. Missing, unclassified, or schema-disagreeing tools fail closed for executable belt resolution.
+- `tools/list` filtering is context shaping only. `tools/call`, generic execution, authorization, and broker policy independently enforce the active belt.
+- Generic primitives including tool search, contract hydration, native hydration, capability routing, policy preview, authorization preparation, and tool execution are belt-aware. They cannot discover or execute around the belt.
+- Native hydration may only add contracts already allowed by the active belt; `notifications/tools/list_changed` can never widen beyond that belt.
+- A URL path or connector name is a selector, not a principal. V7.7.10i account/connection identity determines which belt profiles a caller may activate.
+- Every tool/execution/checkpoint receipt should record immutable `belt_id` + version/hash, accepted skill-bundle identity, actor/principal, Scope/object grants, tool-contract/schema hashes, and authorization context.
+- Revocation or supersession of a belt prevents new capability resolution while preserving old receipts for audit.
+
+#### Relationship to existing CairnStone layers
+
+- `/mcp/core` remains the universal tiny bootstrap / deferred Tool Vault surface.
+- Tool Vault + native hydration answer **which capability does this task need now?**
+- Tool Belt answers **which capability universe should this role inhabit at all?**
+- V7.7.10h Decision Plane may rank/select only candidates already inside the active belt.
+- Skills define procedures and verification over belt-available capabilities; skill dependency closure must never introduce a prohibited capability.
+- Scope/Stones remain knowledge and accepted-state authority; a belt never promotes evidence or creates synthetic authority.
+- `/mcp-b` remains only the client catalog-cache twin and must not acquire semantic belt meaning.
+
+#### Initial role cohort
+
+Begin with deliberately bounded roles:
+
+1. **researcher / read-only** — Scope, accepted-state retrieval, grounded Q&A, evidence inspection, correspondence reads as explicitly granted; no writes.
+2. **reviewer / read-only** — repo/Stone diff, tests/CI/release evidence, provenance, policy inspection; no source mutation.
+3. **code-engineer / draft-only** — workspace/code-session reads plus draft/patch/test/checkpoint capabilities; no merge, deploy, accepted-state HEAD movement, or economic authority.
+
+Release/deploy/operator belts remain deferred until account-root identity, revocation, and privileged authorization have live acceptance.
+
+#### Initial slices
+
+- `V7.7.10j.0` — freeze `cairnstone-tool-belt-v1` contract, threat model, authority-intersection semantics, revocation/supersession model, receipt/audit envelope, route-vs-identity rules;
+- `V7.7.10j.1` — deterministic belt resolver + linter against canonical Tool Vault classifications/schema hashes and accepted skill dependencies; accepted artifact/path-HEAD workflow; fail-closed drift handling;
+- `V7.7.10j.2` — read-only activation: belt-filtered `tools/list`, belt-constrained Tool Vault search/hydration, matched accepted Skill Pack + bounded context projection;
+- `V7.7.10j.3` — server-side enforcement beneath `tools/call`, generic discovery/hydration, Decision Plane routing, broker preview, authorization preparation, and execution; session state namespaced by belt identity/version;
+- `V7.7.10j.4` — code-engineer draft-only profile + V7.7.10i account/connection-principal binding, revocation, reconnect/reinstall behavior;
+- `V7.7.10j.5` — cross-model acceptance on at least ChatGPT, Claude, Grok, Perplexity plus one lower-cost/local/Workers-AI-class model; compare the same tasks with full vs belt-scoped surfaces;
+- `V7.7.10j.6` — privileged/release belt gate only after 10i identity + authorization acceptance; prove no role can widen itself, no path-secret authorization, and no generic Tool Vault escape.
+
+#### Evaluation
+
+Measure the harness hypothesis rather than treating it as an assumption. Compare belt-scoped vs broad/full surfaces using:
+
+- tool-schema/context bytes and tokens;
+- unnecessary/invalid tool calls;
+- policy denials and attempted out-of-role calls;
+- time / model turns to the first correct action;
+- tool-selection accuracy;
+- completion quality and verification success;
+- cross-model variance for the same role/belt/skill/scope package.
+
+The durable principle is:
+
+> **The model supplies reasoning; CairnStone defines the agent's reachable world, authoritative knowledge, permitted operations, and evidence trail.**
+
+Canonical detailed plan: `docs/V7_7_10J_ROLE_SCOPED_TOOL_BELTS.md`.
 
 ---
 
