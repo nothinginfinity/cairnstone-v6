@@ -1,6 +1,6 @@
 # V7.7.10i — Connector-Bound Identity + Zero-Friction Bootstrap
 
-Status: **PRIORITY / REVIEW-READY ARCHITECTURE — chosen first path accepted; implementation not started.**
+Status: **PRIORITY / REVIEW-CORRECTED ARCHITECTURE — CairnStone-account-root identity accepted for contract work; implementation not started.**
 
 Priority: **P0 identity gate. Advance before new Console feature expansion, broad multi-account onboarding, or federation work.** Close only necessary in-flight safety/merge work while this contract is stabilized.
 
@@ -10,36 +10,45 @@ CairnStone must support many users on the same provider and individual users wit
 
 The required user experience is intentionally simple:
 
-> Add the CairnStone MCP URL, complete authorization once, and immediately receive the correct identity, inboxes, tools, workspace access, and Persistent Code Mode state.
+> Add the CairnStone MCP URL, authenticate to a CairnStone account once, and immediately receive the correct identity, inboxes, tools, workspace access, and Persistent Code Mode state.
 
-The URL is discovery/addressing. The OAuth grant is the credential. CairnStone derives identity from the authenticated connection.
+The Console-backed CairnStone account is the durable identity home. The URL is discovery/addressing. An authenticator proves control of the account relationship; the OAuth grant authorizes one MCP connection; CairnStone mints and derives the connection principal server-side.
 
 ## Core invariant
 
-> **Authenticated connection -> immutable principal -> mailbox scope -> memberships and entitlements -> operation permissions.**
+> **Authenticated CairnStone account -> authorized MCP connection -> immutable connection principal -> mailbox scope -> memberships and entitlements -> operation permissions.**
 
 These dimensions remain separate:
 
 ```text
-routing alias != authenticated principal
-provider account != CairnStone user
+routing alias != connection principal
+CairnStone account != authenticator
+MCP connection != CairnStone account
+wallet account != CairnStone account
+wallet address / payment instrument != principal
 resource authority != execution authority
 execution authority != mutation authority
 economic authority != identity authority
 ```
 
+The durable account survives connector reinstall, wallet rotation, wallet loss/recovery, authenticator replacement, and provider/client changes. Those events may create or retire connections and principals without replacing the account.
+
 ## Identity model
 
 - `tenant_id` — personal or organizational security boundary.
-- `user_id` — CairnStone human or service owner.
-- `connection_id` — one OAuth-authorized MCP installation/account connection.
-- `principal_id` — opaque, immutable, server-issued actor used for authorization.
+- `account_id` — durable CairnStone human/service identity and Console home. Owns or joins tenants, workspaces, inboxes, durable sessions, entitlements, and linked authenticators/connections.
+- `authenticator_id` — one credential relationship proving control of the CairnStone account, such as passkey/WebAuthn, wallet proof, custodial-provider login, or another approved identity provider.
+- `connection_id` — one OAuth-authorized MCP client/account connection. Server-minted; never derived solely from provider family, display name, routing alias, or wallet address.
+- `principal_id` — opaque, immutable, server-issued actor for exactly one connection. Authorization and audit remain connection-specific even when several principals belong to the same account.
+- `token_family_id` — server-owned access/refresh lineage for one authorized connection; revocable without deleting account history.
+- `wallet_account_id` — optional linked wallet/custodial economic account; may also serve as an authenticator relationship, but is never the CairnStone account identity.
+- wallet addresses/payment instruments — rotatable funding/settlement endpoints; never principal identity.
 - actor aliases — friendly addresses such as `perplexity-2:chat`; routing only.
 - memberships/entitlements — workspaces, inboxes, tools, roles, plans, grants, and Code Sessions.
 
-Two accounts from one provider receive distinct connection principals. Two users using the same provider cannot collide. One user may explicitly link multiple connections, but linking never erases connection-level identity or audit history.
+Two accounts from one provider receive distinct connection principals. Two users using the same provider cannot collide. One CairnStone account may explicitly link multiple authenticators, wallets, and MCP connections, but linking never erases connection-level identity or audit history.
 
-Provider subjects are optional evidence, not a universal assumption. When a host does not expose a stable provider-account subject, the authenticated CairnStone authorization grant and installation identity still create a unique connection.
+CairnStone does not depend on every MCP host exposing a stable installation identifier. Provider subjects, client-family identifiers, and host installation identifiers are optional evidence. CairnStone itself mints `connection_id`, `principal_id`, and `token_family_id` during authorization. A valid refresh resumes the same connection/principal; a reinstall or fresh authorization may create a new connection/principal under the same authenticated account without duplicating the account-owned home/workspace/session state.
 
 ## Standards-aligned authorization boundary
 
@@ -49,25 +58,29 @@ Required behavior:
 
 1. Publish OAuth Protected Resource Metadata at the deterministic well-known location.
 2. Return `401` plus a correct `WWW-Authenticate` challenge for unauthenticated protected requests.
-3. Use authorization-server discovery and authorization code + PKCE for public MCP clients.
-4. Require `Authorization: Bearer <access-token>` on every protected request.
-5. Validate issuer, signature, expiry, audience/resource, scopes, revocation state, and connection/principal binding.
-6. Use short-lived access tokens and confidential, revocable refresh tokens.
-7. Bind tokens to the canonical CairnStone resource with OAuth Resource Indicators.
-8. Never accept a provider token intended for ChatGPT, Claude, Perplexity, or another service as a CairnStone credential.
-9. Never place tokens in Stones, AC1, GitHub, model context, tool arguments, or ordinary logs.
+3. Use authorization-server discovery and authorization code + PKCE S256 for public MCP clients.
+4. Prefer MCP's current Client ID Metadata Document (CIMD) registration model where supported; retain Dynamic Client Registration only as a bounded compatibility path for clients that still require it.
+5. Validate authorization-server issuer identity and authorization-response issuer binding so client/issuer mix-up cannot silently substitute an authorization server.
+6. Require `Authorization: Bearer <access-token>` on every protected request.
+7. Validate issuer, signature, expiry, audience/resource, scopes, revocation state, token family, and connection/principal binding.
+8. Use short-lived access tokens and confidential, revocable, rotating refresh tokens with reuse detection.
+9. Bind tokens to the canonical CairnStone resource with OAuth Resource Indicators.
+10. Never accept a provider token intended for ChatGPT, Claude, Perplexity, or another service as a CairnStone credential.
+11. Never place tokens, authorization codes, wallet proofs, passkey material, refresh secrets, or private keys in Stones, AC1, GitHub, model context, tool arguments, receipts, or ordinary logs.
+12. Treat the current live runtime's older MCP protocol compatibility separately from the target identity/security contract; do not require every host to upgrade in lockstep before the additive canary can be evaluated.
 
 References:
 
 - MCP Authorization: https://modelcontextprotocol.io/specification/latest/basic/authorization
+- MCP 2026-07-28 authorization update: https://blog.modelcontextprotocol.io/posts/2026-07-28/
 - RFC 9728: https://www.rfc-editor.org/rfc/rfc9728
 - RFC 8707: https://www.rfc-editor.org/rfc/rfc8707
 
 ## Server-derived request context
 
-After token validation, the gateway creates an internal context containing principal, user, tenant, connection, provider/client family, canonical resource, scopes, roles, token identity, and authorization version. Protected tools receive it outside model-controlled JSON.
+After token validation, the gateway creates an internal context containing account, principal, tenant, connection, authenticator assurance/evidence class, provider/client family, canonical resource, scopes, roles, token-family identity, and authorization version. Protected tools receive it outside model-controlled JSON.
 
-Token claims minimally bind `sub` (principal), tenant, connection, audience/resource, scopes, issued/expiry time, and replay identity. Tool arguments may narrow authority but can never expand it.
+Token claims minimally bind `sub` (connection principal), account, tenant, connection, audience/resource, scopes, issued/expiry time, and token/replay identity. Tool arguments may narrow authority but can never expand it, select a different principal, or replace the server-derived account/tenant/connection context.
 
 ## Tool/data-plane binding
 
@@ -103,8 +116,8 @@ Token claims minimally bind `sub` (principal), tenant, connection, audience/reso
 
 The first authenticated connection idempotently creates or resumes:
 
-1. CairnStone user and personal tenant, unless an existing tenant is selected;
-2. connection and immutable principal;
+1. CairnStone account and personal tenant, unless an authenticated existing account/tenant is selected;
+2. authenticator link plus connection and immutable connection principal;
 3. canonical chat/work aliases;
 4. personal/home workspace membership;
 5. baseline tool entitlements;
@@ -119,9 +132,9 @@ The normal Console surface shows provider/client, user/tenant, connection state,
 
 ## Account linking, revocation, and recovery
 
-Default behavior is isolation: a new authenticated connector grant creates or resumes one connection principal. Linking requires an authenticated CairnStone account action; a shared provider family or display name is never enough.
+Default behavior is isolation: a new authenticated connector grant creates or resumes one connection principal under one authenticated CairnStone account. Linking authenticators, wallets, connections, or accounts requires an authenticated CairnStone account action; a shared provider family, wallet address, display name, or client family is never enough.
 
-Revoking one connection blocks it without affecting sibling connections. Recovery and alias reassignment require explicit human confirmation and immutable audit evidence.
+Revoking one connection or token family blocks it without affecting sibling connections. Removing or rotating a wallet/authenticator does not delete the CairnStone account. Recovery, authenticator replacement, account linking, wallet reassignment, and alias reassignment require explicit human confirmation, step-up authentication appropriate to the risk, and immutable audit evidence.
 
 ## Legacy aliases
 
@@ -140,27 +153,32 @@ Health, OAuth/MCP discovery, public documentation, intentionally public capabili
 
 Private tools, inboxes, workspaces, Code Sessions, grants, and user data require an authenticated principal. Endpoint knowledge alone yields public metadata or `401`, never private access.
 
-## Chosen first implementation path — wallet-backed authenticated Core canary
+## Chosen first implementation path — CairnStone-account-root authenticated Core canary
 
 The first implementation is intentionally additive and reversible:
 
 1. Add a new protected MCP resource at `/mcp/core-auth`; do not change `/mcp`, `/mcp/core`, or `/mcp-b` during the canary.
-2. Reuse the proven OAuth/PKCE/token lifecycle from `nothinginfinity/x402-sub-agent-mcp` as the upstream authentication kernel, adapted into a CairnStone resource binding.
-3. Require a wallet **account** as the CairnStone sign-on container, but never require funding, payment, or spending to authenticate. A new user may receive an automatically provisioned zero-balance account.
-4. Issue a CairnStone Core resource-bound token whose immutable `principal_id` is the authorization subject.
-5. Carry the authenticated principal through `cairnstone_tool_execute`, `cairnstone_load_tools`, and every dynamically hydrated tool. Indirect execution must not lose or replace identity.
-6. Use the second Perplexity account as the first live same-provider/multi-account canary.
-7. Advance enforcement through `off -> shadow -> canary -> required`, with an immediate rollback to the unchanged legacy routes.
+2. Make the CairnStone account/Console the durable identity home. Authentication proves control of that account; it does not make the authenticator itself the identity.
+3. Reuse the proven OAuth/PKCE/token lifecycle from `nothinginfinity/x402-sub-agent-mcp` as an upstream authentication kernel, adapted into a CairnStone resource binding and current MCP authorization profile.
+4. Use wallet-backed sign-on as the first canary authenticator path because the x402 lifecycle already exists, but model the wallet account as a linked authenticator/economic relationship. A zero-balance wallet account may be provisioned automatically; funding, payment, and spend are never required to authenticate.
+5. Mint CairnStone-owned `connection_id`, immutable per-connection `principal_id`, and `token_family_id`. Do not require a stable installation ID from the MCP host.
+6. Issue a CairnStone Core resource-bound token whose `sub` is the connection principal and whose server-side binding resolves the owning `account_id`, tenant, connection, token family, and scopes.
+7. Carry the authenticated context through `cairnstone_tool_execute`, `cairnstone_load_tools`, and every dynamically hydrated tool. Indirect execution must not lose, replace, or widen identity.
+8. Isolate newly authenticated records from the legacy compatibility realm. Prefer a separate authenticated D1 security realm for the canary; if one D1 is retained, use separate auth tables/namespaces plus mandatory server-side realm + tenant + principal predicates.
+9. Use the second Perplexity account as the first live same-provider/multi-account canary.
+10. Advance enforcement through `off -> shadow -> canary -> required`, with an immediate rollback to the unchanged legacy routes.
 
-### Identity and economic separation
+### Identity, authentication, connection, and economic separation
 
 | Layer | Purpose | Stability / authority |
 |---|---|---|
-| `principal_id` | CairnStone authentication and authorization subject | Immutable; owns access decisions and audit history |
-| `wallet_account_id` | OAuth/SSO account container and future economic relationship | Stable account link; may exist with zero balance and no spend authority |
-| wallet IDs / addresses / payment instruments | Funding and settlement endpoints | Rotatable/recoverable; never principal identity |
+| `account_id` | Durable CairnStone identity / Console home | Survives connector reinstall, wallet rotation, and authenticator changes; owns durable memberships and state |
+| `authenticator_id` | Proof of control of the CairnStone account | Replaceable/revocable; passkey, wallet proof, custodial login, or future approved method |
+| `connection_id` + `principal_id` | One authorized MCP connection and its exact authorization/audit actor | Server-minted; immutable principal per connection; siblings may belong to one account |
+| `wallet_account_id` | Optional wallet/custodial economic relationship and first-canary authenticator | Linked to account; may be zero-balance; not identity root |
+| wallet addresses / payment instruments | Funding and settlement endpoints | Rotatable/recoverable; never principal identity |
 
-Authentication proves control of the wallet account relationship. It does not grant payment, execution, mutation, workspace membership, or mailbox delegation by itself. Economic authority remains a separate, explicit grant.
+Authentication proves control of the CairnStone account through an approved authenticator. It does not grant payment, execution, mutation, workspace membership, mailbox delegation, or economic authority by itself. Economic authority remains a separate explicit grant.
 
 ### What can be reused from x402
 
@@ -171,9 +189,10 @@ The current x402 identity assumptions are **not** reusable as-is:
 - its OAuth subject lookup is single-user-oriented;
 - a trusted family key such as `fam:perplexity` distinguishes providers but cannot distinguish two accounts within one provider;
 - wallet selection, budgets, and payment capture are broader than the credential needed to enter CairnStone;
+- its client-registration behavior predates the current MCP preference for Client ID Metadata Documents;
 - the service is a policy/bookkeeping layer and does not hold wallet private keys.
 
-CairnStone therefore needs its own connection-principal registry keyed by the authorization grant/installation, with optional links to a wallet account and provider/client evidence.
+CairnStone therefore needs its own account/authenticator/connection/principal/token-family registry. Provider/client/install identifiers and wallet relationships are evidence/links, not the authorization root.
 
 ### Compatibility firewall / non-lockout invariant
 
@@ -182,7 +201,8 @@ The canary must preserve today's working system while preventing legacy access f
 - existing `/mcp`, `/mcp/core`, and `/mcp-b` behavior remains unchanged during the canary;
 - `/mcp-b` remains the full-catalog twin and is never repurposed as an auth endpoint;
 - legacy routes remain confined to the existing single-tenant compatibility realm;
-- legacy callers cannot select, impersonate, or read newly created authenticated principals or their private state;
+- legacy callers cannot enumerate, select, impersonate, or read newly created authenticated accounts/principals or their private state;
+- authenticated data access always starts from server-derived account/tenant/connection context; caller-supplied IDs can only narrow a permitted operation;
 - new users default to authenticated Core after the canary is accepted;
 - migrate one connector at a time; retire legacy access only after parity, rollback, and multi-account isolation are proven;
 - authentication failure on the canary cannot disable the unchanged legacy routes.
@@ -193,9 +213,10 @@ A second `/mcp/core-auth-b` route is unnecessary unless a real client-cache inco
 
 Independent architecture/security review must explicitly approve:
 
-- the three-layer principal/account/instrument separation;
-- issuer, audience/resource, subject, connection, scope, revocation, and replay semantics;
-- same-provider multi-account uniqueness and recovery/linking behavior;
+- the account/authenticator/connection-principal/wallet-instrument separation;
+- issuer, authorization-response issuer binding, audience/resource, subject, account/connection/token-family binding, scopes, expiry, refresh rotation/reuse detection, revocation, and replay semantics;
+- same-provider multi-account uniqueness, reconnect/reinstall behavior, account recovery, authenticator replacement, wallet rotation, and explicit linking behavior;
+- the absence of any dependency on a universal stable MCP-host installation identifier;
 - propagation of server-derived principal context through brokered and hydrated tools;
 - the compatibility firewall and rollback path;
 - zero-balance authentication without implicit spend authority;
@@ -205,31 +226,33 @@ No auth enforcement, route replacement, or deployment is authorized by this docu
 
 ## Implementation slices
 
-### V7.7.10i.0 — Wallet-backed OAuth Core canary contract + threat model
+### V7.7.10i.0 — CairnStone account-root OAuth Core canary contract + threat model
 
-- freeze `cairnstone-connection-principal-v1` plus the principal/wallet-account/payment-instrument separation;
-- inventory every route/tool that accepts actor, sender, recipient, capability, workspace, Code Session, or economic identity;
-- extract/adapt the reusable x402 OAuth kernel and remove the single-subject/provider-family collision assumptions;
-- define `/mcp/core-auth`, the legacy compatibility realm, enforcement modes, rollback, and negative fixtures;
-- model spoofing, confused-deputy, replay, alias collision, cross-tenant, revocation, recovery, wallet rotation, and same-provider multi-account threats;
-- complete independent architecture/security review before implementation or deployment.
+- freeze `cairnstone-account-v1`, `cairnstone-authenticator-v1`, and `cairnstone-connection-principal-v1`, including explicit `account_id -> connection_id -> principal_id -> token_family_id` semantics;
+- freeze wallet-account/payment-instrument separation and define wallet-backed authentication as the first canary authenticator rather than the identity root;
+- inventory every route/tool that accepts actor, sender, recipient, account, tenant, capability, workspace, Code Session, or economic identity;
+- extract/adapt the reusable x402 OAuth kernel, remove the single-subject/provider-family collision assumptions, and adapt registration/issuer checks to the current MCP authorization profile (CIMD preferred; DCR compatibility only);
+- define `/mcp/core-auth`, authenticated-vs-legacy storage realms, enforcement modes, rollback, and negative fixtures;
+- model spoofing, confused-deputy, same-resource bearer replay, cross-resource token substitution, issuer mix-up, alias collision, cross-tenant, revocation, recovery, authenticator replacement, wallet rotation, and same-provider multi-account threats;
+- complete independent architecture/security review before runtime implementation or deployment.
 
 ### V7.7.10i.1 — Additive authenticated Core canary
 
 - protected-resource/authorization-server discovery and authorization code + PKCE;
-- wallet-account sign-on with automatic zero-balance provisioning; no funding or spend requirement;
-- token lifecycle, resource/audience validation, revocation, and consistent `401`/`403`;
+- CairnStone-account sign-on using wallet-backed authentication as the first canary authenticator, with automatic zero-balance wallet-account provisioning when needed; no funding or spend requirement;
+- token lifecycle, issuer/authorization-response issuer validation, resource/audience validation, token-family binding, refresh rotation/reuse detection, revocation, and consistent `401`/`403`;
 - add `/mcp/core-auth` while leaving `/mcp`, `/mcp/core`, and `/mcp-b` unchanged;
 - propagate the server-derived principal through `cairnstone_tool_execute`, `cairnstone_load_tools`, and hydrated tools;
 - enforce `off -> shadow -> canary -> required` only on the new authenticated surface.
 
-### V7.7.10i.2 — Connection/principal registry + compatibility firewall
+### V7.7.10i.2 — Account/authenticator/connection registry + compatibility firewall
 
-- D1 migrations for tenant, user, connection, principal, wallet-account link, aliases, links, and revocation;
-- server-derived request context;
-- idempotent connect/reconnect;
-- link/unlink/recovery and wallet-rotation policy;
-- confine legacy routes to the existing compatibility realm and deny access to new authenticated-principal private state;
+- prefer a separate authenticated D1 security realm for the canary; if one D1 is used, create separate `auth_*` tables/namespaces and mandatory realm predicates;
+- schema for tenant, account, authenticator, connection, principal, token family, wallet-account link, aliases, memberships, links, revocation, and audit events;
+- server-derived request context and query helpers that always constrain authenticated access by realm + tenant + account/principal;
+- idempotent refresh/reconnect plus explicit new-connection behavior for reinstall/fresh authorization under an existing account;
+- link/unlink/recovery, step-up authentication, authenticator replacement, and wallet-rotation policy;
+- confine legacy routes to the existing compatibility realm and deny access to new authenticated-account/principal private state;
 - audit receipts without secrets.
 
 ### V7.7.10i.3 — AC1/workspace binding
@@ -272,10 +295,12 @@ V7.7.10i is complete only when live tests prove:
 - explicit linking unifies the user view without erasing connection identity;
 - revoking A leaves B working;
 - reconnect/refresh preserves identity without duplicate bootstrap state;
-- audience/resource binding prevents token replay;
+- audience/resource binding prevents cross-resource token replay/substitution; stolen bearer replay against the same CairnStone resource is addressed separately by short access-token lifetime, TLS, refresh rotation/reuse detection, revocation, and later sender-constrained tokens where host support permits;
 - `/mcp/core-auth` preserves principal identity through direct Core calls, broker execution, and dynamically hydrated tools;
 - legacy `/mcp`, `/mcp/core`, and `/mcp-b` remain operational during canary rollback but cannot access new authenticated-principal private state;
-- a zero-balance wallet account can authenticate without payment or spend authority;
+- a CairnStone account can authenticate through the wallet-backed first-canary authenticator with a zero-balance wallet account and without payment or spend authority;
+- rotating/removing a wallet or reinstalling a connector does not replace the durable CairnStone account; a fresh authorization may create a new connection principal while resuming account-owned state;
+- no host-supplied stable installation identifier is required for account continuity;
 - two Perplexity accounts create distinct connection principals even when client family is identical;
 - verified aliases preserve legacy history;
 - secrets never enter Stones, AC1, GitHub, model context, receipts, or logs;

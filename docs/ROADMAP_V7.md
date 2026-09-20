@@ -764,42 +764,75 @@ Canonical detailed plan: `docs/V7_7_10H_SEMANTIC_CAPABILITY_GATEWAY.md`.
 
 ---
 
-### V7.7.10i — Connector-Bound Identity + Zero-Friction Bootstrap
+### V7.7.10i — CairnStone Account Identity + Connector-Bound Authorization
 
-Status: **PRIORITY / REVIEW-READY — chosen first path is a wallet-backed OAuth authenticated Core canary; implementation not started.**
+Status: **P0 / REVIEW-CORRECTED — account-root identity contract accepted for V7.7.10i.0 design work; runtime implementation not started.**
 
-This remains the immediate identity/security gate for ecosystem scale. The first implementation is now deliberately narrower than a full cutover:
+This is the immediate identity/security gate for ecosystem scale. The durable identity root is now the **CairnStone account / Console home**, not a provider account, MCP host installation, wallet account, wallet address, routing alias, or model actor string.
 
-- add `/mcp/core-auth` as a new protected resource;
-- leave `/mcp`, `/mcp/core`, and `/mcp-b` unchanged during canary and rollback;
-- reuse/adapt the x402 sub-agent wallet OAuth/PKCE/token kernel;
-- require a wallet account for sign-on, while allowing automatic zero-balance provisioning and requiring no payment or spend;
-- make immutable `principal_id`—not wallet address, balance, provider label, or client family—the authorization subject;
-- preserve `wallet_account_id` as the SSO/economic account container and keep payment instruments rotatable;
-- propagate principal context through Core, `cairnstone_tool_execute`, `cairnstone_load_tools`, and hydrated tools;
-- confine legacy callers to the existing compatibility realm so they cannot reach new principals' private state;
-- use the second Perplexity account as the first same-provider/multi-account canary;
-- progress `off -> shadow -> canary -> required`, one connector at a time.
+Core chain:
 
-The target UX remains one authorization step: add the CairnStone MCP URL, authorize the wallet-backed CairnStone account once, then receive the correct tenant/user/connection/principal, inboxes, home workspace, baseline tools, Console state, and Persistent Code Mode session. URL possession alone grants no private access. Authentication alone grants no payment, mutation, execution, membership, or delegated-mailbox authority.
+```text
+CairnStone account
+  -> approved authenticator
+  -> OAuth-authorized MCP connection
+  -> immutable connection principal
+  -> mailbox / workspace memberships + entitlements
+  -> existing tool / mutation / execution policy
+```
 
-Advance 10i before new Console feature expansion, broad multi-account onboarding, or StoneLink private/federated work. Close only necessary in-flight safety/merge work. Do not deploy or enforce this design until independent architecture/security review approves the identity separation, token/resource model, broker propagation, compatibility firewall, recovery/revocation rules, and rollback path.
+Economic state stays orthogonal:
+
+```text
+CairnStone account
+  -> optional wallet account link
+  -> explicit economic authority / budget
+  -> x402 or other settlement adapter
+```
+
+The first canary remains additive and reversible:
+
+- add `/mcp/core-auth`; leave `/mcp`, `/mcp/core`, and `/mcp-b` unchanged during canary/rollback;
+- reuse/adapt the x402 OAuth/PKCE/token kernel, but do **not** inherit its single-user/provider-family identity assumptions;
+- use wallet-backed sign-on as the first authenticator path because that lifecycle already exists, while making `account_id` the durable identity root;
+- allow zero-balance wallet-account provisioning with no funding/payment/spend requirement;
+- CairnStone mints `connection_id`, immutable per-connection `principal_id`, and `token_family_id`; no universal stable host installation ID is required;
+- prefer a separate authenticated D1 security realm for the canary, or fail closed with separate `auth_*` tables plus mandatory realm/tenant/principal predicates;
+- carry server-derived identity through Core, `cairnstone_tool_execute`, `cairnstone_load_tools`, hydrated tools, AC1, workspaces, and Persistent Code Mode;
+- prefer current MCP authorization semantics: Protected Resource Metadata, PKCE S256, Client ID Metadata Documents where supported, issuer binding, Resource Indicators, short access tokens, refresh rotation/reuse detection, and revocation;
+- use the second Perplexity account as the first same-provider isolation proof;
+- advance `off -> shadow -> canary -> required` one connector at a time.
+
+Identity invariants:
+
+> **CairnStone account != authenticator != MCP connection != connection principal != wallet account != wallet/payment instrument.**
+
+> **Authentication authority != resource authority != execution authority != mutation authority != economic authority.**
+
+Reconnect semantics are explicit: a valid refresh resumes the same connection/principal; a reinstall or fresh authorization may create a new connection/principal under the same authenticated account while resuming account-owned inbox/workspace/PCM state.
 
 Initial slices:
 
-- `V7.7.10i.0` — wallet-backed OAuth Core-canary contract, x402 auth-kernel extraction plan, threat model, compatibility firewall, independent review;
-- `V7.7.10i.1` — additive `/mcp/core-auth`, OAuth discovery/challenge/PKCE, zero-balance wallet-account sign-on, resource-bound tokens, principal propagation through indirect tools;
-- `V7.7.10i.2` — tenant/user/connection/principal/wallet-account registry, same-provider account uniqueness, server-derived context, legacy-realm isolation;
+- `V7.7.10i.0` — freeze account/authenticator/connection-principal/token-family contracts, authenticated storage realm, current-MCP OAuth profile, threat model, negative fixtures, and independent review;
+- `V7.7.10i.1` — additive `/mcp/core-auth`, first wallet-backed authenticator, resource-bound tokens, issuer binding, refresh rotation/reuse detection, principal propagation through indirect tools;
+- `V7.7.10i.2` — authenticated account/authenticator/connection registry, realm isolation, reconnect/reinstall rules, recovery and wallet/authenticator rotation;
 - `V7.7.10i.3` — AC1 sender/inbox ownership plus workspace/invite principal binding;
-- `V7.7.10i.4` — zero-friction mailbox/workspace/tool/Persistent Code Mode bootstrap;
-- `V7.7.10i.5` — Console account link/unlink/revoke, wallet recovery/rotation, and advanced evidence view;
-- `V7.7.10i.6` — second-Perplexity canary followed by cross-provider, multi-user, replay, revocation, rollback, and isolation acceptance.
+- `V7.7.10i.4` — zero-friction account mailbox/workspace/tool/Persistent Code Mode bootstrap;
+- `V7.7.10i.5` — Console account, authenticators, connections, wallets, tenant selection, link/unlink/revoke/recovery, advanced evidence;
+- `V7.7.10i.6` — second-Perplexity canary followed by cross-provider multi-user replay/revocation/rollback/isolation acceptance.
 
-Hard invariants:
+Acceptance must prove at minimum:
 
-> **Authenticated connection -> immutable principal -> mailbox scope -> memberships and entitlements -> operation permissions.**
-
-> **Principal identity != wallet account != wallet address/payment instrument. Authentication != economic authority.**
+- URL possession grants no private access;
+- legacy callers cannot enumerate/select/act as authenticated principals;
+- account A cannot read/send/claim/session-act as B;
+- two same-provider accounts never collide;
+- one account may hold multiple distinct connection principals;
+- connector reinstall can create a new principal without duplicating or losing account-owned durable state;
+- wallet rotation/removal does not replace the CairnStone account;
+- resource/audience binding blocks cross-resource token replay/substitution; same-resource bearer replay has separate token-lifecycle mitigations;
+- secrets never enter Stones, AC1, GitHub, model context, tool JSON, receipts, or ordinary logs;
+- mutation/execution/economic authority remain governed by their existing explicit policy boundaries.
 
 Canonical detailed contract: `docs/V7_7_10I_CONNECTOR_BOUND_IDENTITY.md`.
 
@@ -1269,7 +1302,7 @@ V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (ACTIVE EVOLUTION �
         ↓
 V7.7.10g/10h Context Retention + Semantic Capability Gateway (IN PROGRESS — deterministic decision contract -> first-party Workers AI scorer -> optional Jev/BYOK adapters -> Persistent Code Mode / Tool Vault integration)
         ↓
-V7.7.10i Connector-Bound Identity + Zero-Friction Bootstrap (P0 / REVIEW-GATED — wallet-backed OAuth `/mcp/core-auth` canary -> immutable connection principal -> legacy compatibility firewall -> second-Perplexity isolation proof -> AC1/workspace/PCM bootstrap; gate before new Console expansion)
+V7.7.10i CairnStone Account Identity + Connector-Bound Authorization (P0 / REVIEW-CORRECTED — Console/account root -> wallet-backed first authenticator -> OAuth `/mcp/core-auth` connection -> immutable per-connection principal -> authenticated storage realm -> second-Perplexity isolation proof -> AC1/workspace/PCM bootstrap; gate before new Console expansion)
         ↓
 V7.7.11 Mobile Home / Guided Mode / Safe Adaptive UI (PLANNED — Console-first iPhone PWA + compact dashboard + semantic guide targets + declarative bounded surface composer; standalone repo gated on multi-source proof)
         ↓
