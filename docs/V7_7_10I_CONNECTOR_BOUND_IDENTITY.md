@@ -1,6 +1,6 @@
 # V7.7.10i — Connector-Bound Identity + Zero-Friction Bootstrap
 
-Status: **PRIORITY / ARCHITECTURE-ACCEPTED — implementation not started.**
+Status: **PRIORITY / REVIEW-READY ARCHITECTURE — chosen first path accepted; implementation not started.**
 
 Priority: **P0 identity gate. Advance before new Console feature expansion, broad multi-account onboarding, or federation work.** Close only necessary in-flight safety/merge work while this contract is stabilized.
 
@@ -140,29 +140,96 @@ Health, OAuth/MCP discovery, public documentation, intentionally public capabili
 
 Private tools, inboxes, workspaces, Code Sessions, grants, and user data require an authenticated principal. Endpoint knowledge alone yields public metadata or `401`, never private access.
 
+## Chosen first implementation path — wallet-backed authenticated Core canary
+
+The first implementation is intentionally additive and reversible:
+
+1. Add a new protected MCP resource at `/mcp/core-auth`; do not change `/mcp`, `/mcp/core`, or `/mcp-b` during the canary.
+2. Reuse the proven OAuth/PKCE/token lifecycle from `nothinginfinity/x402-sub-agent-mcp` as the upstream authentication kernel, adapted into a CairnStone resource binding.
+3. Require a wallet **account** as the CairnStone sign-on container, but never require funding, payment, or spending to authenticate. A new user may receive an automatically provisioned zero-balance account.
+4. Issue a CairnStone Core resource-bound token whose immutable `principal_id` is the authorization subject.
+5. Carry the authenticated principal through `cairnstone_tool_execute`, `cairnstone_load_tools`, and every dynamically hydrated tool. Indirect execution must not lose or replace identity.
+6. Use the second Perplexity account as the first live same-provider/multi-account canary.
+7. Advance enforcement through `off -> shadow -> canary -> required`, with an immediate rollback to the unchanged legacy routes.
+
+### Identity and economic separation
+
+| Layer | Purpose | Stability / authority |
+|---|---|---|
+| `principal_id` | CairnStone authentication and authorization subject | Immutable; owns access decisions and audit history |
+| `wallet_account_id` | OAuth/SSO account container and future economic relationship | Stable account link; may exist with zero balance and no spend authority |
+| wallet IDs / addresses / payment instruments | Funding and settlement endpoints | Rotatable/recoverable; never principal identity |
+
+Authentication proves control of the wallet account relationship. It does not grant payment, execution, mutation, workspace membership, or mailbox delegation by itself. Economic authority remains a separate, explicit grant.
+
+### What can be reused from x402
+
+The x402 service already demonstrates authorization code + PKCE, protected-resource challenges and discovery, hashed access/refresh tokens, rotation and revocation, resource/audience binding, audit evidence, wallet-ownership authorization sessions, and trusted client-family detection. These should be extracted or adapted as a shared auth kernel rather than rewritten without cause.
+
+The current x402 identity assumptions are **not** reusable as-is:
+
+- its OAuth subject lookup is single-user-oriented;
+- a trusted family key such as `fam:perplexity` distinguishes providers but cannot distinguish two accounts within one provider;
+- wallet selection, budgets, and payment capture are broader than the credential needed to enter CairnStone;
+- the service is a policy/bookkeeping layer and does not hold wallet private keys.
+
+CairnStone therefore needs its own connection-principal registry keyed by the authorization grant/installation, with optional links to a wallet account and provider/client evidence.
+
+### Compatibility firewall / non-lockout invariant
+
+The canary must preserve today's working system while preventing legacy access from becoming a cross-tenant bypass:
+
+- existing `/mcp`, `/mcp/core`, and `/mcp-b` behavior remains unchanged during the canary;
+- `/mcp-b` remains the full-catalog twin and is never repurposed as an auth endpoint;
+- legacy routes remain confined to the existing single-tenant compatibility realm;
+- legacy callers cannot select, impersonate, or read newly created authenticated principals or their private state;
+- new users default to authenticated Core after the canary is accepted;
+- migrate one connector at a time; retire legacy access only after parity, rollback, and multi-account isolation are proven;
+- authentication failure on the canary cannot disable the unchanged legacy routes.
+
+A second `/mcp/core-auth-b` route is unnecessary unless a real client-cache incompatibility proves that a twin is required.
+
+### Review gate before implementation
+
+Independent architecture/security review must explicitly approve:
+
+- the three-layer principal/account/instrument separation;
+- issuer, audience/resource, subject, connection, scope, revocation, and replay semantics;
+- same-provider multi-account uniqueness and recovery/linking behavior;
+- propagation of server-derived principal context through brokered and hydrated tools;
+- the compatibility firewall and rollback path;
+- zero-balance authentication without implicit spend authority;
+- secret isolation from Stones, AC1, GitHub, tool JSON, model context, and ordinary logs.
+
+No auth enforcement, route replacement, or deployment is authorized by this document alone.
+
 ## Implementation slices
 
-### V7.7.10i.0 — Contract and threat model
+### V7.7.10i.0 — Wallet-backed OAuth Core canary contract + threat model
 
-- freeze `cairnstone-connection-principal-v1`;
-- inventory every route/tool that accepts actor, sender, recipient, capability, workspace, or Code Session identity;
-- model spoofing, confused-deputy, replay, alias collision, cross-tenant, revocation, and recovery threats;
-- define the public/protected endpoint matrix and negative fixtures.
+- freeze `cairnstone-connection-principal-v1` plus the principal/wallet-account/payment-instrument separation;
+- inventory every route/tool that accepts actor, sender, recipient, capability, workspace, Code Session, or economic identity;
+- extract/adapt the reusable x402 OAuth kernel and remove the single-subject/provider-family collision assumptions;
+- define `/mcp/core-auth`, the legacy compatibility realm, enforcement modes, rollback, and negative fixtures;
+- model spoofing, confused-deputy, replay, alias collision, cross-tenant, revocation, recovery, wallet rotation, and same-provider multi-account threats;
+- complete independent architecture/security review before implementation or deployment.
 
-### V7.7.10i.1 — OAuth protected-resource gateway
+### V7.7.10i.1 — Additive authenticated Core canary
 
-- protected-resource/authorization-server discovery;
-- authorization code + PKCE;
+- protected-resource/authorization-server discovery and authorization code + PKCE;
+- wallet-account sign-on with automatic zero-balance provisioning; no funding or spend requirement;
 - token lifecycle, resource/audience validation, revocation, and consistent `401`/`403`;
-- protect `/mcp`, `/mcp-b`, and private HTTP APIs;
-- twin paths share one authority surface and never create separate principals.
+- add `/mcp/core-auth` while leaving `/mcp`, `/mcp/core`, and `/mcp-b` unchanged;
+- propagate the server-derived principal through `cairnstone_tool_execute`, `cairnstone_load_tools`, and hydrated tools;
+- enforce `off -> shadow -> canary -> required` only on the new authenticated surface.
 
-### V7.7.10i.2 — Connection/principal registry
+### V7.7.10i.2 — Connection/principal registry + compatibility firewall
 
-- D1 migrations for tenant, user, connection, principal, aliases, links, and revocation;
+- D1 migrations for tenant, user, connection, principal, wallet-account link, aliases, links, and revocation;
 - server-derived request context;
 - idempotent connect/reconnect;
-- link/unlink/recovery policy;
+- link/unlink/recovery and wallet-rotation policy;
+- confine legacy routes to the existing compatibility realm and deny access to new authenticated-principal private state;
 - audit receipts without secrets.
 
 ### V7.7.10i.3 — AC1/workspace binding
@@ -206,7 +273,10 @@ V7.7.10i is complete only when live tests prove:
 - revoking A leaves B working;
 - reconnect/refresh preserves identity without duplicate bootstrap state;
 - audience/resource binding prevents token replay;
-- `/mcp` and `/mcp-b` share identity/authority;
+- `/mcp/core-auth` preserves principal identity through direct Core calls, broker execution, and dynamically hydrated tools;
+- legacy `/mcp`, `/mcp/core`, and `/mcp-b` remain operational during canary rollback but cannot access new authenticated-principal private state;
+- a zero-balance wallet account can authenticate without payment or spend authority;
+- two Perplexity accounts create distinct connection principals even when client family is identical;
 - verified aliases preserve legacy history;
 - secrets never enter Stones, AC1, GitHub, model context, receipts, or logs;
 - Console and Persistent Code Mode work after first authorization;
