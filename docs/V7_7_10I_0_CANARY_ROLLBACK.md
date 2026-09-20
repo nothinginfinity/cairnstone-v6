@@ -44,7 +44,7 @@ Rollback is successful when legacy clients still complete health + Core tools on
 
 - these four freeze docs are on Git `main` and accepted as path HEADs (separate accept step);
 - independent review residual-risk statement on stolen bearer is acknowledged;
-- CIMD SSRF policy is frozen in the auth kernel design notes;
+- CIMD SSRF policy is frozen in these accepted 10i.0 contract/design notes;
 - the account contract uses `home_tenant_id` plus relational tenant memberships, and connection principals bind only validated active tenants;
 - `cairnstone-token-family-v1` plus rotation/revocation/stale-authorization-version lifecycle fixtures are frozen;
 - identity-bearing fields are classified as server-derived caller, checked caller assertion, authorized target selector, or resource selector;

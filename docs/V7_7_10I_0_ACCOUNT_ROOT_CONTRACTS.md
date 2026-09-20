@@ -161,11 +161,12 @@ DCR remains compatibility-only and disabled unless an explicit canary flag is on
 
 This rule applies only to caller-identity claims and mailbox-owner assertions. It does not turn legitimate target selectors such as `to`, `assignee_actor_id`, `principal_actor_id`, or `selected_actors` into caller-identity fields; targets are separately authorized by operation policy.
 
-Caller-supplied `from`, `recipient_id`, `actor_id`, `account_id`, `tenant_id`, `principal_id`, or `connection_id`:
+Caller-supplied `from`, `recipient_id`, `actor_id`, `account_id`, `tenant_id`, `principal_id`, or `connection_id` when used as caller assertions:
 
 1. If omitted: use server-derived context only.
-2. If present and equal to the authenticated principal (or an alias already bound to it): accept as assertion.
-3. Else: `403` fail-closed. Never rewrite, never impersonate, never “helper select.”
+2. For `account_id`, `tenant_id`, `principal_id`, and `connection_id`, a present value MUST equal its corresponding server-derived context value.
+3. For `from`, `recipient_id`, and `actor_id`, a present value MUST resolve to the authenticated principal or to an alias/delegated mailbox already authorized for that principal.
+4. Otherwise: `403` fail-closed. Never rewrite, never impersonate, never “helper select.”
 
 ## Authenticator and token-family revocation
 
