@@ -23,28 +23,35 @@ This context is outside model-controlled JSON. Hydrated tools and `cairnstone_to
 
 No `/mcp/core-auth-b` unless a live client-cache incompatibility proves it.
 
-## Tools that currently accept actor/mailbox identity (must bind or assert)
+## Identity-field classes
 
-These accept `recipient_id`, `from`/`to`, `actor_id`, or equivalent and MUST apply the migration assertion rule on core-auth:
+Every identity-bearing input on core-auth MUST be classified by field, not merely by tool:
 
-- `cairnstone_send_message`, `cairnstone_dispatch_handoff`
-- `cairnstone_get_inbox`, `cairnstone_list_threads`, `cairnstone_get_thread`, `cairnstone_read_message`
-- `cairnstone_note_self`, `cairnstone_get_notes`
-- `cairnstone_run_task_request`
-- `cairnstone_mailbox_policy_preview`
-- `cairnstone_forward_with_note`
-- `cairnstone_access_grant_*` (`principal_actor_id`, `grantor`)
-- `cairnstone_task_run_propose` / `get` / `list` / `dispatch` / `cancel` (requester, assignee, `committed_by`)
-- `cairnstone_conversation_session_*` (`created_by`, `selected_actors`)
-- `cairnstone_agent_bootstrap` (`actor_id`)
-- `cairnstone_tool_authorization_prepare` / `request` (`actor`)
-- `cairnstone_workspace_invite_claim` (claimant MUST be server principal)
-- `cairnstone_code_session_*` membership + `write_draft` actor
-- `cairnstone_intent_route` (never auto-mutate; still must not honor foreign actor claims)
+- `SERVER_DERIVED_CALLER` — authoritative current caller from the validated token/context; caller JSON is never trusted to replace it.
+- `CHECKED_CALLER_ASSERTION` — legacy-compatible assertion of caller/mailbox ownership. If omitted, use server context; if present, it must match the authenticated principal or an already-authorized delegated alias.
+- `AUTHORIZED_TARGET_SELECTOR` — names another recipient, assignee, grantee, selected actor, or worker. It may differ from the caller only when the operation's existing policy authorizes that target; it never changes caller identity.
+- `RESOURCE_SELECTOR` — workspace, Code Session, object, tenant, checkpoint, receipt, or similar identifier. It may select only resources visible to the server-derived principal under validated tenant/membership/grant constraints.
+
+Target selection is not impersonation. Do not apply the caller-assertion equality rule to `to`, `assignee_actor_id`, `principal_actor_id`, `selected_actors`, or equivalent legitimate target fields.
+
+## Tool identity mapping
+
+- `cairnstone_send_message`, `cairnstone_dispatch_handoff`, `cairnstone_forward_with_note`: `from` / actor is `SERVER_DERIVED_CALLER` or `CHECKED_CALLER_ASSERTION`; `to` is `AUTHORIZED_TARGET_SELECTOR`.
+- `cairnstone_get_inbox`, `cairnstone_list_threads`, `cairnstone_get_thread`, `cairnstone_read_message`: `recipient_id` is `CHECKED_CALLER_ASSERTION` unless an explicit delegated-mailbox grant authorizes another mailbox.
+- `cairnstone_note_self`, `cairnstone_get_notes`: owner/actor is `SERVER_DERIVED_CALLER`; foreign targets are not valid.
+- `cairnstone_run_task_request`: requester is `SERVER_DERIVED_CALLER`; `worker_actor_id` is `AUTHORIZED_TARGET_SELECTOR` and still requires the signed mailbox capability.
+- `cairnstone_mailbox_policy_preview`: caller/from is a checked caller assertion; `to` entries are authorized target selectors for preview only.
+- `cairnstone_access_grant_*`: grantor is the server caller/checked assertion; `principal_actor_id` is `AUTHORIZED_TARGET_SELECTOR`; `object_ref` is `RESOURCE_SELECTOR`.
+- `cairnstone_task_run_propose` / `get` / `list` / `dispatch` / `cancel`: requester / `committed_by` is caller identity; assignee is `AUTHORIZED_TARGET_SELECTOR`; task/object refs are resource selectors.
+- `cairnstone_conversation_session_*`: `created_by` / actor is caller identity; `selected_actors` are authorized targets; workspace/session/repo/chain refs are resource selectors.
+- `cairnstone_agent_bootstrap` and `cairnstone_tool_authorization_prepare` / `request`: actor is caller identity.
+- `cairnstone_workspace_invite_claim`: claimant is the server-derived caller; invite is a resource selector and still requires its mailbox proof.
+- `cairnstone_code_session_*`: membership/write actor is caller identity; workspace/session/path/checkpoint/receipt identifiers are resource selectors.
+- `cairnstone_intent_route`: actor is caller identity; known/selected actors are target hints only. It remains proposal-only and never auto-mutates.
 
 ## Tools that accept workspace / Code Session / economic identity
 
-Must constrain by realm + tenant + principal membership; caller IDs may only narrow:
+`RESOURCE_SELECTOR` fields must constrain by realm + tenant + principal membership; they never replace caller identity or widen membership. Economic targets may name another object only through existing explicit grants/policy:
 
 - all `cairnstone_workspace_*`
 - all `cairnstone_code_session_*`, checkpoint, lease, sandbox, execution receipt, environment manifest

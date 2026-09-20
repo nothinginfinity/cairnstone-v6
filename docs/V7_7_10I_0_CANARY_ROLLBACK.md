@@ -6,10 +6,12 @@ Status: **CONTRACT FREEZE.** Authentication failure on the canary MUST NOT disab
 
 `off -> shadow -> canary -> required`
 
-- `off`: route may exist for discovery tests; tokens not required for tools (must not be used with real users).
-- `shadow`: validate tokens when present; do not deny legacy-equivalent reads; emit audit only.
-- `canary`: selected connections (second Perplexity account first) require tokens; others stay on legacy URLs.
-- `required`: new users default to core-auth. Legacy still up until parity + this rollback file’s exit criteria.
+- `off`: core-auth is not published/usable for protected tools. Discovery may be probed, but protected tool calls fail closed; there is no unauthenticated core-auth execution mode.
+- `shadow`: authentication is mandatory. A valid bearer and server-derived principal are required; only downstream authorization/policy differences may be audit-only. Realm/tenant/principal isolation is enforced, never shadowed.
+- `canary`: selected connections (second Perplexity account first) are admitted and require valid tokens; non-selected callers remain on unchanged legacy URLs. Any protected request reaching core-auth without a valid token gets `401`.
+- `required`: new users default to core-auth. Legacy stays up until parity + this rollback file’s exit criteria.
+
+The ladder controls rollout/admission, not whether authentication exists. Once a protected tool request reaches core-auth, authentication is never optional.
 
 Legacy `/mcp`, `/mcp/core`, `/mcp-b` never enter this ladder in 10i.1.
 
@@ -42,7 +44,11 @@ Rollback is successful when legacy clients still complete health + Core tools on
 
 - these four freeze docs are on Git `main` and accepted as path HEADs (separate accept step);
 - independent review residual-risk statement on stolen bearer is acknowledged;
-- CIMD SSRF policy is implemented in the auth kernel design notes;
+- CIMD SSRF policy is frozen in the auth kernel design notes;
+- the account contract uses `home_tenant_id` plus relational tenant memberships, and connection principals bind only validated active tenants;
+- `cairnstone-token-family-v1` plus rotation/revocation/stale-authorization-version lifecycle fixtures are frozen;
+- identity-bearing fields are classified as server-derived caller, checked caller assertion, authorized target selector, or resource selector;
+- shadow/canary semantics keep authentication mandatory on protected core-auth tool calls;
 - x402 kernel reuse excludes single-subject and `fam:<provider>` as uniqueness.
 
 ## Non-goals
