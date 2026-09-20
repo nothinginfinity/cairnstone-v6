@@ -678,6 +678,7 @@ Family slices (authoritative; do not invent alternate numbering):
 - `V7.7.10f` — Live Event Plane + Agent Tree
 - `V7.7.10g` — Context Retention Plane / Semantic Working-Set GC (**planned after 10f acceptance**)
 - `V7.7.10h` — Semantic Capability Gateway / Decision Plane (**planned; shared decision layer for tools, retrieval, routing, and Persistent Code Mode**)
+- `V7.7.10i` — Connector-Bound Identity + Zero-Friction Bootstrap (**P0 identity gate; advance before new Console feature expansion, multi-account onboarding, and federation**)
 
 Conversation Session is operational D1 only (`accepted_state_authority: false`); it never moves chain/path HEADs and never bulk-promotes chat history into project memory.
 
@@ -763,7 +764,35 @@ Canonical detailed plan: `docs/V7_7_10H_SEMANTIC_CAPABILITY_GATEWAY.md`.
 
 ---
 
-### V7.7.11 — Mobile Home Surface / Installable PWA Dashboard + Guided/Adaptive UI
+### V7.7.10i — Connector-Bound Identity + Zero-Friction Bootstrap
+
+Status: **PRIORITY / ARCHITECTURE-ACCEPTED — implementation not started.**
+
+This is the immediate identity/security gate for ecosystem scale. CairnStone must bind each authenticated MCP connection to an immutable server-issued principal so many users can share one provider and one user can safely connect multiple accounts. Actor IDs remain friendly routing aliases, never credentials.
+
+The target UX is one authorization step: add the CairnStone MCP URL, authorize once, then automatically receive the correct tenant/user/connection/principal, inboxes, home workspace, baseline tools, Console state, and Persistent Code Mode session. URL possession alone grants no private access.
+
+Advance 10i before new Console feature expansion, broad multi-account onboarding, or StoneLink private/federated work. Existing in-flight safety/merge work may be deliberately closed, but should not deepen caller-supplied identity.
+
+Initial slices:
+
+- `V7.7.10i.0` — connection-principal contract, threat model, endpoint/tool inventory;
+- `V7.7.10i.1` — OAuth protected-resource discovery, authorization code + PKCE, token/resource validation, revocation;
+- `V7.7.10i.2` — tenant/user/connection/principal/alias registry and server-derived request context;
+- `V7.7.10i.3` — AC1 sender/inbox ownership plus workspace/invite principal binding;
+- `V7.7.10i.4` — zero-friction mailbox/workspace/tool/Persistent Code Mode bootstrap;
+- `V7.7.10i.5` — Console account link/unlink/revoke and advanced evidence view;
+- `V7.7.10i.6` — cross-provider, multi-user, multi-account, replay, revocation, and isolation acceptance.
+
+Hard invariant:
+
+> **Authenticated connection -> immutable principal -> mailbox scope -> memberships and entitlements -> operation permissions.**
+
+Canonical detailed contract: `docs/V7_7_10I_CONNECTOR_BOUND_IDENTITY.md`.
+
+---
+
+## V7.7.11 — Mobile Home Surface / Installable PWA Dashboard + Guided/Adaptive UI
 
 Status: **PLANNED / AFTER V7.7.10 ACCEPTANCE.** Start inside `nothinginfinity/cairnstone-v6-console`, using the proven InfinityPaste PWA pattern. First deliver an installable iPhone Home Screen PWA and compact CairnStone dashboard, then test a generalized `Source + View + Action + Appearance` surface schema. Do **not** create a standalone repo until the schema proves useful across at least three distinct sources/products including a non-CairnStone source and the renderer/configuration lifecycle is clearly separable from Console releases. No new accepted-state or execution authority is introduced.
 
@@ -1226,6 +1255,8 @@ V7.6 Context Efficiency & MCP Surface Optimization (COMPLETE + LIVE-ACCEPTED —
 V7.7 Vault / Workspace Navigation + Multi-Chain Intelligence (ACTIVE EVOLUTION — V7.7.7f complete/live; V7.7.8 Progressive Grounded Chat LOD next; V7.7.9 Console UX Architecture after)
         ↓
 V7.7.10g/10h Context Retention + Semantic Capability Gateway (IN PROGRESS — deterministic decision contract -> first-party Workers AI scorer -> optional Jev/BYOK adapters -> Persistent Code Mode / Tool Vault integration)
+        ↓
+V7.7.10i Connector-Bound Identity + Zero-Friction Bootstrap (P0 / IMMEDIATE — OAuth protected resource -> connection principal -> AC1/workspace binding -> automatic inbox/workspace/PCM bootstrap -> multi-account acceptance; gate before new Console expansion)
         ↓
 V7.7.11 Mobile Home / Guided Mode / Safe Adaptive UI (PLANNED — Console-first iPhone PWA + compact dashboard + semantic guide targets + declarative bounded surface composer; standalone repo gated on multi-source proof)
         ↓
