@@ -232,6 +232,23 @@ import {
   routeExecutorFromBody,
   EXECUTOR_MCP_TOOL_DEFINITIONS
 } from "./executor-profile.js";
+import {
+  CORE_AUTH_RESOURCE_PATH,
+  assertCallerIdentity,
+  assertResourceSelectors,
+  authorizationServerMetadata,
+  canonicalCoreAuthResource,
+  enforceCoreAuthRequest,
+  handleOauthAuthorizeRequest,
+  handleOauthRegisterRequest,
+  handleOauthRevokeRequest,
+  handleOauthTokenRequest,
+  injectServerDerivedCaller,
+  isProtectedMcpRpc,
+  protectedResourceMetadata,
+  resolveEnforcementMode,
+  wwwAuthenticateChallenge
+} from "./core-auth.js";
 
 const VERSION = "0.5.43";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
@@ -277,6 +294,67 @@ export default {
       // a distinct connector and force a fresh tools/list fetch after a tool-schema deploy.
       // No new logic, no new bindings, no new identity -- same handleMcp, same env, same D1/R2.
       if (url.pathname === "/mcp-b") return handleMcp(request, env, url);
+      // V7.7.10i.1 additive authenticated Core canary. Legacy routes above are unchanged.
+      // Deploy / required-mode / runtime bump are NOT authorized by this slice.
+      if (url.pathname === "/mcp/core-auth") return handleMcp(request, env, url, { core: true, auth: true });
+      // Path-only PRM (RFC 9728). Do not publish a root well-known PRM that could
+      // confuse legacy /mcp discovery with the authenticated Core resource.
+      if (request.method === "GET" && url.pathname === `/.well-known/oauth-protected-resource${CORE_AUTH_RESOURCE_PATH}`) {
+        return json(protectedResourceMetadata(env, url));
+      }
+      if (request.method === "GET" && (url.pathname === "/.well-known/oauth-authorization-server" || url.pathname === "/oauth/.well-known/oauth-authorization-server")) {
+        return json(authorizationServerMetadata(env, url));
+      }
+      if ((request.method === "GET" || request.method === "POST") && url.pathname === "/oauth/authorize") {
+        let params;
+        if (request.method === "GET") {
+          params = Object.fromEntries(url.searchParams.entries());
+        } else {
+          const ct = request.headers.get("content-type") || "";
+          if (ct.includes("application/x-www-form-urlencoded")) {
+            params = Object.fromEntries(new URLSearchParams(await request.text()).entries());
+          } else {
+            params = await request.json().catch(() => ({}));
+          }
+        }
+        const result = await handleOauthAuthorizeRequest(params, env, url);
+        if (!result.ok) {
+          return json({ error: result.error, error_description: result.detail || result.error }, result.status || 400);
+        }
+        const accept = request.headers.get("accept") || "";
+        if (accept.includes("application/json") || params.response_mode === "json") {
+          return json({
+            ok: true,
+            redirect_uri: result.redirect_uri,
+            code: result.code,
+            iss: result.iss,
+            state: result.state || undefined,
+            account_id: result.account_id
+          });
+        }
+        return withCors(Response.redirect(result.redirect_uri, 302));
+      }
+      if (request.method === "POST" && url.pathname === "/oauth/token") {
+        const body = await request.json().catch(() => ({}));
+        const result = await handleOauthTokenRequest(body, env, url);
+        return json(result.ok === false ? { error: result.error, error_description: result.reason || result.detail || result.error } : {
+          access_token: result.access_token,
+          refresh_token: result.refresh_token,
+          token_type: result.token_type,
+          expires_in: result.expires_in,
+          scope: result.scope
+        }, result.ok === false ? (result.status || 400) : 200);
+      }
+      if (request.method === "POST" && url.pathname === "/oauth/revoke") {
+        const body = await request.json().catch(() => ({}));
+        const result = await handleOauthRevokeRequest(body, env);
+        return json(result.ok === false ? { error: result.error } : {}, result.ok === false ? (result.status || 400) : 200);
+      }
+      if (request.method === "POST" && url.pathname === "/oauth/register") {
+        const body = await request.json().catch(() => ({}));
+        const result = await handleOauthRegisterRequest(body, env);
+        return json(result.ok === false ? { error: result.error } : result, result.ok === false ? (result.status || 403) : 201);
+      }
       if (request.method === "GET" && url.pathname === "/") return json(landing(env, url));
       if (request.method === "GET" && url.pathname === "/health") return json(health(env));
       if (request.method === "GET" && url.pathname === "/v1/stones") return json(await listStones(env, url));
@@ -629,7 +707,9 @@ function landing(env, url) {
     protocol: "FSL-CCR Stone v6",
     mcp: `${url.origin}/mcp`,
     mcp_core: `${url.origin}/mcp/core`,
-    message: "CairnStone v6 is live. Isolated successor to cairnstone-v5. Claude and other MCP clients should connect to /mcp for the full legacy catalog, or /mcp/core for the V7.6.2a bounded deferred-tool boot surface (search/hydrate/execute the rest generically). REST clients can use /health, /v1/stones, /v1/stones/github, /v1/search, and /v1/expand.",
+    mcp_core_auth: `${url.origin}/mcp/core-auth`,
+    core_auth_enforcement: resolveEnforcementMode(env),
+    message: "CairnStone v6 is live. Isolated successor to cairnstone-v5. Claude and other MCP clients should connect to /mcp for the full legacy catalog, or /mcp/core for the V7.6.2a bounded deferred-tool boot surface (search/hydrate/execute the rest generically). Additive /mcp/core-auth is the authenticated Core canary (V7.7.10i.1); legacy URLs stay unchanged. REST clients can use /health, /v1/stones, /v1/stones/github, /v1/search, and /v1/expand.",
     base_url: url.origin,
     health: `${url.origin}/health`,
     d1: Boolean(env.CAIRNSTONE_DB),
@@ -656,7 +736,9 @@ function health(env) {
     // catalog tool remains reachable generically via
     // cairnstone_tool_search -> cairnstone_get_tool_contract ->
     // cairnstone_tool_execute (or the full /mcp surface directly).
-    mcp_core_tools: [...CORE_TOOL_NAMES]
+    mcp_core_tools: [...CORE_TOOL_NAMES],
+    mcp_core_auth: "/mcp/core-auth",
+    core_auth_enforcement: resolveEnforcementMode(env)
   };
 }
 
@@ -670,6 +752,15 @@ function routes() {
     "GET /mcp/core",
     "POST /mcp-b",
     "GET /mcp-b",
+    "POST /mcp/core-auth",
+    "GET /mcp/core-auth",
+    "GET /.well-known/oauth-protected-resource/mcp/core-auth",
+    "GET /.well-known/oauth-authorization-server",
+    "GET /oauth/authorize",
+    "POST /oauth/authorize",
+    "POST /oauth/token",
+    "POST /oauth/revoke",
+    "POST /oauth/register",
     "POST /v1/stones",
     "GET /v1/stones",
     "POST /v1/stones/github",
@@ -821,18 +912,26 @@ function annotateNotificationDelivery(rpcResultEnvelope, delivered) {
 
 async function handleMcp(request, env, url, options = {}) {
   const core = options.core === true;
+  const auth = options.auth === true;
+  const endpointPath = auth ? "/mcp/core-auth" : (core ? "/mcp/core" : "/mcp");
 
   if (request.method === "GET") {
     return json({
       ok: true,
-      name: core ? "cairnstone-v6-mcp-core" : "cairnstone-v6-mcp",
+      name: auth ? "cairnstone-v6-mcp-core-auth" : (core ? "cairnstone-v6-mcp-core" : "cairnstone-v6-mcp"),
       version: VERSION,
       protocol: "MCP JSON-RPC over HTTP",
-      profile: core ? "deferred_tool_vault_core" : "legacy_full",
-      endpoint: `${url.origin}${core ? "/mcp/core" : "/mcp"}`,
+      profile: auth ? "deferred_tool_vault_core_auth" : (core ? "deferred_tool_vault_core" : "legacy_full"),
+      endpoint: `${url.origin}${endpointPath}`,
       methods: ["initialize", "tools/list", "tools/call"],
       tools: mcpToolsForProfile(core).map(tool => ({ name: tool.name, description: tool.description })),
-      note: core ? "Bounded V7.6.2a boot surface plus V7.6.2b experimental native tool hydration via cairnstone_load_tools. Every other catalog tool remains reachable generically via cairnstone_tool_search -> cairnstone_get_tool_contract -> cairnstone_tool_policy_preview -> cairnstone_tool_execute, or from the full /mcp surface." : undefined
+      auth_required_for_protected_tools: auth === true,
+      enforcement: auth ? resolveEnforcementMode(env) : undefined,
+      resource: auth ? canonicalCoreAuthResource(env, url) : undefined,
+      residual_risk_stolen_bearer_replay: auth ? "documented_not_solved" : undefined,
+      note: auth
+        ? "V7.7.10i.1 additive authenticated Core canary. Protected tools/call require a CairnStone Bearer token. Legacy /mcp, /mcp/core, and /mcp-b are unchanged. Stolen same-resource bearer replay remains residual risk until sender-constrained tokens are host-supported."
+        : (core ? "Bounded V7.6.2a boot surface plus V7.6.2b experimental native tool hydration via cairnstone_load_tools. Every other catalog tool remains reachable generically via cairnstone_tool_search -> cairnstone_get_tool_contract -> cairnstone_tool_policy_preview -> cairnstone_tool_execute, or from the full /mcp surface." : undefined)
     });
   }
 
@@ -841,6 +940,10 @@ async function handleMcp(request, env, url, options = {}) {
   // V7.6.2b: DELETE terminates this session's experimental native-hydration
   // overlay. This is transport/runtime cleanup only -- it never touches
   // chain_heads/path_heads and grants no execution/mutation authority.
+  // NOTE (10i.1): DELETE on /mcp/core-auth currently skips the Bearer auth gate
+  // (same as discovery). It only clears ephemeral mcp_core_sessions hydration
+  // state and cannot read auth_* private rows. Documented residual; tighten if
+  // session-store abuse becomes a concern.
   if (request.method === "DELETE") {
     if (!core) return withSession(json({ ok: true, note: "No session state on the full /mcp profile." }), sessionId);
     if (!env.CAIRNSTONE_DB) return withSession(json({ ok: false, error: "mcp_session_store_unavailable" }, 503), sessionId);
@@ -857,6 +960,36 @@ async function handleMcp(request, env, url, options = {}) {
     return mcpRespond(request, rpcError(null, -32700, "Parse error"), sessionId, 400);
   }
 
+  // V7.7.10i.1: once a protected tool request reaches core-auth, authentication
+  // is never optional. Ladder controls admission/publication only.
+  let authContext = null;
+  if (auth) {
+    const gate = await enforceCoreAuthRequest(request, env, url, {
+      isProtectedToolCall: isProtectedMcpRpc(rpc)
+    });
+    if (!gate.ok) {
+      const headers = new Headers({
+        "content-type": "application/json",
+        "cache-control": "no-store",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type,Authorization,Mcp-Session-Id",
+        "Access-Control-Expose-Headers": "Mcp-Session-Id,WWW-Authenticate"
+      });
+      if (gate.headers?.["WWW-Authenticate"]) {
+        headers.set("WWW-Authenticate", gate.headers["WWW-Authenticate"]);
+      } else if (gate.status === 401) {
+        headers.set("WWW-Authenticate", wwwAuthenticateChallenge(env, url));
+      }
+      if (sessionId) headers.set("Mcp-Session-Id", sessionId);
+      return new Response(JSON.stringify(gate.body || { ok: false, error: "unauthorized" }), {
+        status: gate.status || 401,
+        headers
+      });
+    }
+    authContext = gate.context || null;
+  }
+
   const accept = request.headers.get("accept") || "";
   const sseCapable = accept.includes("text/event-stream");
 
@@ -867,7 +1000,7 @@ async function handleMcp(request, env, url, options = {}) {
     // portable_fallback_required:true rather than guessing at delivery.
     const results = [];
     for (const item of rpc) {
-      const dispatched = await handleMcpRpc(item, env, { core, sessionId });
+      const dispatched = await handleMcpRpc(item, env, { core, sessionId, auth, authContext });
       if (!dispatched) continue;
       const result = dispatched.rpcResult ? annotateNotificationDelivery(dispatched.rpcResult, false) : dispatched;
       results.push(result);
@@ -876,7 +1009,7 @@ async function handleMcp(request, env, url, options = {}) {
     return mcpRespond(request, results, sessionId);
   }
 
-  const dispatched = await handleMcpRpc(rpc, env, { core, sessionId });
+  const dispatched = await handleMcpRpc(rpc, env, { core, sessionId, auth, authContext });
   if (!dispatched) return withSession(withCors(new Response(null, { status: 202 })), sessionId);
   const notifications = Array.isArray(dispatched.notifications) ? dispatched.notifications : [];
   let result = dispatched.rpcResult ? dispatched.rpcResult : dispatched;
@@ -959,6 +1092,8 @@ function wrapToolResult(id, output) {
 
 export async function handleMcpRpc(rpc, env, options = {}) {
   const core = options.core === true;
+  const auth = options.auth === true;
+  const authContext = options.authContext || null;
   const sessionId = options.sessionId || null;
   const id = rpc && Object.prototype.hasOwnProperty.call(rpc, "id") ? rpc.id : null;
   const method = rpc && rpc.method;
@@ -978,7 +1113,10 @@ export async function handleMcpRpc(rpc, env, options = {}) {
       return rpcResult(id, {
         protocolVersion: (typeof params.protocolVersion === "string" && params.protocolVersion) ? params.protocolVersion : MCP_PROTOCOL_VERSION,
         capabilities: { tools: sessionEstablished ? { listChanged: true } : {} },
-        serverInfo: { name: core ? "cairnstone-v6-core" : "cairnstone-v6", version: VERSION }
+        serverInfo: {
+          name: auth ? "cairnstone-v6-core-auth" : (core ? "cairnstone-v6-core" : "cairnstone-v6"),
+          version: VERSION
+        }
       });
     }
 
@@ -1024,7 +1162,7 @@ export async function handleMcpRpc(rpc, env, options = {}) {
           isError: true
         });
       }
-      const output = await callMcpTool(name, args, env);
+      const output = await callMcpTool(name, args, env, { authContext });
       return rpcResult(id, {
         content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
         isError: output && output.ok === false
@@ -1160,7 +1298,50 @@ function guardedAuthorizationDeps(env) {
   };
 }
 
-async function callMcpTool(name, args, env) {
+async function callMcpTool(name, args, env, options = {}) {
+  const authContext = options.authContext || null;
+  if (authContext) {
+    const asserted = assertCallerIdentity(args, authContext);
+    if (!asserted.ok) {
+      return {
+        ok: false,
+        error: asserted.error,
+        field: asserted.field,
+        status: asserted.status || 403,
+        hint: asserted.hint,
+        auth_context_principal_id: authContext.principal_id
+      };
+    }
+    const resources = assertResourceSelectors(args, authContext, { toolName: name });
+    if (!resources.ok) {
+      return {
+        ok: false,
+        error: resources.error,
+        field: resources.field,
+        status: resources.status || 403,
+        hint: resources.hint,
+        auth_context_principal_id: authContext.principal_id
+      };
+    }
+    args = injectServerDerivedCaller(args, authContext);
+    // Attach non-secret server context for broker/hydration continuity (NF-22).
+    env = {
+      ...env,
+      CORE_AUTH_CONTEXT: {
+        account_id: authContext.account_id,
+        tenant_id: authContext.tenant_id,
+        connection_id: authContext.connection_id,
+        principal_id: authContext.principal_id,
+        token_family_id: authContext.token_family_id,
+        authz_version: authContext.authz_version,
+        client_family: authContext.client_family,
+        resource: authContext.resource,
+        scopes: authContext.scopes,
+        authenticator_assurance: authContext.authenticator_assurance
+      }
+    };
+  }
+
   if (name === "cairnstone_health") return health(env);
   if (name === "cairnstone_list_skills") return listSkillsFromBody(args, env);
   if (name === "cairnstone_get_skill") return getSkillFromBody(args, env);
@@ -1230,7 +1411,18 @@ async function callMcpTool(name, args, env) {
     // tools/call would use -- no separate/looser execution surface, and
     // strictly outside any provider adapter (this function never calls a
     // model).
-    invokeTool: (handlerName, handlerArgs, handlerEnv) => callMcpTool(handlerName, handlerArgs, handlerEnv),
+    invokeTool: (handlerName, handlerArgs, handlerEnv) => callMcpTool(handlerName, handlerArgs, handlerEnv, { authContext: (handlerEnv && handlerEnv.CORE_AUTH_CONTEXT) ? {
+      account_id: handlerEnv.CORE_AUTH_CONTEXT.account_id,
+      tenant_id: handlerEnv.CORE_AUTH_CONTEXT.tenant_id,
+      connection_id: handlerEnv.CORE_AUTH_CONTEXT.connection_id,
+      principal_id: handlerEnv.CORE_AUTH_CONTEXT.principal_id,
+      token_family_id: handlerEnv.CORE_AUTH_CONTEXT.token_family_id,
+      authz_version: handlerEnv.CORE_AUTH_CONTEXT.authz_version,
+      client_family: handlerEnv.CORE_AUTH_CONTEXT.client_family,
+      resource: handlerEnv.CORE_AUTH_CONTEXT.resource,
+      scopes: handlerEnv.CORE_AUTH_CONTEXT.scopes,
+      authenticator_assurance: handlerEnv.CORE_AUTH_CONTEXT.authenticator_assurance
+    } : authContext }),
     createStone: body => createStoneFromBody(body, env)
   });
   if (name === "cairnstone_tool_authorization_status") return getToolAuthorizationStatusFromBody(args, env);
@@ -1298,7 +1490,9 @@ async function callMcpTool(name, args, env) {
     }),
     modelRouteFromBody,
     executeReadToolIntent: (body, e) => executeToolIntentFromBody(body, e, {
-      invokeTool: (handlerName, handlerArgs, handlerEnv) => callMcpTool(handlerName, handlerArgs, handlerEnv),
+      invokeTool: (handlerName, handlerArgs, handlerEnv) => callMcpTool(handlerName, handlerArgs, handlerEnv, {
+        authContext: (handlerEnv && handlerEnv.CORE_AUTH_CONTEXT) ? handlerEnv.CORE_AUTH_CONTEXT : (e && e.CORE_AUTH_CONTEXT) || authContext
+      }),
       createStone: stoneBody => createStoneFromBody(stoneBody, e)
     })
   });
@@ -1308,7 +1502,7 @@ async function callMcpTool(name, args, env) {
       getInboxFromBody: (inboxBody, e) => getInboxFromBody(inboxBody, e, { createStone }),
       readMessageFromBody: (readBody, e) => readMessageFromBody(readBody, e, { createStone }),
       sendMessageFromBody: (sendBody, e) => sendMessageFromBody(sendBody, e, { createStone }),
-      delegateFromBody: (delegateBody, e) => callMcpTool("cairnstone_delegate", delegateBody, e)
+      delegateFromBody: (delegateBody, e) => callMcpTool("cairnstone_delegate", delegateBody, e, { authContext: (e && e.CORE_AUTH_CONTEXT) || authContext })
     });
   }
   if (name === "cairnstone_tool_search") return toolSearchFromBody(args, env, { mcpToolDefinitions: mcpTools() });
