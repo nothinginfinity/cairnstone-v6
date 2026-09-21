@@ -1,0 +1,140 @@
+name: V7.7.10i.1b Shadow Acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shadow-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Live OAuth lifecycle + protected Core acceptance
+        env:
+          BASE_URL: https://cairnstone-v6.jaredtechfit.workers.dev
+        run: |
+          node <<'NODE'
+          const crypto = require("node:crypto");
+
+          const base = process.env.BASE_URL.replace(/\/$/, "");
+          const resource = `${base}/mcp/core-auth`;
+          const clientId = "v7710i1b-shadow-acceptance";
+          const redirectUri = "https://client.example/cb";
+
+          function assert(condition, label) {
+            if (!condition) throw new Error(`acceptance_failed:${label}`);
+          }
+
+          async function readJson(response, label) {
+            let body;
+            try {
+              body = await response.json();
+            } catch {
+              throw new Error(`acceptance_failed:${label}:non_json:${response.status}`);
+            }
+            return body;
+          }
+
+          async function postJson(path, body, headers = {}) {
+            return fetch(`${base}${path}`, {
+              method: "POST",
+              headers: { "content-type": "application/json", ...headers },
+              body: JSON.stringify(body)
+            });
+          }
+
+          async function protectedHealth(accessToken) {
+            return postJson("/mcp/core-auth", {
+              jsonrpc: "2.0",
+              id: 1,
+              method: "tools/call",
+              params: { name: "cairnstone_health", arguments: {} }
+            }, accessToken ? { authorization: `Bearer ${accessToken}` } : {});
+          }
+
+          const healthRes = await fetch(`${base}/health`);
+          assert(healthRes.status === 200, "health_status");
+          const health = await readJson(healthRes, "health_json");
+          assert(health.version === "0.5.43", "runtime_version");
+          assert(health.core_auth_enforcement === "shadow", "shadow_enforcement");
+
+          const unauth = await protectedHealth(null);
+          assert(unauth.status === 401, "unauth_protected_401");
+
+          const verifier = `cs-shadow-${crypto.randomBytes(32).toString("base64url")}`;
+          const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
+          const authorize = new URL(`${base}/oauth/authorize`);
+          authorize.searchParams.set("response_type", "code");
+          authorize.searchParams.set("client_id", clientId);
+          authorize.searchParams.set("redirect_uri", redirectUri);
+          authorize.searchParams.set("code_challenge", challenge);
+          authorize.searchParams.set("code_challenge_method", "S256");
+          authorize.searchParams.set("resource", resource);
+          authorize.searchParams.set("scope", "mcp:core");
+          authorize.searchParams.set("response_mode", "json");
+
+          const authRes = await fetch(authorize, { headers: { accept: "application/json" } });
+          assert(authRes.status === 200, "authorize_status");
+          const auth = await readJson(authRes, "authorize_json");
+          assert(typeof auth.code === "string" && auth.code.length > 10, "authorization_code");
+          assert(typeof auth.iss === "string" && auth.iss.length > 0, "issuer");
+
+          const tokenRes = await postJson("/oauth/token", {
+            grant_type: "authorization_code",
+            code: auth.code,
+            code_verifier: verifier,
+            redirect_uri: redirectUri,
+            client_id: clientId,
+            resource,
+            iss: auth.iss
+          });
+          assert(tokenRes.status === 200, "token_status");
+          const token = await readJson(tokenRes, "token_json");
+          assert(typeof token.access_token === "string" && token.access_token.startsWith("csat_"), "access_token_shape");
+          assert(typeof token.refresh_token === "string" && token.refresh_token.startsWith("csrt_"), "refresh_token_shape");
+
+          const protectedRes = await protectedHealth(token.access_token);
+          assert(protectedRes.status === 200, "protected_shadow_status");
+          const protectedBody = await readJson(protectedRes, "protected_shadow_json");
+          const toolText = protectedBody?.result?.content?.[0]?.text;
+          assert(typeof toolText === "string", "protected_tool_payload");
+          const toolHealth = JSON.parse(toolText);
+          assert(toolHealth.ok === true, "protected_tool_ok");
+          assert(toolHealth.core_auth_enforcement === "shadow", "protected_tool_shadow");
+
+          const refreshRes = await postJson("/oauth/token", {
+            grant_type: "refresh_token",
+            refresh_token: token.refresh_token,
+            resource
+          });
+          assert(refreshRes.status === 200, "refresh_status");
+          const rotated = await readJson(refreshRes, "refresh_json");
+          assert(typeof rotated.access_token === "string" && rotated.access_token.startsWith("csat_"), "rotated_access_shape");
+          assert(typeof rotated.refresh_token === "string" && rotated.refresh_token.startsWith("csrt_"), "rotated_refresh_shape");
+
+          const rotatedProtected = await protectedHealth(rotated.access_token);
+          assert(rotatedProtected.status === 200, "rotated_protected_status");
+
+          const revokeRes = await postJson("/oauth/revoke", { token: rotated.refresh_token });
+          assert(revokeRes.status === 200, "revoke_status");
+
+          const postRevoke = await protectedHealth(rotated.access_token);
+          assert(postRevoke.status === 401, "revoked_family_rejected");
+
+          console.log(JSON.stringify({
+            ok: true,
+            runtime: health.version,
+            enforcement: health.core_auth_enforcement,
+            unauth_protected_status: unauth.status,
+            authorize_status: authRes.status,
+            token_status: tokenRes.status,
+            protected_status: protectedRes.status,
+            refresh_status: refreshRes.status,
+            rotated_protected_status: rotatedProtected.status,
+            revoke_status: revokeRes.status,
+            post_revoke_status: postRevoke.status,
+            secrets_emitted: false
+          }));
+          NODE
