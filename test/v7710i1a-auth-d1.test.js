@@ -74,7 +74,8 @@ test("production-style wrangler.toml binds CAIRNSTONE_AUTH_DB with auth migratio
   assert.equal(auth.database_name, "cairnstone-v6-auth");
   assert.equal(auth.migrations_dir, "migrations/auth");
   assert.notEqual(auth.database_id, shared.database_id);
-  assert.match(auth.database_id, /^PLACEHOLDER_/);
+  // Pre-provision: PLACEHOLDER_*; post-provision: a real D1 UUID. Never the shared id (asserted above).
+  assert.match(auth.database_id, /^(PLACEHOLDER_[A-Za-z0-9_-]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/);
 });
 
 test("shared migration stream retired 0024; auth schema lives under migrations/auth only", () => {
