@@ -14,7 +14,7 @@ Live runtime until a separate deploy gate: **`0.5.43` (unchanged)**
 | Auth kernel (ladder, PRM, token family, CIMD SSRF, identity asserts) | `src/core-auth.js` |
 | `auth_*` storage firewall migration | `migrations/0024_v7710i1_core_auth.sql` |
 | Negative fixtures + canary isolation tests | `test/v7710i1-core-auth.test.js` |
-| OAuth discovery / token / revoke / register (DCR off by default) | `/.well-known/*`, `/oauth/*` |
+| OAuth discovery / authorize / token / revoke / register (DCR off by default) | path-only PRM + `/oauth/*` |
 
 Legacy `/mcp`, `/mcp/core`, and `/mcp-b` behavior is unchanged. Authentication failure on the canary cannot disable them.
 
@@ -46,9 +46,20 @@ Optional:
 
 - `CORE_AUTH_RESOURCE` — canonical resource/audience (default `{origin}/mcp/core-auth`)
 - `CORE_AUTH_ISSUER` — AS issuer (default `{origin}/oauth`)
-- `CORE_AUTH_CANARY_CONNECTIONS` — comma-separated `connection_id` allowlist
+- `CORE_AUTH_CANARY_CONNECTIONS` — comma-separated allowlist: `connection_id`, `family:<clientFamily>`, or `label:<label>`
+- `CORE_AUTH_CANARY_AUTO_ADMIT=true` — operator flag to admit on mint (default **off**; OAuth redeem never hardcodes admit)
 - `CORE_AUTH_DCR_ENABLED=true` — enable DCR compatibility (default off / NF-26)
 - `CAIRNSTONE_AUTH_DB` — prefer separate auth D1; else shared `CAIRNSTONE_DB` with `auth_*` + `realm='core-auth'`
+
+## Selective canary admission
+
+`redeemAuthorizationCode` / `/oauth/authorize` **do not** auto-admit every minted connection. Admission requires an explicit allowlist hit (`CORE_AUTH_CANARY_CONNECTIONS`), `CORE_AUTH_CANARY_AUTO_ADMIT`, or an operator-seeded `auth_canary_admissions` row. Tests may pass `admitCanary: true` into bootstrap only as an explicit operator-equivalent knob.
+
+## Discovery notes
+
+- PRM is path-only: `/.well-known/oauth-protected-resource/mcp/core-auth` (no root PRM, to avoid confusing legacy discovery).
+- AS metadata advertises `authorization_endpoint` because **GET/POST `/oauth/authorize` are implemented**.
+- **DELETE `/mcp/core-auth`** clears ephemeral `mcp_core_sessions` hydration only and **skips the Bearer auth gate** (same class as discovery). It cannot read `auth_*` private rows. Documented residual; not a protected-tool execution path.
 
 ## Residual risk (NF-25)
 
@@ -60,3 +71,4 @@ Stolen same-resource bearer replay is **documented, not solved**. Mitigations in
 - `required` enforcement or legacy route replacement
 - V7.7.10j Tool Belts mutations
 - Wallet funding; host install ID continuity; second catalog twin
+- Full AC1/workspace principal binding beyond gateway fail-closed selectors (continues in 10i.3); NF-09/10/11 are enforced at the core-auth gateway with home-pointer / grant-proof checks

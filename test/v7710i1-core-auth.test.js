@@ -11,6 +11,7 @@ import {
   CORE_AUTH_REALM,
   TOKEN_FAMILY_SCHEMA,
   assertCallerIdentity,
+  assertResourceSelectors,
   bootstrapAccountConnection,
   bumpAuthzVersion,
   bindConnectionTenant,
@@ -18,20 +19,24 @@ import {
   createAuthorizationCode,
   enforceCoreAuthRequest,
   fetchCimdDocument,
+  handleOauthAuthorizeRequest,
   handleOauthRegisterRequest,
   handleOauthTokenRequest,
   isPrivateOrLinkLocalHostname,
   joinTenant,
   legacyMustNotQueryAuth,
+  mergeScopesForStepUp,
   pkceChallengeS256,
   protectedResourceMetadata,
   redeemAuthorizationCode,
   replaceAuthenticator,
   resolveEnforcementMode,
+  revalidateCimdOrFail,
   revokeAuthenticator,
   revokeConnection,
   revokeTokenFamily,
   rotateRefreshToken,
+  shouldAdmitCanaryOnMint,
   sqlTouchesAuthTables,
   validateAccessToken,
   validateAuthenticatorPair,
@@ -955,6 +960,182 @@ test("NF-36 redirect URI mismatch on redeem", async () => {
     expectedIss: ISSUER
   });
   assert.equal(bad.ok, false);
+});
+
+test("OAuth redeem does not auto-admit canary (selective admission)", async () => {
+  const db = new FakeAuthD1();
+  const boot = await bootPair(db, { admitCanary: false });
+  const verifier = "verifier_" + "d".repeat(43);
+  const challenge = await pkceChallengeS256(verifier);
+  const code = await createAuthorizationCode(envFor(db), {
+    accountId: boot.account.account_id,
+    tenantId: boot.account.home_tenant_id,
+    authenticatorId: boot.authenticator.authenticator_id,
+    clientId: "client",
+    redirectUri: "https://client.example/cb",
+    codeChallenge: challenge,
+    resource: RESOURCE,
+    iss: ISSUER
+  });
+  const redeemed = await redeemAuthorizationCode(envFor(db), {
+    code: code.code,
+    codeVerifier: verifier,
+    redirectUri: "https://client.example/cb",
+    clientId: "client",
+    resource: RESOURCE,
+    expectedIss: ISSUER
+  });
+  assert.equal(redeemed.ok, true);
+  assert.equal(db.tables.auth_canary_admissions.size, 0);
+  assert.equal(shouldAdmitCanaryOnMint(envFor(db), {
+    connectionId: redeemed.connection.connection_id,
+    clientFamily: "client",
+    label: "oauth_redeem"
+  }), false);
+
+  // Explicit allowlist may admit by family/label without hardcoding redeem.
+  assert.equal(shouldAdmitCanaryOnMint(envFor(db, {
+    CORE_AUTH_CANARY_CONNECTIONS: "label:oauth_redeem"
+  }), { label: "oauth_redeem" }), true);
+});
+
+test("NF-09 invite confused deputy without grant → 403", () => {
+  const ctx = {
+    account_id: "acct_a",
+    tenant_id: "ten_a",
+    connection_id: "conn_a",
+    principal_id: "prin_a",
+    home_workspace_id: "ws_home_a",
+    home_code_session_id: "cs_home_a",
+    visible_workspace_ids: ["ws_home_a"],
+    visible_code_session_ids: ["cs_home_a"]
+  };
+  const denied = assertResourceSelectors(
+    { invite_id: "inv_b_secret", actor_id: "prin_a" },
+    ctx,
+    { toolName: "cairnstone_workspace_invite_claim" }
+  );
+  assert.equal(denied.ok, false);
+  assert.equal(denied.status, 403);
+  assert.equal(denied.error, "invite_confused_deputy");
+
+  const allowed = assertResourceSelectors(
+    { invite_id: "inv_b", mailbox_capability: "cap_proof", actor_id: "prin_a" },
+    ctx,
+    { toolName: "cairnstone_workspace_invite_claim" }
+  );
+  assert.equal(allowed.ok, true);
+});
+
+test("NF-10 workspace IDOR denied at gateway", () => {
+  const ctx = {
+    principal_id: "prin_a",
+    home_workspace_id: "ws_home_a",
+    visible_workspace_ids: ["ws_home_a"]
+  };
+  const denied = assertResourceSelectors({ workspace_id: "ws_home_b" }, ctx);
+  assert.equal(denied.ok, false);
+  assert.equal(denied.error, "workspace_idor_denied");
+  assert.equal(assertResourceSelectors({ workspace_id: "ws_home_a" }, ctx).ok, true);
+});
+
+test("NF-11 Code Session IDOR denied at gateway", () => {
+  const ctx = {
+    principal_id: "prin_a",
+    home_code_session_id: "cs_home_a",
+    visible_code_session_ids: ["cs_home_a"]
+  };
+  const denied = assertResourceSelectors({ code_session_id: "cs_home_b" }, ctx);
+  assert.equal(denied.ok, false);
+  assert.equal(denied.error, "code_session_idor_denied");
+  assert.equal(assertResourceSelectors({ code_session_id: "cs_home_a" }, ctx).ok, true);
+});
+
+test("NF-23 step-up widening only via AS; no silent membership/mutation", () => {
+  const refreshPath = mergeScopesForStepUp(["mcp:core"], ["mcp:core", "mcp:mutate"], {
+    viaAuthorizationServer: false
+  });
+  assert.equal(refreshPath.widened, false);
+  assert.deepEqual(refreshPath.scopes, ["mcp:core"]);
+  assert.equal(refreshPath.memberships_added, false);
+  assert.equal(refreshPath.mutation_added, false);
+
+  const asPath = mergeScopesForStepUp(["mcp:core"], ["mcp:core", "mcp:tools"], {
+    viaAuthorizationServer: true
+  });
+  assert.equal(asPath.widened, true);
+  assert.ok(asPath.scopes.includes("mcp:tools"));
+  assert.equal(asPath.memberships_added, false);
+  assert.equal(asPath.mutation_added, false);
+});
+
+test("NF-24 concurrent alias bind: second fail-closed", async () => {
+  const db = new FakeAuthD1();
+  const first = await claimRoutingAlias(db, {
+    alias: "perplexity:chat",
+    principalId: "prin_a",
+    accountId: "acct_a",
+    tenantId: "ten_a"
+  });
+  assert.equal(first.ok, true);
+  const second = await claimRoutingAlias(db, {
+    alias: "perplexity:chat",
+    principalId: "prin_b",
+    accountId: "acct_b",
+    tenantId: "ten_b"
+  });
+  assert.equal(second.ok, false);
+  assert.equal(second.status, 403);
+});
+
+test("NF-37 CIMD metadata mutation fail-closed via revalidateCimdOrFail", async () => {
+  let generation = 0;
+  const fetchImpl = async () => {
+    generation += 1;
+    const body = JSON.stringify({
+      client_id: "https://client.example/cimd.json",
+      redirect_uris: generation === 1
+        ? ["https://client.example/cb"]
+        : ["https://evil.example/cb"]
+    });
+    return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const first = await fetchCimdDocument("https://client.example/cimd.json", { fetchImpl });
+  assert.equal(first.ok, true);
+  const mutated = await revalidateCimdOrFail("https://client.example/cimd.json", first.content_hash, { fetchImpl });
+  assert.equal(mutated.ok, false);
+  assert.equal(mutated.error, "cimd_metadata_mutated");
+});
+
+test("AS authorize endpoint issues code (advertised authorization_endpoint)", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db);
+  const verifier = "verifier_" + "e".repeat(43);
+  const challenge = await pkceChallengeS256(verifier);
+  const result = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: "canary-client",
+    redirect_uri: "https://client.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: RESOURCE,
+    scope: "mcp:core",
+    response_mode: "json"
+  }, env, urlFor());
+  assert.equal(result.ok, true);
+  assert.ok(result.code);
+  assert.equal(result.iss, ISSUER);
+  assert.match(result.redirect_uri, /code=/);
+  // Authorize must not auto-admit
+  assert.equal(db.tables.auth_canary_admissions.size, 0);
+});
+
+test("path-only PRM; root PRM not published", async () => {
+  const env = envFor(new FakeAuthD1());
+  const pathPrm = await worker.fetch(new Request("https://cairnstone.test/.well-known/oauth-protected-resource/mcp/core-auth"), env);
+  assert.equal(pathPrm.status, 200);
+  const rootPrm = await worker.fetch(new Request("https://cairnstone.test/.well-known/oauth-protected-resource"), env);
+  assert.notEqual(rootPrm.status, 200);
 });
 
 test("canary admission: non-selected connection denied; selected allowed", async () => {

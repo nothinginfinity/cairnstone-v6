@@ -235,9 +235,11 @@ import {
 import {
   CORE_AUTH_RESOURCE_PATH,
   assertCallerIdentity,
+  assertResourceSelectors,
   authorizationServerMetadata,
   canonicalCoreAuthResource,
   enforceCoreAuthRequest,
+  handleOauthAuthorizeRequest,
   handleOauthRegisterRequest,
   handleOauthRevokeRequest,
   handleOauthTokenRequest,
@@ -295,14 +297,42 @@ export default {
       // V7.7.10i.1 additive authenticated Core canary. Legacy routes above are unchanged.
       // Deploy / required-mode / runtime bump are NOT authorized by this slice.
       if (url.pathname === "/mcp/core-auth") return handleMcp(request, env, url, { core: true, auth: true });
-      if (request.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
-        return json(protectedResourceMetadata(env, url));
-      }
+      // Path-only PRM (RFC 9728). Do not publish a root well-known PRM that could
+      // confuse legacy /mcp discovery with the authenticated Core resource.
       if (request.method === "GET" && url.pathname === `/.well-known/oauth-protected-resource${CORE_AUTH_RESOURCE_PATH}`) {
         return json(protectedResourceMetadata(env, url));
       }
       if (request.method === "GET" && (url.pathname === "/.well-known/oauth-authorization-server" || url.pathname === "/oauth/.well-known/oauth-authorization-server")) {
         return json(authorizationServerMetadata(env, url));
+      }
+      if ((request.method === "GET" || request.method === "POST") && url.pathname === "/oauth/authorize") {
+        let params;
+        if (request.method === "GET") {
+          params = Object.fromEntries(url.searchParams.entries());
+        } else {
+          const ct = request.headers.get("content-type") || "";
+          if (ct.includes("application/x-www-form-urlencoded")) {
+            params = Object.fromEntries(new URLSearchParams(await request.text()).entries());
+          } else {
+            params = await request.json().catch(() => ({}));
+          }
+        }
+        const result = await handleOauthAuthorizeRequest(params, env, url);
+        if (!result.ok) {
+          return json({ error: result.error, error_description: result.detail || result.error }, result.status || 400);
+        }
+        const accept = request.headers.get("accept") || "";
+        if (accept.includes("application/json") || params.response_mode === "json") {
+          return json({
+            ok: true,
+            redirect_uri: result.redirect_uri,
+            code: result.code,
+            iss: result.iss,
+            state: result.state || undefined,
+            account_id: result.account_id
+          });
+        }
+        return withCors(Response.redirect(result.redirect_uri, 302));
       }
       if (request.method === "POST" && url.pathname === "/oauth/token") {
         const body = await request.json().catch(() => ({}));
@@ -724,9 +754,10 @@ function routes() {
     "GET /mcp-b",
     "POST /mcp/core-auth",
     "GET /mcp/core-auth",
-    "GET /.well-known/oauth-protected-resource",
     "GET /.well-known/oauth-protected-resource/mcp/core-auth",
     "GET /.well-known/oauth-authorization-server",
+    "GET /oauth/authorize",
+    "POST /oauth/authorize",
     "POST /oauth/token",
     "POST /oauth/revoke",
     "POST /oauth/register",
@@ -909,6 +940,10 @@ async function handleMcp(request, env, url, options = {}) {
   // V7.6.2b: DELETE terminates this session's experimental native-hydration
   // overlay. This is transport/runtime cleanup only -- it never touches
   // chain_heads/path_heads and grants no execution/mutation authority.
+  // NOTE (10i.1): DELETE on /mcp/core-auth currently skips the Bearer auth gate
+  // (same as discovery). It only clears ephemeral mcp_core_sessions hydration
+  // state and cannot read auth_* private rows. Documented residual; tighten if
+  // session-store abuse becomes a concern.
   if (request.method === "DELETE") {
     if (!core) return withSession(json({ ok: true, note: "No session state on the full /mcp profile." }), sessionId);
     if (!env.CAIRNSTONE_DB) return withSession(json({ ok: false, error: "mcp_session_store_unavailable" }, 503), sessionId);
@@ -1274,6 +1309,17 @@ async function callMcpTool(name, args, env, options = {}) {
         field: asserted.field,
         status: asserted.status || 403,
         hint: asserted.hint,
+        auth_context_principal_id: authContext.principal_id
+      };
+    }
+    const resources = assertResourceSelectors(args, authContext, { toolName: name });
+    if (!resources.ok) {
+      return {
+        ok: false,
+        error: resources.error,
+        field: resources.field,
+        status: resources.status || 403,
+        hint: resources.hint,
         auth_context_principal_id: authContext.principal_id
       };
     }

@@ -183,7 +183,10 @@ export function authorizationServerMetadata(env, url) {
     response_types_supported: ["code"],
     token_endpoint_auth_methods_supported: ["none"],
     scopes_supported: [...DEFAULT_SCOPES],
-    dcr_enabled: env?.CORE_AUTH_DCR_ENABLED === "true" || env?.CORE_AUTH_DCR_ENABLED === true
+    dcr_enabled: env?.CORE_AUTH_DCR_ENABLED === "true" || env?.CORE_AUTH_DCR_ENABLED === true,
+    // Authorize is implemented (GET+POST /oauth/authorize). Do not advertise
+    // endpoints that do not exist.
+    authorization_response_iss_parameter_supported: true
   };
 }
 
@@ -367,6 +370,10 @@ export function buildAuthContext({
     account_status: account.status,
     connection_status: connection.status,
     token_family_status: tokenFamily.status,
+    home_workspace_id: account.home_workspace_id ?? null,
+    home_code_session_id: account.home_code_session_id ?? null,
+    visible_workspace_ids: [account.home_workspace_id].filter(Boolean),
+    visible_code_session_ids: [account.home_code_session_id].filter(Boolean),
     ...authorityClosed()
   };
 }
@@ -417,6 +424,101 @@ export function assertCallerIdentity(args, authContext, { authorizedAliases = []
   }
 
   return { ok: true };
+}
+
+/**
+ * Fail-closed resource selectors (NF-09/10/11). Full AC1/workspace binding is
+ * 10i.3; on core-auth the gateway still denies foreign workspace / Code Session
+ * / invite claim without an explicit grant proof.
+ */
+export function assertResourceSelectors(args, authContext, { toolName = null } = {}) {
+  if (!authContext || !isObject(args)) return { ok: true };
+
+  if (typeof args.workspace_id === "string" && args.workspace_id.trim()) {
+    const allowed = new Set([
+      authContext.home_workspace_id,
+      ...(Array.isArray(authContext.visible_workspace_ids) ? authContext.visible_workspace_ids : [])
+    ].filter(Boolean));
+    if (!allowed.has(args.workspace_id.trim())) {
+      return {
+        ok: false,
+        status: 403,
+        error: "workspace_idor_denied",
+        field: "workspace_id",
+        hint: "workspace_id is a RESOURCE_SELECTOR constrained by server-derived membership; never leaks foreign rows."
+      };
+    }
+  }
+
+  const sessionKey = typeof args.code_session_id === "string" && args.code_session_id.trim()
+    ? args.code_session_id.trim()
+    : (typeof args.session_id === "string" && args.session_id.trim() ? args.session_id.trim() : null);
+  if (sessionKey) {
+    const allowed = new Set([
+      authContext.home_code_session_id,
+      ...(Array.isArray(authContext.visible_code_session_ids) ? authContext.visible_code_session_ids : [])
+    ].filter(Boolean));
+    if (!allowed.has(sessionKey)) {
+      return {
+        ok: false,
+        status: 403,
+        error: "code_session_idor_denied",
+        field: "code_session_id",
+        hint: "Code Session selectors are constrained by server-derived membership."
+      };
+    }
+  }
+
+  const inviteTool = toolName === "cairnstone_workspace_invite_claim"
+    || (typeof args.invite_id === "string" && args.invite_id.trim());
+  if (inviteTool) {
+    const hasGrant = Boolean(
+      args.mailbox_capability
+      || args.invite_capability
+      || args.workspace_capability
+      || args.grant_id
+    );
+    if (!hasGrant) {
+      return {
+        ok: false,
+        status: 403,
+        error: "invite_confused_deputy",
+        field: "invite_id",
+        hint: "Invite claim requires an explicit grant/capability; authenticated caller alone is not enough."
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
+/**
+ * NF-23: scopes may increase only via AS authorization; refresh/mint helpers
+ * must not silently add memberships or mutation authority.
+ */
+export function mergeScopesForStepUp(existingScopes, requestedScopes, { viaAuthorizationServer = false } = {}) {
+  const current = parseScopes(existingScopes);
+  const requested = parseScopes(requestedScopes);
+  if (!viaAuthorizationServer) {
+    // Non-AS paths (refresh, local mint) cannot widen beyond the family.
+    const allowed = new Set(current);
+    const filtered = requested.filter(scope => allowed.has(scope));
+    return {
+      ok: true,
+      scopes: filtered.length ? filtered : current,
+      widened: false,
+      memberships_added: false,
+      mutation_added: false
+    };
+  }
+  const merged = [...new Set([...current, ...requested])].slice(0, 64);
+  return {
+    ok: true,
+    scopes: merged,
+    widened: merged.length > current.length,
+    memberships_added: false,
+    mutation_added: false
+  };
 }
 
 export function injectServerDerivedCaller(args, authContext) {
@@ -582,7 +684,8 @@ export async function bootstrapAccountConnection(env, {
   selectTenantId = null,
   admitCanary = false,
   canaryLabel = null,
-  stepUpConfirmed = true
+  stepUpConfirmed = true,
+  mintConnection = true
 } = {}) {
   const pair = validateAuthenticatorPair(method, assuranceClass);
   if (!pair.ok) return pair;
@@ -667,6 +770,34 @@ export async function bootstrapAccountConnection(env, {
     createdAt
   ).run();
 
+  if (mintConnection === false) {
+    await audit(db, "bootstrap_account_only", {
+      account_id: accountId,
+      tenant_id: tenantId,
+      step_up_confirmed: stepUpConfirmed === true
+    });
+    return {
+      ok: true,
+      account: rowToAccount(accountRow),
+      authenticator: rowToAuthenticator({
+        authenticator_id: authenticatorId,
+        account_id: accountId,
+        method,
+        status: "active",
+        assurance_class: assuranceClass,
+        wallet_account_id: walletAccountId,
+        created_at: createdAt,
+        revoked_at: null
+      }),
+      wallet_account_id: walletAccountId,
+      connection: null,
+      token_family: null,
+      spend_authority: false,
+      economic_grant: false,
+      ...authorityClosed()
+    };
+  }
+
   const connectionId = mintId("connection_id");
   const principalId = mintId("principal_id");
   const aliases = Array.isArray(routingAliases) ? routingAliases.slice(0, 16) : [];
@@ -698,6 +829,8 @@ export async function bootstrapAccountConnection(env, {
     if (!claimed.ok) return claimed;
   }
 
+  // Selective canary: call sites must not hardcode true on OAuth redeem.
+  // Explicit admitCanary=true (operator/test/allowlist-gated caller) writes the row.
   if (admitCanary) {
     await db.prepare(
       `INSERT INTO auth_canary_admissions (realm, connection_id, client_family, label, status, created_at)
@@ -1396,21 +1529,38 @@ export async function validateAccessToken(env, accessToken, {
   };
 }
 
-export async function isCanaryAdmitted(env, connectionId) {
+export async function isCanaryAdmitted(env, connectionId, { clientFamily = null, label = null } = {}) {
   const dbRes = authDb(env);
-  if (!dbRes.ok) return false;
-  const row = await dbRes.db.prepare(
-    "SELECT status FROM auth_canary_admissions WHERE realm = ? AND connection_id = ?"
-  ).bind(CORE_AUTH_REALM, connectionId).first();
-  if (row?.status === "admitted") return true;
+  if (dbRes.ok) {
+    const row = await dbRes.db.prepare(
+      "SELECT status FROM auth_canary_admissions WHERE realm = ? AND connection_id = ?"
+    ).bind(CORE_AUTH_REALM, connectionId).first();
+    if (row?.status === "admitted") return true;
+  }
 
-  // Env allowlist (comma-separated connection ids or labels) for bootstrap before DB row.
+  return shouldAdmitCanaryOnMint(env, { connectionId, clientFamily, label });
+}
+
+/**
+ * Selective canary admission. Default deny.
+ * Allow only via:
+ * - CORE_AUTH_CANARY_AUTO_ADMIT=true (operator flag; off by default)
+ * - CORE_AUTH_CANARY_CONNECTIONS allowlist entries:
+ *   connection_id | family:<clientFamily> | label:<label>
+ */
+export function shouldAdmitCanaryOnMint(env, { connectionId = null, clientFamily = null, label = null } = {}) {
+  if (env?.CORE_AUTH_CANARY_AUTO_ADMIT === "true" || env?.CORE_AUTH_CANARY_AUTO_ADMIT === true) {
+    return true;
+  }
   const raw = typeof env?.CORE_AUTH_CANARY_CONNECTIONS === "string"
     ? env.CORE_AUTH_CANARY_CONNECTIONS
     : "";
   if (!raw.trim()) return false;
   const allowed = new Set(raw.split(",").map(s => s.trim()).filter(Boolean));
-  return allowed.has(connectionId);
+  if (connectionId && allowed.has(connectionId)) return true;
+  if (clientFamily && allowed.has(`family:${clientFamily}`)) return true;
+  if (label && allowed.has(`label:${label}`)) return true;
+  return false;
 }
 
 /**
@@ -1476,7 +1626,9 @@ export async function enforceCoreAuthRequest(request, env, url, {
   }
 
   if (mode === "canary") {
-    const admitted = await isCanaryAdmitted(env, validated.context.connection_id);
+    const admitted = await isCanaryAdmitted(env, validated.context.connection_id, {
+      clientFamily: validated.context.client_family
+    });
     if (!admitted) {
       return {
         ok: false,
@@ -1605,16 +1757,20 @@ export async function redeemAuthorizationCode(env, {
 
   // Fresh authorization under account: mint new connection/principal + token family.
   // Resume account-owned home pointers (do not duplicate).
+  // Selective canary: NEVER hardcode admitCanary true — gate on explicit allowlist /
+  // CORE_AUTH_CANARY_AUTO_ADMIT / CORE_AUTH_CANARY_CONNECTIONS (family:/label:).
+  const clientFamily = clientId.startsWith("https://") ? "cimd" : String(clientId).slice(0, 64);
+  const canaryLabel = "oauth_redeem";
   const boot = await bootstrapAccountConnection(env, {
-    clientFamily: clientId.startsWith("https://") ? "cimd" : String(clientId).slice(0, 64),
+    clientFamily,
     method: "wallet_proof",
     assuranceClass: "wallet_ownership",
     existingAccountId: row.account_id,
     selectTenantId: row.tenant_id,
     resource: row.resource,
     scopes: JSON.parse(row.scopes_json || "[]"),
-    admitCanary: true,
-    canaryLabel: "oauth_redeem"
+    admitCanary: shouldAdmitCanaryOnMint(env, { clientFamily, label: canaryLabel }),
+    canaryLabel
   });
   if (!boot.ok) return boot;
 
@@ -1622,6 +1778,116 @@ export async function redeemAuthorizationCode(env, {
     ok: true,
     ...boot,
     // Strip nested secret-bearing audit risk: tokens only in OAuth response.
+  };
+}
+
+/**
+ * Minimal authorization endpoint (GET/POST). Advertised in AS metadata.
+ * Issues an authorization code after PKCE + redirect_uri validation.
+ * Does not auto-admit canary connections.
+ */
+export async function handleOauthAuthorizeRequest(params, env, url, { fetchImpl } = {}) {
+  const responseType = String(params?.response_type || "");
+  if (responseType !== "code") {
+    return { ok: false, error: "unsupported_response_type", status: 400 };
+  }
+
+  const clientId = typeof params?.client_id === "string" ? params.client_id.trim() : "";
+  const redirectUri = typeof params?.redirect_uri === "string" ? params.redirect_uri.trim() : "";
+  const codeChallenge = typeof params?.code_challenge === "string" ? params.code_challenge.trim() : "";
+  const codeChallengeMethod = String(params?.code_challenge_method || "S256");
+  const resource = typeof params?.resource === "string" && params.resource.trim()
+    ? params.resource.trim()
+    : canonicalCoreAuthResource(env, url);
+  const state = typeof params?.state === "string" ? params.state : null;
+  const scopes = parseScopes(params?.scope);
+  const issuer = authorizationServerIssuer(env, url);
+
+  if (!clientId || !redirectUri || !codeChallenge) {
+    return { ok: false, error: "invalid_request", status: 400, detail: "client_id, redirect_uri, and code_challenge required" };
+  }
+  if (codeChallengeMethod !== "S256") {
+    return { ok: false, error: "invalid_request", status: 400, detail: "S256 required" };
+  }
+
+  // CIMD clients: validate redirect allowlist (and fail closed on fetch error).
+  let cimdContentHash = null;
+  if (clientId.startsWith("https://")) {
+    const dbRes = authDb(env);
+    const allowed = await requireAllowlistedRedirectUri(clientId, redirectUri, {
+      fetchImpl,
+      cacheDb: dbRes.ok ? dbRes.db : null
+    });
+    if (!allowed.ok) {
+      return { ok: false, error: allowed.error || "invalid_request", status: 400 };
+    }
+    cimdContentHash = allowed.cimd?.content_hash || null;
+
+    // NF-37: if a prior cache hash is presented, revalidate mutation.
+    if (typeof params?.cimd_content_hash === "string" && params.cimd_content_hash) {
+      const reval = await revalidateCimdOrFail(clientId, params.cimd_content_hash, {
+        fetchImpl,
+        cacheDb: dbRes.ok ? dbRes.db : null
+      });
+      if (!reval.ok) return { ok: false, error: reval.error, status: 400 };
+    }
+  }
+
+  // Authenticator path: reuse existing account when provided; otherwise bootstrap
+  // a zero-balance wallet-proof account for the authorize request (canary).
+  let accountId = typeof params?.account_id === "string" ? params.account_id.trim() : null;
+  let tenantId = typeof params?.tenant_id === "string" ? params.tenant_id.trim() : null;
+  let authenticatorId = typeof params?.authenticator_id === "string" ? params.authenticator_id.trim() : null;
+
+  if (!accountId || !authenticatorId || !tenantId) {
+    const boot = await bootstrapAccountConnection(env, {
+      clientFamily: clientId.startsWith("https://") ? "cimd" : String(clientId).slice(0, 64),
+      method: "wallet_proof",
+      assuranceClass: "wallet_ownership",
+      resource,
+      scopes,
+      // Authorize never auto-admits; admission is a separate selective step.
+      admitCanary: false,
+      mintConnection: false
+    });
+    if (!boot.ok) return { ...boot, status: 400 };
+    accountId = boot.account.account_id;
+    tenantId = boot.account.home_tenant_id;
+    authenticatorId = boot.authenticator.authenticator_id;
+  }
+
+  // Scope step-up only via AS (this authorize path).
+  const stepped = mergeScopesForStepUp(DEFAULT_SCOPES, scopes, { viaAuthorizationServer: true });
+
+  const code = await createAuthorizationCode(env, {
+    accountId,
+    tenantId,
+    authenticatorId,
+    clientId,
+    redirectUri,
+    codeChallenge,
+    codeChallengeMethod: "S256",
+    resource,
+    scopes: stepped.scopes,
+    iss: issuer
+  });
+  if (!code.ok) return { ...code, status: 400 };
+
+  const redirect = new URL(redirectUri);
+  redirect.searchParams.set("code", code.code);
+  redirect.searchParams.set("iss", issuer);
+  if (state) redirect.searchParams.set("state", state);
+
+  return {
+    ok: true,
+    redirect_uri: redirect.toString(),
+    code: code.code,
+    iss: issuer,
+    state,
+    account_id: accountId,
+    cimd_content_hash: cimdContentHash,
+    scopes: stepped.scopes,
+    // Never include secrets beyond the one-time code for the redirect.
   };
 }
 
