@@ -160,6 +160,13 @@ test("CORE_AUTH_ENFORCEMENT defaults off; canary auto-admit defaults off", () =>
   );
 });
 
+test("production wrangler activates shadow only; canary admission remains opt-in", () => {
+  const toml = readToml();
+  assert.match(toml, /^CORE_AUTH_ENFORCEMENT\\s*=\\s*"shadow"$/m);
+  assert.equal(/^CORE_AUTH_CANARY_AUTO_ADMIT\\s*=/m.test(toml), false);
+  assert.equal(/^CORE_AUTH_CANARY_CONNECTIONS\\s*=/m.test(toml), false);
+});
+
 test("deploy workflow wires apply_auth_migrations default false and fail-closed gate", () => {
   const yml = readFileSync(join(ROOT, ".github/workflows/deploy-cloudflare.yml"), "utf8");
   assert.match(yml, /apply_auth_migrations:/);
