@@ -12,6 +12,7 @@ import {
   TOKEN_FAMILY_SCHEMA,
   assertCallerIdentity,
   assertResourceSelectors,
+  authDb,
   bootstrapAccountConnection,
   bumpAuthzVersion,
   bindConnectionTenant,
@@ -491,6 +492,14 @@ test("resolveEnforcementMode coerces required→canary in 10i.1", () => {
   assert.equal(resolveEnforcementMode({ CORE_AUTH_ENFORCEMENT: "shadow" }), "shadow");
   assert.equal(resolveEnforcementMode({ CORE_AUTH_ENFORCEMENT: "canary" }), "canary");
   assert.equal(resolveEnforcementMode({ CORE_AUTH_ENFORCEMENT: "required" }), "canary");
+  assert.equal(resolveEnforcementMode({}), "off");
+});
+
+test("authDb prefers dedicated CAIRNSTONE_AUTH_DB (10i.1a)", () => {
+  const auth = { name: "auth" };
+  const shared = { name: "shared" };
+  assert.equal(authDb({ CAIRNSTONE_AUTH_DB: auth, CAIRNSTONE_DB: shared }).binding, "CAIRNSTONE_AUTH_DB");
+  assert.equal(authDb({ CAIRNSTONE_DB: shared }).binding, "CAIRNSTONE_DB");
 });
 
 test("NF-40 authenticator method/assurance mismatch rejected", () => {

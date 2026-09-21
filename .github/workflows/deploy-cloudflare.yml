@@ -4,7 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       apply_migrations:
-        description: "Apply D1 migrations before deploy"
+        description: "Apply shared CAIRNSTONE_DB D1 migrations before deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      apply_auth_migrations:
+        description: "Apply dedicated CAIRNSTONE_AUTH_DB (cairnstone-v6-auth) migrations before deploy; fail closed if auth binding/id missing"
         required: false
         default: "false"
         type: choice
@@ -185,9 +193,26 @@ jobs:
           printf '%s' "$secret" | npx wrangler secret put CAIRNSTONE_WORKSPACE_CAPABILITY_SECRET --config wrangler.toml
           echo "CAIRNSTONE_WORKSPACE_CAPABILITY_SECRET=$secret" >> "$GITHUB_ENV"
 
-      - name: Apply D1 migrations
+      - name: Apply shared D1 migrations (CAIRNSTONE_DB)
         if: github.event.inputs.apply_migrations == 'true'
         run: npx wrangler d1 migrations apply cairnstone-v6 --remote --config wrangler.toml
+
+      - name: Apply auth D1 migrations (CAIRNSTONE_AUTH_DB)
+        if: github.event.inputs.apply_auth_migrations == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fail closed: dedicated auth binding must exist and must not still be the create placeholder.
+          if ! grep -qE '^binding[[:space:]]*=[[:space:]]*"CAIRNSTONE_AUTH_DB"' wrangler.toml; then
+            echo "::error title=Auth D1 missing::CAIRNSTONE_AUTH_DB binding absent from wrangler.toml"
+            exit 1
+          fi
+          auth_id="$(sed -n '/binding *= *"CAIRNSTONE_AUTH_DB"/,/^\[\[/p' wrangler.toml | sed -n 's/^database_id *= *"\([^"]*\)".*/\1/p' | head -n1)"
+          if [ -z "${auth_id}" ] || [[ "${auth_id}" == PLACEHOLDER_* ]]; then
+            echo "::error title=Auth D1 not provisioned::CAIRNSTONE_AUTH_DB database_id is missing or still PLACEHOLDER. Run: npx wrangler d1 create cairnstone-v6-auth"
+            exit 1
+          fi
+          npx wrangler d1 migrations apply CAIRNSTONE_AUTH_DB --remote --config wrangler.toml
 
       - name: Deploy Worker
         run: npx wrangler deploy --config wrangler.toml
