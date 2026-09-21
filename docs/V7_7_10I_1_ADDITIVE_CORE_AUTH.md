@@ -4,6 +4,7 @@ Status: **IMPLEMENTATION LANDED IN REPO / DEPLOY NOT AUTHORIZED.**
 Authority: `48c87468211ceefa496637fc1d05efacd3f912ca44afb7507518169647f5439e`
 Upstream freeze: `cdd79ae23c69f6013b573a72cf9126e3f9cea73eda185be81dc3032dbb3f3e09`
 Git freeze lineage: `29bc1f9693db753c38763998c79f284f3b26e0e1`
+10i.1a Auth D1 authority: Jared approved dedicated Auth D1 via ChatGPT `msg:e938b6a9-51a3-4287-aac8-791795a17769`
 Live runtime until a separate deploy gate: **`0.5.43` (unchanged)**
 
 ## What landed
@@ -12,11 +13,45 @@ Live runtime until a separate deploy gate: **`0.5.43` (unchanged)**
 |---|---|
 | `/mcp/core-auth` route (core profile + auth gate) | `src/index.js` |
 | Auth kernel (ladder, PRM, token family, CIMD SSRF, identity asserts) | `src/core-auth.js` |
-| `auth_*` storage firewall migration | `migrations/0024_v7710i1_core_auth.sql` |
-| Negative fixtures + canary isolation tests | `test/v7710i1-core-auth.test.js` |
+| Dedicated Auth D1 binding + migrations stream | `wrangler.toml` (`CAIRNSTONE_AUTH_DB`) + `migrations/auth/` |
+| Auth-only schema (re-homed from retired shared `0024`) | `migrations/auth/0001_v7710i1_core_auth.sql` |
+| Negative fixtures + canary isolation + Auth D1 wiring tests | `test/v7710i1-core-auth.test.js`, `test/v7710i1a-auth-d1.test.js` |
 | OAuth discovery / authorize / token / revoke / register (DCR off by default) | path-only PRM + `/oauth/*` |
 
 Legacy `/mcp`, `/mcp/core`, and `/mcp-b` behavior is unchanged. Authentication failure on the canary cannot disable them.
+
+## Storage architecture (10i.1a)
+
+| Binding | D1 name | Role | Migrations |
+|---|---|---|---|
+| `CAIRNSTONE_DB` | `cairnstone-v6` | vault / graph / workspace / AC1 (**unchanged**) | `migrations/` (shared stream; **no** `auth_*`) |
+| `CAIRNSTONE_AUTH_DB` | `cairnstone-v6-auth` | auth-only state | `migrations/auth/` |
+
+`authDb(env)` in `src/core-auth.js` **prefers** `CAIRNSTONE_AUTH_DB`, with shared-`CAIRNSTONE_DB` fallback for local/test only. Production wrangler **must** bind `CAIRNSTONE_AUTH_DB` explicitly (do not point it at the shared DB id).
+
+### Retired shared-path migration
+
+`migrations/0024_v7710i1_core_auth.sql` was **superseded / retired before production application**. Auth schema lives only under `migrations/auth/0001_v7710i1_core_auth.sql`. Shared `CAIRNSTONE_DB` migration runs must never create `auth_*` tables.
+
+### Provision Auth D1 (manual — Jared)
+
+`wrangler.toml` currently carries:
+
+`database_id = "PLACEHOLDER_CREATE_cairnstone-v6-auth"`
+
+Until replaced, remote auth migration apply fails closed. Create and wire:
+
+```bash
+npx wrangler d1 create cairnstone-v6-auth
+# paste returned database_id into wrangler.toml CAIRNSTONE_AUTH_DB.database_id
+# do NOT reuse cairnstone-v6 / CAIRNSTONE_DB id
+```
+
+Local auth apply (dev/test):
+
+```bash
+npm run db:migrate:auth:local
+```
 
 ## Enforcement ladder (core-auth only)
 
@@ -49,7 +84,21 @@ Optional:
 - `CORE_AUTH_CANARY_CONNECTIONS` — comma-separated allowlist: `connection_id`, `family:<clientFamily>`, or `label:<label>`
 - `CORE_AUTH_CANARY_AUTO_ADMIT=true` — operator flag to admit on mint (default **off**; OAuth redeem never hardcodes admit)
 - `CORE_AUTH_DCR_ENABLED=true` — enable DCR compatibility (default off / NF-26)
-- `CAIRNSTONE_AUTH_DB` — prefer separate auth D1; else shared `CAIRNSTONE_DB` with `auth_*` + `realm='core-auth'`
+- `CAIRNSTONE_AUTH_DB` — dedicated auth D1 binding (required in production wrangler)
+
+## Deploy packet (10i.1a intent — NOT AUTHORIZED YET)
+
+Workflow: `.github/workflows/deploy-cloudflare.yml`
+
+| Input | First 10i.1a deploy intent | Notes |
+|---|---|---|
+| `apply_migrations` | `false` | Shared vault/graph DB untouched |
+| `apply_auth_migrations` | `true` | Dedicated auth DB only; **fails closed** if `CAIRNSTONE_AUTH_DB` absent / still `PLACEHOLDER_*` |
+| `run_v*_acceptance` | all `false` | No live acceptance gates in this packet |
+| `CORE_AUTH_ENFORCEMENT` | leave `off` | Do not flip |
+| Canary | no auto-admit / no seed admissions | `CORE_AUTH_CANARY_AUTO_ADMIT` stays off |
+
+**STOP until explicit human deploy authorization:** no `workflow_dispatch`, no Worker publish, no remote migration apply, no shadow/canary/required flip, no `CANARY_AUTO_ADMIT`, no seeded admissions.
 
 ## Selective canary admission
 
@@ -68,6 +117,7 @@ Stolen same-resource bearer replay is **documented, not solved**. Mitigations in
 ## Out of scope (held)
 
 - Deploy / Pages cutover / runtime bump
+- Remote Auth D1 create / migration apply (manual Jared step + later deploy gate)
 - `required` enforcement or legacy route replacement
 - V7.7.10j Tool Belts mutations
 - Wallet funding; host install ID continuity; second catalog twin

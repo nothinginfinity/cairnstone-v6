@@ -1,9 +1,12 @@
--- V7.7.10i.1 — Additive Core-auth canary storage (auth_* firewall).
+-- V7.7.10i.1a — Additive Core-auth canary storage (auth_* firewall).
+-- Auth-only D1 stream: migrations/auth/ → CAIRNSTONE_AUTH_DB (cairnstone-v6-auth).
 --
--- Prefer a separate authenticated D1 when available (CAIRNSTONE_AUTH_DB).
--- When sharing CAIRNSTONE_DB, every auth query MUST include
---   realm = 'core-auth' AND tenant_id AND principal_id
--- (or account_id for account-scoped ops). Legacy routes MUST NOT join these tables.
+-- Supersedes retired shared-path migrations/0024_v7710i1_core_auth.sql (never applied
+-- in production). Do NOT place this file under migrations/ for CAIRNSTONE_DB.
+-- Shared CAIRNSTONE_DB remains vault/graph/workspace/AC1 only.
+-- Local/test may still fall back to shared CAIRNSTONE_DB via authDb(); production
+-- wrangler must bind CAIRNSTONE_AUTH_DB explicitly.
+-- Legacy routes MUST NOT join these tables.
 -- accepted_state_authority is always 0 — never moves chain_heads / path_heads.
 
 CREATE TABLE IF NOT EXISTS auth_tenants (
