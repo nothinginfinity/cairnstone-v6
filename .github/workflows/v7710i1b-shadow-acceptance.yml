@@ -16,7 +16,7 @@ jobs:
           BASE_URL: https://cairnstone-v6.jaredtechfit.workers.dev
         run: |
           node <<'NODE'
-          const crypto = require("node:crypto");
+          const crypto = await import("node:crypto");
 
           const base = process.env.BASE_URL.replace(/\/$/, "");
           const resource = `${base}/mcp/core-auth`;
