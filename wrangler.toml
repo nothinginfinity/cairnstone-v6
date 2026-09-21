@@ -26,7 +26,7 @@ migrations_dir = "migrations"
 [[d1_databases]]
 binding = "CAIRNSTONE_AUTH_DB"
 database_name = "cairnstone-v6-auth"
-database_id = "PLACEHOLDER_CREATE_cairnstone-v6-auth"
+database_id = "fcd0437e-0b48-4f70-ac59-9d8f6a475aa2"
 migrations_dir = "migrations/auth"
 
 [[r2_buckets]]
