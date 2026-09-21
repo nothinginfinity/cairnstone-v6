@@ -5,6 +5,7 @@ keep_vars = true
 
 [vars]
 CAIRNSTONE_BOOTSTRAP_DEFAULT_MODE = "optimized_sparse"
+CORE_AUTH_ENFORCEMENT = "shadow"
 
 [observability]
 enabled = true
