@@ -66,6 +66,10 @@ const AUTH_CODE_TTL_SECONDS = 120;
 const CIMD_TIMEOUT_MS = 3000;
 const CIMD_MAX_BYTES = 64 * 1024;
 const DEFAULT_SCOPES = Object.freeze(["mcp:core"]);
+const DCR_MAX_REDIRECT_URIS = 8;
+const DCR_MAX_REDIRECT_URI_CHARS = 2048;
+const DCR_MAX_CLIENT_NAME_CHARS = 256;
+const DCR_MAX_SOFTWARE_ID_CHARS = 256;
 
 function nowIso(nowMs = Date.now()) {
   return new Date(nowMs).toISOString();
@@ -169,25 +173,80 @@ export function protectedResourceMetadata(env, url) {
   };
 }
 
+export function isDcrEnabled(env) {
+  return env?.CORE_AUTH_DCR_ENABLED === "true" || env?.CORE_AUTH_DCR_ENABLED === true;
+}
+
+export function isCimdClientId(clientId) {
+  return typeof clientId === "string" && clientId.startsWith("https://");
+}
+
+/**
+ * Strict OAuth POST body parser for /oauth/token and /oauth/revoke.
+ * Prefer application/x-www-form-urlencoded; retain application/json for tests.
+ */
+export async function parseOauthPostBody(request) {
+  const raw = request?.headers?.get?.("content-type") || "";
+  const mediaType = String(raw).split(";")[0].trim().toLowerCase();
+
+  if (mediaType === "application/x-www-form-urlencoded") {
+    const text = await request.text();
+    const params = new URLSearchParams(text);
+    const body = Object.create(null);
+    for (const [key, value] of params.entries()) {
+      body[key] = value;
+    }
+    return { ok: true, body, content_type: mediaType };
+  }
+
+  if (mediaType === "application/json") {
+    let parsed;
+    try {
+      parsed = await request.json();
+    } catch {
+      return { ok: false, error: "invalid_request", status: 400, detail: "invalid_json" };
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, error: "invalid_request", status: 400, detail: "json_object_required" };
+    }
+    return { ok: true, body: parsed, content_type: mediaType };
+  }
+
+  return {
+    ok: false,
+    error: "invalid_request",
+    status: 415,
+    detail: "unsupported_content_type",
+    content_type: mediaType || null
+  };
+}
+
 export function authorizationServerMetadata(env, url) {
   const issuer = authorizationServerIssuer(env, url);
   const origin = url?.origin || "";
-  return {
+  const dcrEnabled = isDcrEnabled(env);
+  const meta = {
     issuer,
     authorization_endpoint: `${origin}/oauth/authorize`,
     token_endpoint: `${origin}/oauth/token`,
     revocation_endpoint: `${origin}/oauth/revoke`,
-    registration_endpoint: `${origin}/oauth/register`,
     code_challenge_methods_supported: ["S256"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     response_types_supported: ["code"],
     token_endpoint_auth_methods_supported: ["none"],
     scopes_supported: [...DEFAULT_SCOPES],
-    dcr_enabled: env?.CORE_AUTH_DCR_ENABLED === "true" || env?.CORE_AUTH_DCR_ENABLED === true,
+    // CIMD preferred; kernel already validates HTTPS client metadata documents.
+    client_id_metadata_document_supported: true,
+    dcr_enabled: dcrEnabled,
     // Authorize is implemented (GET+POST /oauth/authorize). Do not advertise
     // endpoints that do not exist.
     authorization_response_iss_parameter_supported: true
   };
+  // Advertise registration_endpoint ONLY when DCR is actually enabled.
+  if (dcrEnabled) {
+    meta.registration_endpoint = `${origin}/oauth/register`;
+  }
+  return meta;
 }
 
 export function wwwAuthenticateChallenge(env, url, { error = "invalid_token", errorDescription } = {}) {
@@ -668,6 +727,95 @@ export async function revalidateCimdOrFail(clientId, expectedContentHash, { fetc
     return { ok: false, error: "cimd_metadata_mutated" };
   }
   return meta;
+}
+
+/**
+ * Bounded redirect_uri rules for public DCR clients (RFC 8252 + HTTPS).
+ * Allows https:// and loopback http://127.0.0.1|localhost|[::1] only.
+ */
+export function validateDcrRedirectUri(redirectUri) {
+  if (typeof redirectUri !== "string" || !redirectUri.trim()) {
+    return { ok: false, error: "invalid_redirect_uri" };
+  }
+  if (redirectUri.length > DCR_MAX_REDIRECT_URI_CHARS) {
+    return { ok: false, error: "redirect_uri_too_long" };
+  }
+  let parsed;
+  try {
+    parsed = new URL(redirectUri);
+  } catch {
+    return { ok: false, error: "invalid_redirect_uri" };
+  }
+  if (parsed.username || parsed.password) {
+    return { ok: false, error: "redirect_uri_userinfo_forbidden" };
+  }
+  if (parsed.hash) {
+    return { ok: false, error: "redirect_uri_fragment_forbidden" };
+  }
+  const host = parsed.hostname.toLowerCase();
+  const isLoopback =
+    host === "127.0.0.1" ||
+    host === "localhost" ||
+    host === "[::1]" ||
+    host === "::1";
+  if (parsed.protocol === "https:") {
+    return { ok: true, uri: parsed.toString() };
+  }
+  if (parsed.protocol === "http:" && isLoopback) {
+    return { ok: true, uri: parsed.toString() };
+  }
+  return { ok: false, error: "redirect_uri_scheme_forbidden" };
+}
+
+export function normalizeDcrRedirectUris(redirectUris) {
+  if (!Array.isArray(redirectUris) || redirectUris.length === 0) {
+    return { ok: false, error: "redirect_uris_required" };
+  }
+  if (redirectUris.length > DCR_MAX_REDIRECT_URIS) {
+    return { ok: false, error: "too_many_redirect_uris" };
+  }
+  const normalized = [];
+  const seen = new Set();
+  for (const raw of redirectUris) {
+    const checked = validateDcrRedirectUri(raw);
+    if (!checked.ok) return checked;
+    if (seen.has(checked.uri)) continue;
+    seen.add(checked.uri);
+    normalized.push(checked.uri);
+  }
+  if (normalized.length === 0) {
+    return { ok: false, error: "redirect_uris_required" };
+  }
+  return { ok: true, redirect_uris: normalized };
+}
+
+export async function lookupActiveOauthClient(env, clientId) {
+  const dbRes = authDb(env);
+  if (!dbRes.ok) return dbRes;
+  const row = await dbRes.db.prepare(
+    "SELECT * FROM auth_oauth_clients WHERE realm = ? AND client_id = ?"
+  ).bind(CORE_AUTH_REALM, clientId).first();
+  if (!row || row.status !== "active") {
+    return { ok: false, error: "unknown_client" };
+  }
+  return { ok: true, client: row };
+}
+
+export async function requireRegisteredOpaqueClientRedirect(env, clientId, redirectUri) {
+  const found = await lookupActiveOauthClient(env, clientId);
+  if (!found.ok) {
+    return { ok: false, error: "invalid_client", detail: found.error || "unknown_client" };
+  }
+  let uris;
+  try {
+    uris = JSON.parse(found.client.redirect_uris_json || "[]");
+  } catch {
+    return { ok: false, error: "invalid_client", detail: "corrupt_client_record" };
+  }
+  if (!Array.isArray(uris) || !uris.includes(redirectUri)) {
+    return { ok: false, error: "invalid_request", detail: "redirect_uri_mismatch" };
+  }
+  return { ok: true, client: found.client, redirect_uris: uris };
 }
 
 // --- Bootstrap / registry ---
@@ -1759,7 +1907,8 @@ export async function redeemAuthorizationCode(env, {
   // Resume account-owned home pointers (do not duplicate).
   // Selective canary: NEVER hardcode admitCanary true — gate on explicit allowlist /
   // CORE_AUTH_CANARY_AUTO_ADMIT / CORE_AUTH_CANARY_CONNECTIONS (family:/label:).
-  const clientFamily = clientId.startsWith("https://") ? "cimd" : String(clientId).slice(0, 64);
+  // DCR/CIMD registration must NEVER auto-admit canary connections.
+  const clientFamily = isCimdClientId(clientId) ? "cimd" : String(clientId).slice(0, 64);
   const canaryLabel = "oauth_redeem";
   const boot = await bootstrapAccountConnection(env, {
     clientFamily,
@@ -1810,9 +1959,10 @@ export async function handleOauthAuthorizeRequest(params, env, url, { fetchImpl 
     return { ok: false, error: "invalid_request", status: 400, detail: "S256 required" };
   }
 
-  // CIMD clients: validate redirect allowlist (and fail closed on fetch error).
+  // CIMD (HTTPS URL client_id): validate redirect allowlist (fail closed on fetch error).
+  // Opaque client_id: MUST resolve to an active persisted DCR client + exact redirect.
   let cimdContentHash = null;
-  if (clientId.startsWith("https://")) {
+  if (isCimdClientId(clientId)) {
     const dbRes = authDb(env);
     const allowed = await requireAllowlistedRedirectUri(clientId, redirectUri, {
       fetchImpl,
@@ -1831,6 +1981,16 @@ export async function handleOauthAuthorizeRequest(params, env, url, { fetchImpl 
       });
       if (!reval.ok) return { ok: false, error: reval.error, status: 400 };
     }
+  } else {
+    const registered = await requireRegisteredOpaqueClientRedirect(env, clientId, redirectUri);
+    if (!registered.ok) {
+      return {
+        ok: false,
+        error: registered.error || "invalid_client",
+        status: 400,
+        detail: registered.detail || registered.error
+      };
+    }
   }
 
   // Authenticator path: reuse existing account when provided; otherwise bootstrap
@@ -1841,7 +2001,7 @@ export async function handleOauthAuthorizeRequest(params, env, url, { fetchImpl 
 
   if (!accountId || !authenticatorId || !tenantId) {
     const boot = await bootstrapAccountConnection(env, {
-      clientFamily: clientId.startsWith("https://") ? "cimd" : String(clientId).slice(0, 64),
+      clientFamily: isCimdClientId(clientId) ? "cimd" : String(clientId).slice(0, 64),
       method: "wallet_proof",
       assuranceClass: "wallet_ownership",
       resource,
@@ -1978,15 +2138,105 @@ export async function handleOauthRevokeRequest(body, env) {
 }
 
 export async function handleOauthRegisterRequest(body, env) {
-  const enabled = env?.CORE_AUTH_DCR_ENABLED === "true" || env?.CORE_AUTH_DCR_ENABLED === true;
-  if (!enabled) {
+  if (!isDcrEnabled(env)) {
     return { ok: false, error: "dcr_disabled", status: 403 };
   }
-  // Compatibility-only stub when explicitly enabled.
+
+  const dbRes = authDb(env);
+  if (!dbRes.ok) return { ...dbRes, status: 500 };
+
+  const redirectNorm = normalizeDcrRedirectUris(body?.redirect_uris);
+  if (!redirectNorm.ok) {
+    return { ok: false, error: "invalid_client_metadata", status: 400, detail: redirectNorm.error };
+  }
+
+  const grantTypesRaw = Array.isArray(body?.grant_types) ? body.grant_types : ["authorization_code"];
+  const grantTypes = [...new Set(grantTypesRaw.map((g) => String(g)))];
+  if (grantTypes.length !== 1 || grantTypes[0] !== "authorization_code") {
+    return { ok: false, error: "invalid_client_metadata", status: 400, detail: "grant_types_must_be_authorization_code" };
+  }
+
+  const responseTypesRaw = Array.isArray(body?.response_types) ? body.response_types : ["code"];
+  const responseTypes = [...new Set(responseTypesRaw.map((g) => String(g)))];
+  if (responseTypes.length !== 1 || responseTypes[0] !== "code") {
+    return { ok: false, error: "invalid_client_metadata", status: 400, detail: "response_types_must_be_code" };
+  }
+
+  const authMethod = typeof body?.token_endpoint_auth_method === "string"
+    ? body.token_endpoint_auth_method
+    : "none";
+  if (authMethod !== "none") {
+    return { ok: false, error: "invalid_client_metadata", status: 400, detail: "token_endpoint_auth_method_must_be_none" };
+  }
+
+  // Reject any attempt to register a confidential client secret.
+  if (body?.client_secret != null || body?.client_secret_expires_at != null) {
+    return { ok: false, error: "invalid_client_metadata", status: 400, detail: "client_secret_not_supported" };
+  }
+
+  let clientName = null;
+  if (typeof body?.client_name === "string" && body.client_name.trim()) {
+    clientName = body.client_name.trim().slice(0, DCR_MAX_CLIENT_NAME_CHARS);
+  }
+  let softwareId = null;
+  if (typeof body?.software_id === "string" && body.software_id.trim()) {
+    softwareId = body.software_id.trim().slice(0, DCR_MAX_SOFTWARE_ID_CHARS);
+  }
+  let applicationType = null;
+  if (typeof body?.application_type === "string" && body.application_type.trim()) {
+    const at = body.application_type.trim().toLowerCase();
+    if (at !== "web" && at !== "native") {
+      return { ok: false, error: "invalid_client_metadata", status: 400, detail: "application_type_invalid" };
+    }
+    applicationType = at;
+  }
+
+  // Opaque DCR client_id only — never accept a caller-supplied URL client_id here.
+  if (typeof body?.client_id === "string" && body.client_id.trim()) {
+    return { ok: false, error: "invalid_client_metadata", status: 400, detail: "client_id_server_minted_only" };
+  }
+
+  const clientId = randomToken("dcr", 16);
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const createdAt = nowIso();
+
+  await dbRes.db.prepare(
+    `INSERT INTO auth_oauth_clients
+      (client_id, realm, registration_type, client_name, software_id, redirect_uris_json,
+       grant_types_json, response_types_json, token_endpoint_auth_method, application_type,
+       status, created_at, revoked_at, accepted_state_authority)
+     VALUES (?, ?, 'dcr', ?, ?, ?, ?, ?, 'none', ?, 'active', ?, NULL, 0)`
+  ).bind(
+    clientId,
+    CORE_AUTH_REALM,
+    clientName,
+    softwareId,
+    JSON.stringify(redirectNorm.redirect_uris),
+    JSON.stringify(grantTypes),
+    JSON.stringify(responseTypes),
+    applicationType,
+    createdAt
+  ).run();
+
+  await audit(dbRes.db, "oauth_dcr_register", {
+    client_id: clientId,
+    redirect_uri_count: redirectNorm.redirect_uris.length,
+    application_type: applicationType
+    // Never auto-admit canary from DCR.
+  });
+
+  // RFC 7591 public-client registration response. No client_secret ever.
   return {
     ok: true,
-    client_id: typeof body?.client_id === "string" ? body.client_id : randomToken("dcr", 12),
-    client_id_issued_at: Math.floor(Date.now() / 1000)
+    client_id: clientId,
+    client_id_issued_at: issuedAt,
+    redirect_uris: redirectNorm.redirect_uris,
+    grant_types: grantTypes,
+    response_types: responseTypes,
+    token_endpoint_auth_method: "none",
+    client_name: clientName || undefined,
+    software_id: softwareId || undefined,
+    application_type: applicationType || undefined
   };
 }
 
@@ -2020,5 +2270,7 @@ export {
   rowToAuthenticator,
   rowToConnectionPrincipal,
   rowToTokenFamily,
-  pkceChallengeS256
+  pkceChallengeS256,
+  DCR_MAX_REDIRECT_URIS,
+  DCR_MAX_REDIRECT_URI_CHARS
 };

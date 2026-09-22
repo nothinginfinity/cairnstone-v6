@@ -245,6 +245,7 @@ import {
   handleOauthTokenRequest,
   injectServerDerivedCaller,
   isProtectedMcpRpc,
+  parseOauthPostBody,
   protectedResourceMetadata,
   resolveEnforcementMode,
   wwwAuthenticateChallenge
@@ -302,7 +303,11 @@ export default {
       if (request.method === "GET" && url.pathname === `/.well-known/oauth-protected-resource${CORE_AUTH_RESOURCE_PATH}`) {
         return json(protectedResourceMetadata(env, url));
       }
-      if (request.method === "GET" && (url.pathname === "/.well-known/oauth-authorization-server" || url.pathname === "/oauth/.well-known/oauth-authorization-server")) {
+      if (request.method === "GET" && (
+        url.pathname === "/.well-known/oauth-authorization-server/oauth" ||
+        url.pathname === "/.well-known/oauth-authorization-server" ||
+        url.pathname === "/oauth/.well-known/oauth-authorization-server"
+      )) {
         return json(authorizationServerMetadata(env, url));
       }
       if ((request.method === "GET" || request.method === "POST") && url.pathname === "/oauth/authorize") {
@@ -335,8 +340,11 @@ export default {
         return withCors(Response.redirect(result.redirect_uri, 302));
       }
       if (request.method === "POST" && url.pathname === "/oauth/token") {
-        const body = await request.json().catch(() => ({}));
-        const result = await handleOauthTokenRequest(body, env, url);
+        const parsed = await parseOauthPostBody(request);
+        if (!parsed.ok) {
+          return json({ error: parsed.error, error_description: parsed.detail || parsed.error }, parsed.status || 400);
+        }
+        const result = await handleOauthTokenRequest(parsed.body, env, url);
         return json(result.ok === false ? { error: result.error, error_description: result.reason || result.detail || result.error } : {
           access_token: result.access_token,
           refresh_token: result.refresh_token,
@@ -346,8 +354,11 @@ export default {
         }, result.ok === false ? (result.status || 400) : 200);
       }
       if (request.method === "POST" && url.pathname === "/oauth/revoke") {
-        const body = await request.json().catch(() => ({}));
-        const result = await handleOauthRevokeRequest(body, env);
+        const parsed = await parseOauthPostBody(request);
+        if (!parsed.ok) {
+          return json({ error: parsed.error, error_description: parsed.detail || parsed.error }, parsed.status || 400);
+        }
+        const result = await handleOauthRevokeRequest(parsed.body, env);
         return json(result.ok === false ? { error: result.error } : {}, result.ok === false ? (result.status || 400) : 200);
       }
       if (request.method === "POST" && url.pathname === "/oauth/register") {
@@ -755,7 +766,9 @@ function routes() {
     "POST /mcp/core-auth",
     "GET /mcp/core-auth",
     "GET /.well-known/oauth-protected-resource/mcp/core-auth",
+    "GET /.well-known/oauth-authorization-server/oauth",
     "GET /.well-known/oauth-authorization-server",
+    "GET /oauth/.well-known/oauth-authorization-server",
     "GET /oauth/authorize",
     "POST /oauth/authorize",
     "POST /oauth/token",

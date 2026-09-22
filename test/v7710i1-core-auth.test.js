@@ -10,6 +10,7 @@ import {
   CONNECTION_PRINCIPAL_SCHEMA,
   CORE_AUTH_REALM,
   TOKEN_FAMILY_SCHEMA,
+  authorizationServerMetadata,
   assertCallerIdentity,
   assertResourceSelectors,
   authDb,
@@ -27,6 +28,7 @@ import {
   joinTenant,
   legacyMustNotQueryAuth,
   mergeScopesForStepUp,
+  parseOauthPostBody,
   pkceChallengeS256,
   protectedResourceMetadata,
   redeemAuthorizationCode,
@@ -66,6 +68,7 @@ class FakeAuthD1 {
       auth_authorization_codes: new Map(),
       auth_routing_aliases: new Map(),
       auth_cimd_cache: new Map(),
+      auth_oauth_clients: new Map(),
       auth_canary_admissions: new Map(),
       auth_audit_events: new Map(),
       mcp_core_sessions: new Map()
@@ -88,6 +91,7 @@ class FakeAuthD1 {
       case "auth_authorization_codes": return row.code_hash;
       case "auth_routing_aliases": return `${row.realm}|${row.alias}`;
       case "auth_cimd_cache": return row.client_id;
+      case "auth_oauth_clients": return row.client_id;
       case "auth_canary_admissions": return `${row.realm}|${row.connection_id}`;
       case "auth_audit_events": return row.event_id;
       case "mcp_core_sessions": return row.session_id;
@@ -226,6 +230,29 @@ class FakeAuthD1 {
               const [client_id, realm, content_hash, redirect_uris_json, fetched_at, document_json] = args;
               db.tables.auth_cimd_cache.set(client_id, {
                 client_id, realm, content_hash, redirect_uris_json, fetched_at, document_json
+              });
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (/^INSERT INTO auth_oauth_clients/i.test(normalized)) {
+              const [
+                client_id, realm, client_name, software_id, redirect_uris_json,
+                grant_types_json, response_types_json, application_type, created_at
+              ] = args;
+              db.tables.auth_oauth_clients.set(client_id, {
+                client_id,
+                realm,
+                registration_type: "dcr",
+                client_name,
+                software_id,
+                redirect_uris_json,
+                grant_types_json,
+                response_types_json,
+                token_endpoint_auth_method: "none",
+                application_type,
+                status: "active",
+                created_at,
+                revoked_at: null,
+                accepted_state_authority: 0
               });
               return { success: true, meta: { changes: 1 } };
             }
@@ -420,6 +447,11 @@ class FakeAuthD1 {
             if (/SELECT \* FROM auth_authorization_codes WHERE realm = \? AND code_hash = \?/i.test(normalized)) {
               const [realm, code_hash] = args;
               const row = db.tables.auth_authorization_codes.get(code_hash);
+              return row && row.realm === realm ? clone(row) : null;
+            }
+            if (/SELECT \* FROM auth_oauth_clients WHERE realm = \? AND client_id = \?/i.test(normalized)) {
+              const [realm, client_id] = args;
+              const row = db.tables.auth_oauth_clients.get(client_id);
               return row && row.realm === realm ? clone(row) : null;
             }
             if (/SELECT status FROM auth_canary_admissions WHERE realm = \? AND connection_id = \?/i.test(normalized)) {
@@ -1116,14 +1148,25 @@ test("NF-37 CIMD metadata mutation fail-closed via revalidateCimdOrFail", async 
   assert.equal(mutated.error, "cimd_metadata_mutated");
 });
 
-test("AS authorize endpoint issues code (advertised authorization_endpoint)", async () => {
+test("AS authorize endpoint issues code for registered opaque DCR client", async () => {
   const db = new FakeAuthD1();
-  const env = envFor(db);
+  const env = envFor(db, { CORE_AUTH_DCR_ENABLED: "true" });
+  const registered = await handleOauthRegisterRequest({
+    redirect_uris: ["https://client.example/cb"],
+    token_endpoint_auth_method: "none",
+    grant_types: ["authorization_code"],
+    response_types: ["code"],
+    client_name: "canary-client"
+  }, env);
+  assert.equal(registered.ok, true);
+  assert.ok(registered.client_id);
+  assert.equal(registered.client_secret, undefined);
+
   const verifier = "verifier_" + "e".repeat(43);
   const challenge = await pkceChallengeS256(verifier);
   const result = await handleOauthAuthorizeRequest({
     response_type: "code",
-    client_id: "canary-client",
+    client_id: registered.client_id,
     redirect_uri: "https://client.example/cb",
     code_challenge: challenge,
     code_challenge_method: "S256",
@@ -1137,6 +1180,23 @@ test("AS authorize endpoint issues code (advertised authorization_endpoint)", as
   assert.match(result.redirect_uri, /code=/);
   // Authorize must not auto-admit
   assert.equal(db.tables.auth_canary_admissions.size, 0);
+});
+
+test("AS authorize rejects unknown opaque client_id", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db);
+  const verifier = "verifier_" + "e".repeat(43);
+  const challenge = await pkceChallengeS256(verifier);
+  const result = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: "unknown-opaque-client",
+    redirect_uri: "https://client.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: RESOURCE
+  }, env, urlFor());
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "invalid_client");
 });
 
 test("path-only PRM; root PRM not published", async () => {
@@ -1241,4 +1301,367 @@ test("VERSION remains 0.5.43 (no runtime bump)", async () => {
   const body = await response.json();
   assert.equal(body.version, "0.5.43");
   assert.equal(body.mcp_core_auth, "/mcp/core-auth");
+});
+
+// --- V7.7.10i.1c1 OAuth client compatibility + safe DCR ---
+
+test("10i.1c1 metadata omits registration_endpoint when DCR disabled; advertises CIMD", () => {
+  const meta = authorizationServerMetadata(envFor(new FakeAuthD1()), urlFor());
+  assert.equal(meta.issuer, ISSUER);
+  assert.equal(meta.client_id_metadata_document_supported, true);
+  assert.equal(meta.dcr_enabled, false);
+  assert.equal("registration_endpoint" in meta, false);
+  assert.equal(meta.token_endpoint_auth_methods_supported.includes("none"), true);
+});
+
+test("10i.1c1 metadata includes registration_endpoint only when DCR enabled", () => {
+  const meta = authorizationServerMetadata(envFor(new FakeAuthD1(), { CORE_AUTH_DCR_ENABLED: "true" }), urlFor());
+  assert.equal(meta.dcr_enabled, true);
+  assert.equal(meta.registration_endpoint, "https://cairnstone.test/oauth/register");
+  assert.equal(meta.client_id_metadata_document_supported, true);
+});
+
+test("10i.1c1 RFC 8414 issuer-path discovery + compatibility aliases", async () => {
+  const env = envFor(new FakeAuthD1());
+  const paths = [
+    "/.well-known/oauth-authorization-server/oauth",
+    "/.well-known/oauth-authorization-server",
+    "/oauth/.well-known/oauth-authorization-server"
+  ];
+  for (const path of paths) {
+    const response = await worker.fetch(new Request(`https://cairnstone.test${path}`), env);
+    assert.equal(response.status, 200, path);
+    const body = await response.json();
+    assert.equal(body.issuer, ISSUER, path);
+    assert.equal(body.authorization_endpoint, "https://cairnstone.test/oauth/authorize", path);
+    assert.equal(body.client_id_metadata_document_supported, true, path);
+    assert.equal("registration_endpoint" in body, false, path);
+  }
+});
+
+test("10i.1c1 parseOauthPostBody prefers form; retains JSON; rejects unsupported", async () => {
+  const formReq = new Request("https://cairnstone.test/oauth/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: "grant_type=authorization_code&code=abc&client_id=x"
+  });
+  const formParsed = await parseOauthPostBody(formReq);
+  assert.equal(formParsed.ok, true);
+  assert.equal(formParsed.body.grant_type, "authorization_code");
+  assert.equal(formParsed.body.code, "abc");
+
+  const jsonReq = new Request("https://cairnstone.test/oauth/token", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ grant_type: "refresh_token", refresh_token: "csrt_x" })
+  });
+  const jsonParsed = await parseOauthPostBody(jsonReq);
+  assert.equal(jsonParsed.ok, true);
+  assert.equal(jsonParsed.body.grant_type, "refresh_token");
+
+  const bad = await parseOauthPostBody(new Request("https://cairnstone.test/oauth/token", {
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body: "grant_type=authorization_code"
+  }));
+  assert.equal(bad.ok, false);
+  assert.equal(bad.status, 415);
+});
+
+test("10i.1c1 DCR persists normalized redirect_uris and returns no client_secret", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, { CORE_AUTH_DCR_ENABLED: "true" });
+  const result = await handleOauthRegisterRequest({
+    client_name: "Perplexity Canary",
+    software_id: "perplexity-mcp",
+    redirect_uris: ["https://client.example/cb", "http://127.0.0.1:8787/cb"],
+    grant_types: ["authorization_code"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+    application_type: "native"
+  }, env);
+  assert.equal(result.ok, true);
+  assert.match(result.client_id, /^dcr_/);
+  assert.equal(result.client_secret, undefined);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, "client_secret"), false);
+  assert.deepEqual(result.redirect_uris, ["https://client.example/cb", "http://127.0.0.1:8787/cb"]);
+  assert.equal(result.token_endpoint_auth_method, "none");
+  const row = db.tables.auth_oauth_clients.get(result.client_id);
+  assert.ok(row);
+  assert.equal(row.status, "active");
+  assert.equal(row.token_endpoint_auth_method, "none");
+  assert.deepEqual(JSON.parse(row.redirect_uris_json), result.redirect_uris);
+  assert.equal(db.tables.auth_canary_admissions.size, 0);
+});
+
+test("10i.1c1 registered opaque client wrong redirect rejected; exact redirect + S256 works", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, { CORE_AUTH_DCR_ENABLED: "true" });
+  const registered = await handleOauthRegisterRequest({
+    redirect_uris: ["https://client.example/cb"],
+    token_endpoint_auth_method: "none"
+  }, env);
+  assert.equal(registered.ok, true);
+
+  const verifier = "verifier_" + "f".repeat(43);
+  const challenge = await pkceChallengeS256(verifier);
+
+  const wrong = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: registered.client_id,
+    redirect_uri: "https://evil.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: RESOURCE
+  }, env, urlFor());
+  assert.equal(wrong.ok, false);
+  assert.equal(wrong.detail, "redirect_uri_mismatch");
+
+  const ok = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: registered.client_id,
+    redirect_uri: "https://client.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: RESOURCE,
+    scope: "mcp:core"
+  }, env, urlFor());
+  assert.equal(ok.ok, true);
+  assert.ok(ok.code);
+  assert.equal(db.tables.auth_canary_admissions.size, 0);
+});
+
+test("10i.1c1 CIMD exact redirect validation remains intact", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db);
+  const fetchImpl = async () => new Response(JSON.stringify({
+    client_id: "https://client.example/cimd.json",
+    redirect_uris: ["https://client.example/cb"]
+  }), { status: 200, headers: { "content-type": "application/json" } });
+
+  const verifier = "verifier_" + "g".repeat(43);
+  const challenge = await pkceChallengeS256(verifier);
+
+  const bad = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: "https://client.example/cimd.json",
+    redirect_uri: "https://evil.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: RESOURCE
+  }, env, urlFor(), { fetchImpl });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.error, "redirect_uri_mismatch");
+
+  const good = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: "https://client.example/cimd.json",
+    redirect_uri: "https://client.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: RESOURCE
+  }, env, urlFor(), { fetchImpl });
+  assert.equal(good.ok, true);
+  assert.ok(good.code);
+  assert.equal(db.tables.auth_canary_admissions.size, 0);
+});
+
+test("10i.1c1 form-urlencoded token + refresh + revoke; JSON token compatibility retained", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, { CORE_AUTH_DCR_ENABLED: "true", CORE_AUTH_ENFORCEMENT: "shadow" });
+  const registered = await handleOauthRegisterRequest({
+    redirect_uris: ["https://client.example/cb"],
+    token_endpoint_auth_method: "none"
+  }, env);
+  const verifier = "verifier_" + "h".repeat(43);
+  const challenge = await pkceChallengeS256(verifier);
+  const authz = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: registered.client_id,
+    redirect_uri: "https://client.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: RESOURCE,
+    scope: "mcp:core"
+  }, env, urlFor());
+  assert.equal(authz.ok, true);
+
+  const tokenRes = await worker.fetch(new Request("https://cairnstone.test/oauth/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code: authz.code,
+      redirect_uri: "https://client.example/cb",
+      client_id: registered.client_id,
+      code_verifier: verifier,
+      resource: RESOURCE
+    }).toString()
+  }), env);
+  assert.equal(tokenRes.status, 200);
+  const tokens = await tokenRes.json();
+  assert.ok(tokens.access_token?.startsWith("csat_"));
+  assert.ok(tokens.refresh_token?.startsWith("csrt_"));
+  assert.equal(db.tables.auth_canary_admissions.size, 0);
+
+  const refreshRes = await worker.fetch(new Request("https://cairnstone.test/oauth/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: tokens.refresh_token,
+      resource: RESOURCE
+    }).toString()
+  }), env);
+  assert.equal(refreshRes.status, 200);
+  const refreshed = await refreshRes.json();
+  assert.ok(refreshed.access_token?.startsWith("csat_"));
+  assert.ok(refreshed.refresh_token?.startsWith("csrt_"));
+
+  const revokeRes = await worker.fetch(new Request("https://cairnstone.test/oauth/revoke", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token: refreshed.refresh_token }).toString()
+  }), env);
+  assert.equal(revokeRes.status, 200);
+
+  // JSON compatibility path (intentional for tests / non-form clients).
+  const verifier2 = "verifier_" + "i".repeat(43);
+  const challenge2 = await pkceChallengeS256(verifier2);
+  const authz2 = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: registered.client_id,
+    redirect_uri: "https://client.example/cb",
+    code_challenge: challenge2,
+    code_challenge_method: "S256",
+    resource: RESOURCE
+  }, env, urlFor());
+  const jsonToken = await worker.fetch(new Request("https://cairnstone.test/oauth/token", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      grant_type: "authorization_code",
+      code: authz2.code,
+      redirect_uri: "https://client.example/cb",
+      client_id: registered.client_id,
+      code_verifier: verifier2,
+      resource: RESOURCE
+    })
+  }), env);
+  assert.equal(jsonToken.status, 200);
+  const jsonBody = await jsonToken.json();
+  assert.ok(jsonBody.access_token);
+
+  const unsupported = await worker.fetch(new Request("https://cairnstone.test/oauth/token", {
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body: "grant_type=authorization_code"
+  }), env);
+  assert.equal(unsupported.status, 415);
+});
+
+test("10i.1c1 DCR/CIMD never auto-admit; canary denies non-admitted; admitted succeeds", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, { CORE_AUTH_DCR_ENABLED: "true", CORE_AUTH_ENFORCEMENT: "canary" });
+  const registered = await handleOauthRegisterRequest({
+    redirect_uris: ["https://client.example/cb"],
+    token_endpoint_auth_method: "none"
+  }, env);
+  const verifier = "verifier_" + "j".repeat(43);
+  const challenge = await pkceChallengeS256(verifier);
+  const authz = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: registered.client_id,
+    redirect_uri: "https://client.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: RESOURCE
+  }, env, urlFor());
+  const redeemed = await handleOauthTokenRequest({
+    grant_type: "authorization_code",
+    code: authz.code,
+    redirect_uri: "https://client.example/cb",
+    client_id: registered.client_id,
+    code_verifier: verifier,
+    resource: RESOURCE
+  }, env, urlFor());
+  assert.equal(redeemed.ok, true);
+  assert.equal(db.tables.auth_canary_admissions.size, 0);
+
+  const denied = await enforceCoreAuthRequest(new Request(RESOURCE, {
+    method: "POST",
+    headers: { authorization: `Bearer ${redeemed.access_token}` },
+    body: "{}"
+  }), env, urlFor(), { isProtectedToolCall: true });
+  assert.equal(denied.ok, false);
+  assert.equal(denied.body.error, "canary_not_admitted");
+
+  const admitted = await bootPair(db, { admitCanary: true });
+  const okGate = await enforceCoreAuthRequest(new Request(RESOURCE, {
+    method: "POST",
+    headers: { authorization: `Bearer ${admitted.access_token}` },
+    body: "{}"
+  }), env, urlFor(), { isProtectedToolCall: true });
+  assert.equal(okGate.ok, true);
+});
+
+test("10i.1c1 token exchange preserves exact client_id + redirect_uri + PKCE + issuer + resource binding", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, { CORE_AUTH_DCR_ENABLED: "true" });
+  const registered = await handleOauthRegisterRequest({
+    redirect_uris: ["https://client.example/cb"],
+    token_endpoint_auth_method: "none"
+  }, env);
+  const verifier = "verifier_" + "k".repeat(43);
+  const challenge = await pkceChallengeS256(verifier);
+  const authz = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: registered.client_id,
+    redirect_uri: "https://client.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: RESOURCE
+  }, env, urlFor());
+
+  const wrongClient = await handleOauthTokenRequest({
+    grant_type: "authorization_code",
+    code: authz.code,
+    redirect_uri: "https://client.example/cb",
+    client_id: "dcr_wrong",
+    code_verifier: verifier,
+    resource: RESOURCE
+  }, env, urlFor());
+  assert.equal(wrongClient.ok, false);
+  assert.equal(wrongClient.error, "invalid_grant");
+
+  const wrongRedirect = await handleOauthTokenRequest({
+    grant_type: "authorization_code",
+    code: authz.code,
+    redirect_uri: "https://other.example/cb",
+    client_id: registered.client_id,
+    code_verifier: verifier,
+    resource: RESOURCE
+  }, env, urlFor());
+  assert.equal(wrongRedirect.ok, false);
+
+  const wrongResource = await handleOauthTokenRequest({
+    grant_type: "authorization_code",
+    code: authz.code,
+    redirect_uri: "https://client.example/cb",
+    client_id: registered.client_id,
+    code_verifier: verifier,
+    resource: "https://cairnstone.test/mcp/core"
+  }, env, urlFor());
+  assert.equal(wrongResource.ok, false);
+
+  const ok = await handleOauthTokenRequest({
+    grant_type: "authorization_code",
+    code: authz.code,
+    redirect_uri: "https://client.example/cb",
+    client_id: registered.client_id,
+    code_verifier: verifier,
+    resource: RESOURCE
+  }, env, urlFor());
+  assert.equal(ok.ok, true);
+  assert.ok(ok.access_token);
 });
