@@ -33,6 +33,7 @@ import {
   protectedResourceMetadata,
   redeemAuthorizationCode,
   replaceAuthenticator,
+  resolveDcrClientIp,
   resolveEnforcementMode,
   revalidateCimdOrFail,
   revokeAuthenticator,
@@ -69,6 +70,7 @@ class FakeAuthD1 {
       auth_routing_aliases: new Map(),
       auth_cimd_cache: new Map(),
       auth_oauth_clients: new Map(),
+      auth_dcr_rate_buckets: new Map(),
       auth_canary_admissions: new Map(),
       auth_audit_events: new Map(),
       mcp_core_sessions: new Map()
@@ -92,6 +94,7 @@ class FakeAuthD1 {
       case "auth_routing_aliases": return `${row.realm}|${row.alias}`;
       case "auth_cimd_cache": return row.client_id;
       case "auth_oauth_clients": return row.client_id;
+      case "auth_dcr_rate_buckets": return `${row.realm}|${row.bucket_key}`;
       case "auth_canary_admissions": return `${row.realm}|${row.connection_id}`;
       case "auth_audit_events": return row.event_id;
       case "mcp_core_sessions": return row.session_id;
@@ -253,6 +256,17 @@ class FakeAuthD1 {
                 created_at,
                 revoked_at: null,
                 accepted_state_authority: 0
+              });
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (/^INSERT INTO auth_dcr_rate_buckets/i.test(normalized)) {
+              const [realm, bucket_key, window_start_iso, count] = args;
+              const key = `${realm}|${bucket_key}`;
+              db.tables.auth_dcr_rate_buckets.set(key, {
+                realm,
+                bucket_key,
+                window_start_iso,
+                count
               });
               return { success: true, meta: { changes: 1 } };
             }
@@ -453,6 +467,21 @@ class FakeAuthD1 {
               const [realm, client_id] = args;
               const row = db.tables.auth_oauth_clients.get(client_id);
               return row && row.realm === realm ? clone(row) : null;
+            }
+            if (/SELECT bucket_key, window_start_iso, count FROM auth_dcr_rate_buckets WHERE realm = \? AND bucket_key = \?/i.test(normalized)) {
+              const [realm, bucket_key] = args;
+              const row = db.tables.auth_dcr_rate_buckets.get(`${realm}|${bucket_key}`);
+              return row && row.realm === realm
+                ? { bucket_key: row.bucket_key, window_start_iso: row.window_start_iso, count: row.count }
+                : null;
+            }
+            if (/SELECT COUNT\(\*\) AS n FROM auth_oauth_clients WHERE realm = \? AND status = 'active'/i.test(normalized)) {
+              const [realm] = args;
+              let n = 0;
+              for (const row of db.tables.auth_oauth_clients.values()) {
+                if (row.realm === realm && row.status === "active") n += 1;
+              }
+              return { n };
             }
             if (/SELECT status FROM auth_canary_admissions WHERE realm = \? AND connection_id = \?/i.test(normalized)) {
               const [realm, connection_id] = args;
@@ -1664,4 +1693,180 @@ test("10i.1c1 token exchange preserves exact client_id + redirect_uri + PKCE + i
   }, env, urlFor());
   assert.equal(ok.ok, true);
   assert.ok(ok.access_token);
+});
+
+// --- V7.7.10i.1c1a DCR rate-limit / gate hardening ---
+
+function dcrBody(n = 0) {
+  return {
+    redirect_uris: [`https://client.example/cb${n || ""}`],
+    token_endpoint_auth_method: "none",
+    client_name: `client-${n}`
+  };
+}
+
+test("10i.1c1a resolveDcrClientIp prefers CF-Connecting-IP then first XFF hop", () => {
+  assert.equal(resolveDcrClientIp({
+    headers: new Headers({
+      "CF-Connecting-IP": "203.0.113.9",
+      "X-Forwarded-For": "198.51.100.1, 203.0.113.9"
+    })
+  }), "203.0.113.9");
+  assert.equal(resolveDcrClientIp({
+    headers: new Headers({ "X-Forwarded-For": "198.51.100.2, 203.0.113.1" })
+  }), "198.51.100.2");
+  assert.equal(resolveDcrClientIp({ clientIp: "203.0.113.7" }), "203.0.113.7");
+  assert.equal(resolveDcrClientIp({}), "unknown");
+});
+
+test("10i.1c1a DCR rate limit trips after N+1 in window", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, {
+    CORE_AUTH_DCR_ENABLED: "true",
+    CORE_AUTH_DCR_RATE_LIMIT_MAX: "3",
+    CORE_AUTH_DCR_RATE_LIMIT_WINDOW_SECONDS: "3600"
+  });
+  const ctx = { clientIp: "203.0.113.50" };
+  for (let i = 0; i < 3; i += 1) {
+    const ok = await handleOauthRegisterRequest(dcrBody(i), env, ctx);
+    assert.equal(ok.ok, true, `registration ${i}`);
+  }
+  const blocked = await handleOauthRegisterRequest(dcrBody(99), env, ctx);
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.status, 429);
+  assert.equal(blocked.error, "slow_down");
+  assert.ok(blocked.retry_after >= 1);
+  assert.equal(db.tables.auth_oauth_clients.size, 3);
+  assert.equal(db.tables.auth_canary_admissions.size, 0);
+
+  // Different IP has its own bucket.
+  const other = await handleOauthRegisterRequest(dcrBody(100), env, { clientIp: "203.0.113.51" });
+  assert.equal(other.ok, true);
+});
+
+test("10i.1c1a unknown IP uses stricter default rate limit", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, {
+    CORE_AUTH_DCR_ENABLED: "true",
+    CORE_AUTH_DCR_RATE_LIMIT_MAX: "50"
+  });
+  const a = await handleOauthRegisterRequest(dcrBody(1), env, {});
+  const b = await handleOauthRegisterRequest(dcrBody(2), env, {});
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+  const blocked = await handleOauthRegisterRequest(dcrBody(3), env, {});
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.status, 429);
+  assert.equal(blocked.error, "slow_down");
+});
+
+test("10i.1c1a active client cap trips with dcr_capacity_exceeded", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, {
+    CORE_AUTH_DCR_ENABLED: "true",
+    CORE_AUTH_DCR_MAX_ACTIVE_CLIENTS: "2",
+    CORE_AUTH_DCR_RATE_LIMIT_MAX: "100"
+  });
+  assert.equal((await handleOauthRegisterRequest(dcrBody(1), env, { clientIp: "198.51.100.10" })).ok, true);
+  assert.equal((await handleOauthRegisterRequest(dcrBody(2), env, { clientIp: "198.51.100.11" })).ok, true);
+  const blocked = await handleOauthRegisterRequest(dcrBody(3), env, { clientIp: "198.51.100.12" });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.status, 403);
+  assert.equal(blocked.error, "dcr_capacity_exceeded");
+  assert.equal(db.tables.auth_oauth_clients.size, 2);
+  assert.equal(db.tables.auth_canary_admissions.size, 0);
+});
+
+test("10i.1c1a initial-access token required when configured; rejects bad/missing; allows good", async () => {
+  const db = new FakeAuthD1();
+  const token = "iat_test_secret_value_001";
+  const env = envFor(db, {
+    CORE_AUTH_DCR_ENABLED: "true",
+    CORE_AUTH_DCR_INITIAL_ACCESS_TOKEN: token,
+    CORE_AUTH_DCR_RATE_LIMIT_MAX: "100"
+  });
+
+  const missing = await handleOauthRegisterRequest(dcrBody(1), env, { clientIp: "203.0.113.60" });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.status, 401);
+  assert.equal(missing.error, "invalid_token");
+
+  const bad = await handleOauthRegisterRequest(dcrBody(2), env, {
+    clientIp: "203.0.113.60",
+    authorization: "Bearer wrong-token"
+  });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.status, 401);
+
+  const good = await handleOauthRegisterRequest(dcrBody(3), env, {
+    clientIp: "203.0.113.60",
+    authorization: `Bearer ${token}`
+  });
+  assert.equal(good.ok, true);
+  assert.match(good.client_id, /^dcr_/);
+  assert.equal(db.tables.auth_canary_admissions.size, 0);
+});
+
+test("10i.1c1a when initial-access token unset, register still works subject to rate/cap", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, {
+    CORE_AUTH_DCR_ENABLED: "true",
+    CORE_AUTH_DCR_RATE_LIMIT_MAX: "5"
+  });
+  assert.equal(env.CORE_AUTH_DCR_INITIAL_ACCESS_TOKEN, undefined);
+  const result = await handleOauthRegisterRequest(dcrBody(1), env, { clientIp: "203.0.113.70" });
+  assert.equal(result.ok, true);
+  assert.match(result.client_id, /^dcr_/);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, "client_secret"), false);
+});
+
+test("10i.1c1a NF-26 DCR still disabled when CORE_AUTH_DCR_ENABLED off", async () => {
+  const result = await handleOauthRegisterRequest(dcrBody(1), envFor(new FakeAuthD1()), {
+    clientIp: "203.0.113.80",
+    authorization: "Bearer anything"
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 403);
+  assert.equal(result.error, "dcr_disabled");
+});
+
+test("10i.1c1a register never writes canary admissions", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, {
+    CORE_AUTH_DCR_ENABLED: "true",
+    CORE_AUTH_ENFORCEMENT: "canary",
+    CORE_AUTH_DCR_RATE_LIMIT_MAX: "10"
+  });
+  const result = await handleOauthRegisterRequest(dcrBody(1), env, { clientIp: "203.0.113.90" });
+  assert.equal(result.ok, true);
+  assert.equal(db.tables.auth_canary_admissions.size, 0);
+  for (const row of db.tables.auth_audit_events.values()) {
+    assert.equal(/canary_admit/i.test(row.event_type), false);
+  }
+});
+
+test("10i.1c1a worker /oauth/register surfaces Retry-After on rate limit", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, {
+    CORE_AUTH_DCR_ENABLED: "true",
+    CORE_AUTH_DCR_RATE_LIMIT_MAX: "1",
+    CORE_AUTH_DCR_RATE_LIMIT_WINDOW_SECONDS: "3600",
+    CORE_AUTH_ENFORCEMENT: "off"
+  });
+  const headers = { "content-type": "application/json", "CF-Connecting-IP": "203.0.113.91" };
+  const first = await worker.fetch(new Request("https://cairnstone.test/oauth/register", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(dcrBody(1))
+  }), env);
+  assert.equal(first.status, 201);
+  const second = await worker.fetch(new Request("https://cairnstone.test/oauth/register", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(dcrBody(2))
+  }), env);
+  assert.equal(second.status, 429);
+  const body = await second.json();
+  assert.equal(body.error, "slow_down");
+  assert.ok(Number(second.headers.get("Retry-After")) >= 1);
 });

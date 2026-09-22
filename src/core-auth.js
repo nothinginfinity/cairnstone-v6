@@ -70,6 +70,10 @@ const DCR_MAX_REDIRECT_URIS = 8;
 const DCR_MAX_REDIRECT_URI_CHARS = 2048;
 const DCR_MAX_CLIENT_NAME_CHARS = 256;
 const DCR_MAX_SOFTWARE_ID_CHARS = 256;
+const DCR_RATE_LIMIT_MAX_DEFAULT = 5;
+const DCR_RATE_LIMIT_MAX_UNKNOWN_DEFAULT = 2;
+const DCR_RATE_LIMIT_WINDOW_SECONDS_DEFAULT = 3600;
+const DCR_MAX_ACTIVE_CLIENTS_DEFAULT = 1000;
 
 function nowIso(nowMs = Date.now()) {
   return new Date(nowMs).toISOString();
@@ -2137,13 +2141,180 @@ export async function handleOauthRevokeRequest(body, env) {
   return { ok: true };
 }
 
-export async function handleOauthRegisterRequest(body, env) {
+function envPositiveInt(env, key, fallback) {
+  const raw = env?.[key];
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.floor(n);
+}
+
+function dcrRateLimitMax(env, clientIp) {
+  if (clientIp === "unknown") {
+    return envPositiveInt(env, "CORE_AUTH_DCR_RATE_LIMIT_MAX_UNKNOWN", DCR_RATE_LIMIT_MAX_UNKNOWN_DEFAULT);
+  }
+  return envPositiveInt(env, "CORE_AUTH_DCR_RATE_LIMIT_MAX", DCR_RATE_LIMIT_MAX_DEFAULT);
+}
+
+function dcrRateLimitWindowSeconds(env) {
+  return envPositiveInt(env, "CORE_AUTH_DCR_RATE_LIMIT_WINDOW_SECONDS", DCR_RATE_LIMIT_WINDOW_SECONDS_DEFAULT);
+}
+
+function dcrMaxActiveClients(env) {
+  return envPositiveInt(env, "CORE_AUTH_DCR_MAX_ACTIVE_CLIENTS", DCR_MAX_ACTIVE_CLIENTS_DEFAULT);
+}
+
+function dcrInitialAccessTokenConfigured(env) {
+  const raw = env?.CORE_AUTH_DCR_INITIAL_ACCESS_TOKEN;
+  return typeof raw === "string" && raw.trim().length > 0;
+}
+
+/**
+ * Prefer CF-Connecting-IP, else first X-Forwarded-For hop, else explicit clientIp, else unknown.
+ */
+export function resolveDcrClientIp(ctx = {}) {
+  const headers = ctx.request?.headers || ctx.headers || null;
+  if (headers && typeof headers.get === "function") {
+    const cf = headers.get("CF-Connecting-IP") || headers.get("cf-connecting-ip");
+    if (typeof cf === "string" && cf.trim()) return cf.trim();
+    const xff = headers.get("X-Forwarded-For") || headers.get("x-forwarded-for");
+    if (typeof xff === "string" && xff.trim()) {
+      const first = xff.split(",")[0].trim();
+      if (first) return first;
+    }
+  }
+  if (typeof ctx.clientIp === "string" && ctx.clientIp.trim()) return ctx.clientIp.trim();
+  return "unknown";
+}
+
+function resolveDcrAuthorizationHeader(ctx = {}) {
+  if (typeof ctx.authorization === "string") return ctx.authorization;
+  const headers = ctx.request?.headers || ctx.headers || null;
+  if (headers && typeof headers.get === "function") {
+    return headers.get("authorization") || headers.get("Authorization") || "";
+  }
+  return "";
+}
+
+async function timingSafeSecretEqual(provided, expected) {
+  if (typeof provided !== "string" || typeof expected !== "string" || !provided || !expected) {
+    return false;
+  }
+  const [left, right] = await Promise.all([hashSecret(provided), hashSecret(expected)]);
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let i = 0; i < left.length; i += 1) {
+    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+async function enforceDcrInitialAccessToken(env, ctx = {}) {
+  if (!dcrInitialAccessTokenConfigured(env)) return { ok: true };
+  const expected = String(env.CORE_AUTH_DCR_INITIAL_ACCESS_TOKEN).trim();
+  const header = resolveDcrAuthorizationHeader(ctx);
+  const match = String(header || "").match(/^Bearer\s+(.+)$/i);
+  const provided = match ? match[1].trim() : "";
+  if (!provided || !(await timingSafeSecretEqual(provided, expected))) {
+    return { ok: false, error: "invalid_token", status: 401, detail: "initial_access_token_required" };
+  }
+  return { ok: true };
+}
+
+async function consumeDcrRateLimit(db, env, clientIp, nowMs = Date.now()) {
+  const max = dcrRateLimitMax(env, clientIp);
+  const windowSeconds = dcrRateLimitWindowSeconds(env);
+  const bucketKey = `ip:${clientIp}`;
+  const now = nowMs;
+  const row = await db.prepare(
+    "SELECT bucket_key, window_start_iso, count FROM auth_dcr_rate_buckets WHERE realm = ? AND bucket_key = ?"
+  ).bind(CORE_AUTH_REALM, bucketKey).first();
+
+  let windowStartMs;
+  let count = 0;
+  if (row?.window_start_iso) {
+    const parsed = Date.parse(row.window_start_iso);
+    if (Number.isFinite(parsed) && (now - parsed) < windowSeconds * 1000) {
+      windowStartMs = parsed;
+      count = Number(row.count) || 0;
+    }
+  }
+  if (windowStartMs == null) {
+    windowStartMs = now;
+    count = 0;
+  }
+
+  if (count >= max) {
+    const retryAfter = Math.max(1, Math.ceil((windowStartMs + windowSeconds * 1000 - now) / 1000));
+    return {
+      ok: false,
+      error: "slow_down",
+      status: 429,
+      retry_after: retryAfter,
+      detail: "dcr_rate_limit_exceeded"
+    };
+  }
+
+  const nextCount = count + 1;
+  const windowStartIso = nowIso(windowStartMs);
+  await db.prepare(
+    `INSERT INTO auth_dcr_rate_buckets (realm, bucket_key, window_start_iso, count)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(realm, bucket_key) DO UPDATE SET
+       window_start_iso = excluded.window_start_iso,
+       count = excluded.count`
+  ).bind(CORE_AUTH_REALM, bucketKey, windowStartIso, nextCount).run();
+
+  return {
+    ok: true,
+    bucket_key: bucketKey,
+    count: nextCount,
+    max,
+    window_start_iso: windowStartIso,
+    window_seconds: windowSeconds
+  };
+}
+
+async function enforceDcrActiveClientCap(db, env) {
+  const max = dcrMaxActiveClients(env);
+  const row = await db.prepare(
+    "SELECT COUNT(*) AS n FROM auth_oauth_clients WHERE realm = ? AND status = 'active'"
+  ).bind(CORE_AUTH_REALM).first();
+  const active = Number(row?.n) || 0;
+  if (active >= max) {
+    return {
+      ok: false,
+      error: "dcr_capacity_exceeded",
+      status: 403,
+      detail: "active_oauth_clients_cap",
+      active,
+      max
+    };
+  }
+  return { ok: true, active, max };
+}
+
+/**
+ * Bounded public-client DCR (RFC 7591). Optional third arg carries request/headers
+ * (or clientIp + authorization) so IP rate limits and initial-access Bearer can be enforced.
+ */
+export async function handleOauthRegisterRequest(body, env, ctx = {}) {
   if (!isDcrEnabled(env)) {
     return { ok: false, error: "dcr_disabled", status: 403 };
   }
 
   const dbRes = authDb(env);
   if (!dbRes.ok) return { ...dbRes, status: 500 };
+
+  const iat = await enforceDcrInitialAccessToken(env, ctx);
+  if (!iat.ok) return iat;
+
+  const clientIp = resolveDcrClientIp(ctx);
+  const rate = await consumeDcrRateLimit(dbRes.db, env, clientIp);
+  if (!rate.ok) return rate;
+
+  const cap = await enforceDcrActiveClientCap(dbRes.db, env);
+  if (!cap.ok) return cap;
 
   const redirectNorm = normalizeDcrRedirectUris(body?.redirect_uris);
   if (!redirectNorm.ok) {
@@ -2221,7 +2392,8 @@ export async function handleOauthRegisterRequest(body, env) {
   await audit(dbRes.db, "oauth_dcr_register", {
     client_id: clientId,
     redirect_uri_count: redirectNorm.redirect_uris.length,
-    application_type: applicationType
+    application_type: applicationType,
+    client_ip: clientIp === "unknown" ? "unknown" : "redacted"
     // Never auto-admit canary from DCR.
   });
 

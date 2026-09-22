@@ -363,8 +363,19 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/oauth/register") {
         const body = await request.json().catch(() => ({}));
-        const result = await handleOauthRegisterRequest(body, env);
-        return json(result.ok === false ? { error: result.error } : result, result.ok === false ? (result.status || 403) : 201);
+        const result = await handleOauthRegisterRequest(body, env, { request });
+        const status = result.ok === false ? (result.status || 403) : 201;
+        const payload = result.ok === false
+          ? {
+              error: result.error,
+              ...(result.detail ? { error_description: result.detail } : {})
+            }
+          : result;
+        const headers = new Headers({ "content-type": "application/json" });
+        if (result.retry_after != null) {
+          headers.set("Retry-After", String(result.retry_after));
+        }
+        return withCors(new Response(JSON.stringify(payload), { status, headers }));
       }
       if (request.method === "GET" && url.pathname === "/") return json(landing(env, url));
       if (request.method === "GET" && url.pathname === "/health") return json(health(env));

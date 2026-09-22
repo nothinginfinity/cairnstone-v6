@@ -99,6 +99,11 @@ test("shared migration stream retired 0024; auth schema lives under migrations/a
   const oauthBody = readFileSync(oauthClientsMig, "utf8");
   assert.match(oauthBody, /CREATE TABLE IF NOT EXISTS auth_oauth_clients/);
   assert.equal(/\bclient_secret\b\s+[A-Z]/i.test(oauthBody), false, "must not define client_secret column");
+  const rateLimitMig = join(ROOT, "migrations/auth/0003_v7710i1c1a_dcr_rate_limit.sql");
+  assert.equal(existsSync(rateLimitMig), true);
+  const rateBody = readFileSync(rateLimitMig, "utf8");
+  assert.match(rateBody, /CREATE TABLE IF NOT EXISTS auth_dcr_rate_buckets/);
+  assert.match(rateBody, /CHECK \(realm = 'core-auth'\)/);
 });
 
 test("shared wrangler migration list cannot see auth migration; auth list cannot see shared", () => {
@@ -106,9 +111,11 @@ test("shared wrangler migration list cannot see auth migration; auth list cannot
   const authOut = wranglerLocal(["d1", "migrations", "list", "CAIRNSTONE_AUTH_DB", "--local"]);
   assert.equal(/0001_v7710i1_core_auth\.sql/.test(sharedOut), false);
   assert.equal(/0002_v7710i1c1_oauth_clients\.sql/.test(sharedOut), false);
+  assert.equal(/0003_v7710i1c1a_dcr_rate_limit\.sql/.test(sharedOut), false);
   assert.equal(/0024_v7710i1_core_auth\.sql/.test(sharedOut), false);
   assert.match(authOut, /0001_v7710i1_core_auth\.sql/);
   assert.match(authOut, /0002_v7710i1c1_oauth_clients\.sql/);
+  assert.match(authOut, /0003_v7710i1c1a_dcr_rate_limit\.sql/);
   assert.equal(/0012_v7_7_5a_shared_agent_workspace\.sql/.test(authOut), false);
   assert.equal(/0001_init\.sql/.test(authOut), false);
 });
@@ -122,6 +129,7 @@ test("auth migration applies idempotently on dedicated local Auth D1", () => {
     );
     assert.match(first, /0001_v7710i1_core_auth\.sql/);
     assert.match(first, /0002_v7710i1c1_oauth_clients\.sql/);
+    assert.match(first, /0003_v7710i1c1a_dcr_rate_limit\.sql/);
     const second = wranglerLocal(
       ["d1", "migrations", "apply", "CAIRNSTONE_AUTH_DB", "--local"],
       { persistTo }
@@ -135,18 +143,19 @@ test("auth migration applies idempotently on dedicated local Auth D1", () => {
         "CAIRNSTONE_AUTH_DB",
         "--local",
         "--command",
-        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('auth_accounts','auth_oauth_clients') ORDER BY name"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('auth_accounts','auth_oauth_clients','auth_dcr_rate_buckets') ORDER BY name"
       ],
       { persistTo }
     );
     assert.match(authProbe, /auth_accounts/);
+    assert.match(authProbe, /auth_dcr_rate_buckets/);
     assert.match(authProbe, /auth_oauth_clients/);
 
     // Shared DB with only shared migrations applied must not grow auth_* tables.
     // Prove via migration list isolation + schema file scan (above); additionally
     // confirm applying auth migration is impossible against CAIRNSTONE_DB stream.
     const sharedList = wranglerLocal(["d1", "migrations", "list", "CAIRNSTONE_DB", "--local"]);
-    assert.equal(/auth_accounts|0001_v7710i1_core_auth|0002_v7710i1c1_oauth_clients/.test(sharedList), false);
+    assert.equal(/auth_accounts|0001_v7710i1_core_auth|0002_v7710i1c1_oauth_clients|0003_v7710i1c1a_dcr_rate_limit/.test(sharedList), false);
   } finally {
     rmSync(persistTo, { recursive: true, force: true });
   }
