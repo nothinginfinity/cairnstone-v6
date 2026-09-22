@@ -15,6 +15,8 @@ Live runtime until a separate deploy gate: **`0.5.43` (unchanged)**
 | Auth kernel (ladder, PRM, token family, CIMD SSRF, identity asserts) | `src/core-auth.js` |
 | Dedicated Auth D1 binding + migrations stream | `wrangler.toml` (`CAIRNSTONE_AUTH_DB`) + `migrations/auth/` |
 | Auth-only schema (re-homed from retired shared `0024`) | `migrations/auth/0001_v7710i1_core_auth.sql` |
+| OAuth client registry (10i.1c1) | `migrations/auth/0002_v7710i1c1_oauth_clients.sql` |
+| DCR rate-limit buckets (10i.1c1a) | `migrations/auth/0003_v7710i1c1a_dcr_rate_limit.sql` |
 | Negative fixtures + canary isolation + Auth D1 wiring tests | `test/v7710i1-core-auth.test.js`, `test/v7710i1a-auth-d1.test.js` |
 | OAuth discovery / authorize / token / revoke / register (DCR off by default) | path-only PRM + `/oauth/*` |
 
@@ -84,7 +86,14 @@ Optional:
 - `CORE_AUTH_CANARY_CONNECTIONS` — comma-separated allowlist: `connection_id`, `family:<clientFamily>`, or `label:<label>`
 - `CORE_AUTH_CANARY_AUTO_ADMIT=true` — operator flag to admit on mint (default **off**; OAuth redeem never hardcodes admit)
 - `CORE_AUTH_DCR_ENABLED=true` — enable bounded public-client DCR (default off / NF-26). When off, AS metadata omits `registration_endpoint`. When on, `/oauth/register` persists opaque clients into `auth_oauth_clients` (no `client_secret`; PKCE `token_endpoint_auth_method=none` only). DCR/CIMD never auto-admit canary.
+- `CORE_AUTH_DCR_RATE_LIMIT_MAX` — max DCR registrations per client IP per window (default `5`). Client IP prefers `CF-Connecting-IP`, else first `X-Forwarded-For` hop.
+- `CORE_AUTH_DCR_RATE_LIMIT_MAX_UNKNOWN` — stricter max when IP resolves to `unknown` (default `2`).
+- `CORE_AUTH_DCR_RATE_LIMIT_WINDOW_SECONDS` — rate-limit window length (default `3600`). Buckets persist in Auth D1 `auth_dcr_rate_buckets` (`migrations/auth/0003_v7710i1c1a_dcr_rate_limit.sql`). Exceeded → HTTP `429` `slow_down` + `Retry-After` when practical.
+- `CORE_AUTH_DCR_MAX_ACTIVE_CLIENTS` — hard cap on `auth_oauth_clients` rows with `status=active` (default `1000`). Exceeded → HTTP `403` `dcr_capacity_exceeded`.
+- `CORE_AUTH_DCR_INITIAL_ACCESS_TOKEN` — optional RFC 7591-style initial-access gate. When set/non-empty, `POST /oauth/register` requires `Authorization: Bearer <token>` (timing-safe compare against env secret). Missing/wrong → `401` `invalid_token`. When unset, register remains open aside from rate limit + active-client cap (backward compatible for tests).
 - `CAIRNSTONE_AUTH_DB` — dedicated auth D1 binding (required in production wrangler)
+
+**Broad DCR enablement (`CORE_AUTH_DCR_ENABLED=true` in live) requires this 10i.1c1a hardening** (IP rate limit + active-client cap; strongly recommend setting `CORE_AUTH_DCR_INITIAL_ACCESS_TOKEN` before any public expose). Do not flip DCR live in this slice.
 
 ## Deploy packet (10i.1a intent — NOT AUTHORIZED YET)
 
@@ -110,6 +119,7 @@ Workflow: `.github/workflows/deploy-cloudflare.yml`
 - AS metadata is served at RFC 8414 `/.well-known/oauth-authorization-server/oauth` (issuer `{origin}/oauth`), plus compatibility aliases at root `/.well-known/oauth-authorization-server` and `/oauth/.well-known/oauth-authorization-server`.
 - AS metadata advertises `authorization_endpoint` because **GET/POST `/oauth/authorize` are implemented**.
 - AS metadata advertises `client_id_metadata_document_supported: true` (CIMD preferred). `registration_endpoint` is advertised **only** when `CORE_AUTH_DCR_ENABLED` is true.
+- `/oauth/register` (when DCR enabled) enforces per-IP rate limits, an active-client hard cap, and an optional initial-access Bearer gate (10i.1c1a). Broad live DCR expose requires this hardening.
 - `/oauth/token` and `/oauth/revoke` accept `application/x-www-form-urlencoded` (primary) and `application/json` (compatibility); other media types → 415.
 - Opaque `client_id` at authorize requires an active persisted DCR client + exact registered `redirect_uri`. HTTPS URL `client_id` uses CIMD validation.
 - **DELETE `/mcp/core-auth`** clears ephemeral `mcp_core_sessions` hydration only and **skips the Bearer auth gate** (same class as discovery). It cannot read `auth_*` private rows. Documented residual; not a protected-tool execution path.
