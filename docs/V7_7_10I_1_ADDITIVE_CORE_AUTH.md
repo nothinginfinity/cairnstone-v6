@@ -83,7 +83,7 @@ Optional:
 - `CORE_AUTH_ISSUER` — AS issuer (default `{origin}/oauth`)
 - `CORE_AUTH_CANARY_CONNECTIONS` — comma-separated allowlist: `connection_id`, `family:<clientFamily>`, or `label:<label>`
 - `CORE_AUTH_CANARY_AUTO_ADMIT=true` — operator flag to admit on mint (default **off**; OAuth redeem never hardcodes admit)
-- `CORE_AUTH_DCR_ENABLED=true` — enable DCR compatibility (default off / NF-26)
+- `CORE_AUTH_DCR_ENABLED=true` — enable bounded public-client DCR (default off / NF-26). When off, AS metadata omits `registration_endpoint`. When on, `/oauth/register` persists opaque clients into `auth_oauth_clients` (no `client_secret`; PKCE `token_endpoint_auth_method=none` only). DCR/CIMD never auto-admit canary.
 - `CAIRNSTONE_AUTH_DB` — dedicated auth D1 binding (required in production wrangler)
 
 ## Deploy packet (10i.1a intent — NOT AUTHORIZED YET)
@@ -107,7 +107,11 @@ Workflow: `.github/workflows/deploy-cloudflare.yml`
 ## Discovery notes
 
 - PRM is path-only: `/.well-known/oauth-protected-resource/mcp/core-auth` (no root PRM, to avoid confusing legacy discovery).
+- AS metadata is served at RFC 8414 `/.well-known/oauth-authorization-server/oauth` (issuer `{origin}/oauth`), plus compatibility aliases at root `/.well-known/oauth-authorization-server` and `/oauth/.well-known/oauth-authorization-server`.
 - AS metadata advertises `authorization_endpoint` because **GET/POST `/oauth/authorize` are implemented**.
+- AS metadata advertises `client_id_metadata_document_supported: true` (CIMD preferred). `registration_endpoint` is advertised **only** when `CORE_AUTH_DCR_ENABLED` is true.
+- `/oauth/token` and `/oauth/revoke` accept `application/x-www-form-urlencoded` (primary) and `application/json` (compatibility); other media types → 415.
+- Opaque `client_id` at authorize requires an active persisted DCR client + exact registered `redirect_uri`. HTTPS URL `client_id` uses CIMD validation.
 - **DELETE `/mcp/core-auth`** clears ephemeral `mcp_core_sessions` hydration only and **skips the Bearer auth gate** (same class as discovery). It cannot read `auth_*` private rows. Documented residual; not a protected-tool execution path.
 
 ## Residual risk (NF-25)
