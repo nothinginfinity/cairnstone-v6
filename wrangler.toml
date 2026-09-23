@@ -6,7 +6,7 @@ keep_vars = true
 [vars]
 CAIRNSTONE_BOOTSTRAP_DEFAULT_MODE = "optimized_sparse"
 CORE_AUTH_ENFORCEMENT = "shadow"
-CORE_AUTH_DCR_ENABLED = "true"
+CORE_AUTH_DCR_ENABLED = "false"
 CORE_AUTH_DCR_MAX_ACTIVE_CLIENTS = "10"
 
 [observability]
