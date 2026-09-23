@@ -14,6 +14,8 @@ Turn the iPhone Home Screen into a lightweight CairnStone entry surface: one app
 
 The installed surface is a presentation/client layer only. It creates no accepted state, grants no authority, and must not persist capability bearers or secrets merely to support installation.
 
+**Permanent full Console requirement:** the browser/PWA CairnStone Console is not only a compact launchpad or fallback for unsupported chat apps. It remains the independent, fully capable operator UI for permission-scoped all-project/all-agent message inspection, team and project settings, Response Profile/Skill/Tool Belt administration, custom tool development and isolated tests, Cloudflare/GitHub and connector observability, receipts, security reviews and explicit Human Commit workflows. The mobile Home dashboard is a fast entry point into that *full* Console; the V7.7.11h in-chat mini-Console is an optional smaller projection of the same backend. Neither removes or replaces the full operator surface.
+
 ## V7.7.11a — CairnStone Console PWA packaging
 
 Add the installable PWA shell to the existing Console using the InfinityPaste pattern:
