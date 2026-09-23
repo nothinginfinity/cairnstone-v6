@@ -11,6 +11,22 @@ CairnStone should appear inside supported best-in-class AI chat experiences inst
 
 This is an optional in-chat Console projection, not the full Console injected into arbitrary chat UIs, not an iframe with universal host privileges, and not a replacement for each host's navigation, prompt editor, conversation, or model-specific UI.
 
+## Permanent standalone Console / full operator control plane
+
+The existing browser-hosted CairnStone Console and installable iPhone PWA remain permanent, first-class **full operator interfaces**, not transitional UIs or fallbacks to be retired when chat apps gain embedded widgets. CairnStone's server remains the source of state and authorization; the standalone Console is the comprehensive, independent window into that backend. It must remain usable without ChatGPT, Claude, Grok, MCP Apps support, or another vendor's UI/account.
+
+The standalone full Console is where an authorized owner/admin or team member, within their actual account/tenant/role/object grants, can:
+- inspect all messages, threads, handoffs, unread/attention state and activity that they are entitled to see across their teams, projects, agents, connector accounts and AC1 chat/work planes, with searchable filters and provenance; never interpret "all" as cross-tenant or cross-principal access;
+- configure and publish team/project/member defaults, versioned Response Profiles, accepted Skills, Tool Belts, saved Scopes, workspaces and agent/host preferences; view effective settings and rollback history;
+- build, register, inspect and test custom MCP tools/skills/connectors in isolated preview or sandbox environments; run contract/schema tests, review execution traces and test receipts, and propose guarded production changes without mixing test and production credentials;
+- inspect backend operations, runtime/connection health, GitHub and Cloudflare status, active Code Sessions, task runs, checkpoints, manifests, accepted Stone/path HEADs, provenance, failures, authorization requests and audit receipts;
+- manage team invitations, accounts, connector principals, wallet/authenticator links, scoped access, revocation and recovery through established 10i and Human Commit flows;
+- review or execute consequential operations only through the exact existing server-side authorization, scoped-grant, CAS and Human Commit gates.
+
+The in-chat `cairnstone-console-mini` is a **bounded contextual projection** of the same authorized backend data and semantic actions, not an administration replacement. It may surface routine read-only cards and narrowly supported proposals; complex configuration, cross-project audit, tool development/test, sensitive recovery, bulk management and any action a host cannot safely authorize remain available in the standalone Console. Every mini card has a permission-aware **Open Full Console** deep link to the same object or operation when relevant.
+
+**Parity and independence gate:** no new fundamental backend capability may ship only inside an AI host's embedded UI. A tested standalone operator path (possibly linking to existing authorized backend flows) and reliable full-Console access must remain available, even if an MCP host rejects an app, loses its cached tools, changes subscription availability or is offline.
+
 ## Host capability and fallback contract
 
 Use the publicly supported MCP Apps / host app-component mechanism only where a given host and account actually expose it. At implementation time verify the exact supported MCP Apps spec, ChatGPT developer tools, Claude connector UI support, mobile constraints, consent/access requirements and app review. Never assume Grok, Cursor, Replit or every account/mobile plan supports interactive MCP Apps merely because the underlying model can call MCP tools.
@@ -45,7 +61,7 @@ Read-only-first initial tabs/panels, rendered only when there is current authori
 - Profiles: inspect accepted 10k team/project/member Response Profiles and current host compatibility; edit/publish only in later permitted phase;
 - Actions: view already-proposed actions and make the explicit existing approval/authorize workflow accessible when verified safe on a specific host.
 
-Build around concise cards, intentional detail expansion, predictable touch targets, screen-reader semantics, good loading/error/stale states and trusted native host styling where supported. The comprehensive Universe view, large diff editor, complex account recovery and bulk administration may remain in the full Console initially.
+Build around concise cards, intentional detail expansion, predictable touch targets, screen-reader semantics, good loading/error/stale states and trusted native host styling where supported. The comprehensive Universe view, large diff editor, complete permission-scoped message archive, custom tool testbench, backend observability, complex account recovery and bulk administration belong in the full standalone Console. Any selected feature later exposed inside a host must reuse its server-side contracts and must not become its only supported entry point.
 
 ## Identity, authorization and Human Commit
 
@@ -98,7 +114,8 @@ V7.7.11h.6 - telemetry, abuse/host-isolation review, cross-host mobile acceptanc
 - an in-chat Console card can display a legitimate pending proposal without executing it; when approval is supported, a separate Human Commit and broker receipt prove it;
 - tests exercise malicious prompt injection in project content, forged component action, guessed surface ID, cross-tenant request, stale render, replay, and hostile host/client conditions;
 - important status cards provide current/stale/error distinctions and links to provenance, never synthetic HEAD claims;
-- iPhone touch and screen-reader accessibility is validated and the independent existing PWA Console remains fully functional.
+- iPhone touch and screen-reader accessibility is validated, while the independent full web/PWA Console remains fully functional and directly accessible without any embedded-host dependency;
+- an authorized admin can use the standalone full Console to inspect all permitted AC1 messages and audit activity, manage team/project Response Profiles, safely test a custom tool in a non-production environment, and inspect underlying system evidence even when interactive MCP Apps are unavailable; mini-Console data for the same account/object/revision matches the corresponding full-Console projection without expanding permission.
 
 ## First demonstration
 
