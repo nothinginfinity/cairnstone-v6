@@ -73,6 +73,14 @@ Accepted Stones and paths remain the source of project truth; a profile or widge
 
 Never couple a visual choice to an unintended mutation. If a profile requests an approval card, the existing proposal / Human Commit / broker path must still separately authorize the action.
 
+## Profile draft storage versus accepted publication
+
+The first persistent in-chat profile editor (11h.4) and the standalone Console workbench (10k.4) must use the **same server-side preference/draft API**, never independent host-local preference stores. An ordinary `Save my draft` action writes only identity-scoped operational draft/preference data, authorized by the authenticated 10i account/tenant/connection principal and appropriate existing role/Object grants, under an optimistic revision/CAS guard. Return a verified revision and attributable audit receipt. A profile selector or edited form is presentation state only until the server confirms the save. Another independently authorized connection for the same member can retrieve that saved draft; a separate same-provider account or unrelated tenant cannot. Host-local editing without a backend connection is preview-only and must be labeled unsaved.
+
+An accepted team/project Response Profile has a separate **Publish/Assign** lifecycle: qualified owner/admin authorization, lint/preview/diff against current accepted version, explicit existing Human Commit for consequential default changes, an immutable Git revision, and manifest-last CairnStone path-HEAD acceptance. Changes to effective team defaults require that separate successful workflow; no draft save, in-chat widget, profile resolver, rendering skill or copied prompt may bypass it. Rollback is an explicit versioned publish of a prior approved policy, not a silent mutation of historical Stones.
+
+For the first pilot, use read-only resolved profile inspection followed by only one non-sensitive operational draft-save endpoint. Add team-wide publish later through the already trusted full-Console approval path. Each host must either invoke the registered MCP tool via a supported MCP App, ask the assistant to perform the same authorized tool call in a new turn, or offer an authenticated full-Console deep link; do not claim universal in-chat interactive support.
+
 ## Implementation plan
 
 V7.7.10k.0 - freeze versioned contract, policy/override semantics, profile-vs-agent-profile distinctions, identity/threat model and portability matrix.
