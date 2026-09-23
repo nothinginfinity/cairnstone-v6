@@ -31,6 +31,8 @@ This is a strong fit for CairnStone Console, especially Home, Work, Chat, Inbox,
 
 V7.7.11g does **not** replace the V7.7.9 Console UX architecture.
 
+The existing full web/PWA CairnStone Console remains a permanent comprehensive operator interface, with independently accessible message archives, team/project configuration, custom-tool testbench, system observability and authorization/audit views. The V7.7.11h in-chat mini-Console reuses this bounded catalog and its backend contracts; it is not a second Console backend, a replacement for complex administration, or an alternative authority source. Safe adaptive layouts must preserve the full Console path and deep-link to it when a host cannot support a required view or action.
+
 The stable human-designed shell remains authoritative for presentation rules:
 
 ```text
