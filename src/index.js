@@ -365,12 +365,27 @@ export default {
         const body = await request.json().catch(() => ({}));
         const result = await handleOauthRegisterRequest(body, env, { request });
         const status = result.ok === false ? (result.status || 403) : 201;
+        // RFC 7591 success body is client metadata only — never leak internal
+        // { ok, status, detail, retry_after, active, max } fields. Strict hosts
+        // (e.g. Perplexity) that fail to parse registration then hit authorize
+        // with an unknown opaque client_id.
         const payload = result.ok === false
           ? {
               error: result.error,
               ...(result.detail ? { error_description: result.detail } : {})
             }
-          : result;
+          : (() => {
+              const {
+                ok: _ok,
+                status: _status,
+                detail: _detail,
+                retry_after: _retryAfter,
+                active: _active,
+                max: _max,
+                ...publicClient
+              } = result;
+              return publicClient;
+            })();
         const headers = new Headers({ "content-type": "application/json" });
         if (result.retry_after != null) {
           headers.set("Retry-After", String(result.retry_after));
