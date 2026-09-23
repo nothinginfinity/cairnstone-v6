@@ -4,6 +4,8 @@ Status: **PLANNED / FOLLOW-ON WITHIN V7.7.11 — implementation not started.**
 
 Primary implementation home: `nothinginfinity/cairnstone-v6-console`.
 
+Downstream optional host renderer: `V7.7.11h` In-Chat CairnStone Console (`docs/V7_7_11H_IN_CHAT_CONSOLE.md`). It reuses the exact trusted catalog, validated surface specification, semantic actions and existing authorization; it does not fork surface truth or allow model-generated executable UI. `V7.7.10k` Response Profiles select presentation and authorized surface preferences, never execution rights.
+
 External design reference: `vercel-labs/json-render` at immutable commit `3ad381881194e7011ad3ccd6d668033495a06c29` (Apache-2.0), preserved in CairnStone chain `reference:vercel-labs/json-render`.
 
 ## Why this slice exists
