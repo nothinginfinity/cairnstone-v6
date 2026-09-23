@@ -93,6 +93,20 @@ The in-chat surface is an ephemeral projection. It is not a new database of proj
 
 Never assume every MCP client refreshes schemas or UI state reliably. On reconnect, tenant switch, principal revocation, belt update or source revision change, disable stale consequential actions and re-resolve.
 
+## First persistent in-chat interaction: authorized Response Profile draft save
+
+The first backend-connected write demo must distinguish three different things: native chat-local controls (preview, toggle or copy, no persistence), an in-chat interaction that asks the assistant to call an authorized tool on the next turn, and an installed host-supported MCP App that invokes the same registered server tools directly. Never claim that an arbitrary chat-generated control has network/database privileges or that every mobile host supports the same embedding mechanism.
+
+For `11h.4`, the first useful persistent action after the read-only card is `Save my Response Profile draft`:
+- server derives account/tenant/connection-principal from authenticated 10i context; it never accepts a claimed actor or owner from rendered props;
+- the selected existing profile/version and permitted member/project overrides are fetched through the 10k resolver; UI binds to its current revision and shows effective-versus-draft preferences;
+- the user changes a harmless presentation preference (for example concise/detailed, charts, citations, downloadable artifact); Save invokes an explicit registered authenticated draft-write tool through the host MCP App bridge, or an assistant-mediated authorized tool on a supported host without embedding;
+- the backend validates object/tenant membership, change schema, Tool Belt ceiling, CSRF/origin or host-token safeguards as applicable, and CAS/ETag revision; it stores only **operational personal/member draft preferences**, scoped to the authenticated owner, with an attributable write/audit receipt and no project accepted-state or profile manifest HEAD movement;
+- show success only after the backend returns the committed draft revision; denied, stale, timeout or offline results show error and retain unsaved UI edits without fabricating success. Reopen on a second authorized device and confirm the saved draft is visible; prove an unrelated tenant or same-provider second account cannot view or change it;
+- a team/project default **Publish** is a separate admin-authorized proposal and explicit existing Human Commit / Git-then-CairnStone manifest-last accepted-profile path, never an implicit side effect of Save, profile selection, a renderer action or a model utterance. Profile drafts may not expand object/Scope or tool authority.
+
+11h acceptance must cover (a) local-only chat control, (b) assistant-mediated tool save where permitted, and (c) one true embedded MCP App save, with honest fallback per host. No backend write is implied by a rendered button, and all interactive paths converge on the same canonical server-side operation and receipts.
+
 ## Implementation slices
 
 V7.7.11h.0 - host/support investigation and threat model: current ChatGPT MCP Apps and Claude connector behavior, iOS access, authentication, consent/review and native UI limitations; fallback matrix for other hosts.
