@@ -135,6 +135,14 @@ V7.7.11h.6 - telemetry, abuse/host-isolation review, cross-host mobile acceptanc
 
 From a mobile ChatGPT chat, request "Open my CairnStone project." An authenticated, read-only Home card appears showing the user's own selected project, current accepted START HERE, Code Session status and unread work inbox. Tap the current Code Session to inspect a live checkpoint, then open the accepted Response Profile picker. Open the same project from an independent supported host or receive a rich response/deep link if that host lacks interactive embedding. Cross-account negative tests must pass before expanding to approvals.
 
+## Follow-on: AC1-backed human communications (V7.7.11i)
+
+11h's first Inbox card remains **read-only**. A distinct, gated 11i communications slice will add private person-to-person and bounded group/project messaging using an explicit human account/tenant/participant authorization contract; existing AC1 agent/chat-plane actor names cannot be treated as authenticated human recipient identities. The same restricted message thread/compose service should be usable from the permanent standalone Console, installed host-supported MCP App, or assistant-mediated authorized MCP tool call. Showing a control is not permission to send; the server re-checks sender and recipient/thread ACLs and returns an attributable delivery receipt.
+
+11i must independently freeze human-content privacy, retention, abuse/rate limits, account isolation and no-automatic-ingestion rules before exposing private messages. Optional email and real-time video/voice are **later separately authorized integrations** with independent provider permissions, cost/security/consent controls and an authenticated full-Console/PWA fallback; AC1 itself is not a live-media or email delivery service. No guarantee that a provider app receives unsolicited native notifications, imports a message into its proprietary chat history, or permits embedded camera/microphone access.
+
+Detailed candidate: \`docs/V7_7_11I_CROSS_HOST_COMMUNICATIONS.md\`.
+
 ## Relationship to existing Console and other projects
 
 Build the first renderer using the established Console component and semantic action vocabulary, not a new standalone Console app or copied authorizations. This is another distribution channel for the same CairnStone backend and may later expose other Cloudflare-hosted projects, such as paid tools and specialized MCP workers, using separately scoped source adapters. Wallet/payment functionality remains behind independent economic authorization.
