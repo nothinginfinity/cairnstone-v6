@@ -13,6 +13,12 @@ A Response Profile is not an LLM weight fine-tune and is not an MCP URL, Tool Be
 
 Illustrative first pilot: visual-comparison, patterned after the CairnStone-versus-T3 and response-profile explanations delivered natively in ChatGPT, including executive thesis, meaningful diagrams, evidenced product comparisons, clearly marked implementation state, and optional exportable PDF/Markdown artifacts.
 
+## Configuration home: permanent standalone CairnStone Console
+
+The full standalone CairnStone Console (browser and installable PWA) is the primary **configuration and testing workbench** for Response Profiles, irrespective of whether any external AI app renders an embedded card. Authorized users should be able to inspect effective organization/team/project/member defaults; create, version, preview, compare, lint, publish, assign, supersede and roll back profiles; inspect attached skills/tools, accepted provenance, host-renderer compatibility and representative generated deliverables. Custom tool/skill testing and authorization/audit controls remain accessible through the same full Console under their own policies.
+
+The optional V7.7.11h in-chat Console may *read* or select authorized profiles and preview a bounded subset of settings. It is another client of the same resolver, not a second profile store, secret store, administrative authority or requirement for the primary configuration workflow. The existing Console must remain usable without a provider account, interactive MCP Apps support or live embedded host session.
+
 ## Core contract: cairnstone-response-profile-v1
 
 An accepted profile artifact should include:
@@ -73,7 +79,7 @@ V7.7.10k.0 - freeze versioned contract, policy/override semantics, profile-vs-ag
 V7.7.10k.1 - accepted catalog + manifest-last Git/CairnStone path-HEAD workflow and linter; first visual-comparison pilot with examples and evaluation fixtures.
 V7.7.10k.2 - account/tenant/principal-aware deterministic resolver; bounded Context Compiler and Skill Pack projection; stale-version and revocation protection.
 V7.7.10k.3 - native-first host adapter for ChatGPT, then Claude; test another independent host where MCP and render capability permits; support honest text fallback.
-V7.7.10k.4 - Console team/project/member preference controls with preview, publish, assignment, permission-aware overrides and rollback. Reuse 10i identity; avoid separate profile auth DB.
+V7.7.10k.4 - permanent full standalone Console team/project/member preference workbench with preview, lint/test fixtures, versioned publish, assignments, effective-preference inspection, permission-aware overrides, audit and rollback. Reuse 10i identity, existing custom-tool testing surfaces and accepted-state rules; avoid a separate profile auth DB or an in-chat-only control path.
 V7.7.10k.5 - connect trusted 11g UI-surface identity to profile semantics; make 11h embedded Console an optional output surface, not the default for every request.
 V7.7.10k.6 - cross-host acceptance and quality/cost evaluation on identical accepted evidence.
 
