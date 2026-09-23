@@ -937,6 +937,22 @@ Canonical detailed plan: `docs/V7_7_10J_ROLE_SCOPED_TOOL_BELTS.md`.
 
 ---
 
+## V7.7.10k — Portable Response Profiles / Team Presentation Contracts
+
+Status: **PLANNED / CONTRACT NEXT AFTER V7.7.10i/10j PREREQUISITES.** Add a versioned accepted presentation and deliverable policy for teams that already use different AI host apps. It is **not** model-weight fine-tuning, a Tool Belt, an agent role, a new authorization system, or a claim of identical rendering across apps.
+
+The model and host supply reasoning and native UI. CairnStone supplies project knowledge, accepted response preferences, relevant skills, authorized capability constraints, and verifiable evidence. A profile such as `visual-comparison` should be publishable once for a team/project and resolved in ChatGPT, Claude, and other connected models, with capability-aware native output and honest text/export fallback.
+
+Contract: `cairnstone-response-profile-v1`. Resolve accepted Git/Stone profile identity, version, owner/tenant, nonsecret defaults, effective preference layering, bounded examples, approved skill refs, optional trusted UI-surface preferences and host-renderer compatibility. Use deterministic team/project/member/task preference precedence, but **presentation cannot override platform safety, authenticated principal, object grants, Tool Belt policy, accepted-state evidence or Human Commit**. One account may have multiple connector principals; a team profile never joins accounts or grants access on its own.
+
+Sub-slices: `10k.0` contract/threat model; `10k.1` accepted catalog, linter and visual-comparison pilot; `10k.2` principal-aware read-only resolver + Context Compiler; `10k.3` native-first ChatGPT/Claude compatibility adapters; `10k.4` Console team/project/member controls; `10k.5` optional trusted 11g UI surface and 11h in-chat Console binding; `10k.6` cross-host acceptance and comparative quality/cost evaluation.
+
+Initial acceptance: the same accepted profile and evidence produces semantically consistent, appropriately native outputs across at least two supported hosts; the renderer reports compatibility and falls back safely; members see only authorized team/project profiles; versions/revocation/citations are inspectable; visual choices cannot widen tools, access, mutation or execution authority. Start with a high-quality grounded comparison and actual downloadable document, not a fabricated export.
+
+Canonical detailed plan: `docs/V7_7_10K_PORTABLE_RESPONSE_PROFILES.md`.
+
+---
+
 ## V7.7.11 — Mobile Home Surface / Installable PWA Dashboard + Guided/Adaptive UI
 
 Status: **PLANNED / AFTER V7.7.10 ACCEPTANCE.** Start inside `nothinginfinity/cairnstone-v6-console`, using the proven InfinityPaste PWA pattern. First deliver an installable iPhone Home Screen PWA and compact CairnStone dashboard, then test a generalized `Source + View + Action + Appearance` surface schema. Do **not** create a standalone repo until the schema proves useful across at least three distinct sources/products including a non-CairnStone source and the renderer/configuration lifecycle is clearly separable from Console releases. No new accepted-state or execution authority is introduced.
@@ -947,13 +963,16 @@ Later family slices extend that surface safely:
 - `V7.7.11f` — Simple Stone Library / portability;
 - `V7.7.11g` — **Safe Adaptive UI / Surface Composer**: bounded component/action catalog, declarative validated surface specs, deterministic-first composition, and optional V7.7.10h/Jev advisory selection among application-supplied UI candidates.
 
+- `V7.7.11h` — **In-Chat CairnStone Console / Host-Native App Surfaces**: project Home, Work, Inbox, Evidence, and 10k Response Profile controls embedded as compact authenticated interactive cards through host-supported MCP Apps. Reuse 11g trusted UI catalog/surface spec, existing PWA/backend state and 10i account connection principals; require host capability detection and honest read-only Markdown/deep-link fallback. A rendered card is never action authority. Consequential actions use existing explicit Human Commit and broker receipts. 
+
 11g is inspired by `vercel-labs/json-render` at immutable upstream commit `3ad381881194e7011ad3ccd6d668033495a06c29`, preserved under CairnStone reference chain `reference:vercel-labs/json-render`. CairnStone adapts the catalog/spec/renderer/validation/action-separation pattern; it does not make json-render or Jev a correctness dependency. The stable V7.7.9 shell and Human Commit / Authorize boundary remain outside adaptive model control.
 
 Canonical detailed plans:
 
 - `docs/V7_7_11_MOBILE_HOME_SURFACE.md`
 - `docs/V7_7_11E_GUIDED_MODE_SIMPLE_STONES.md`
-- `docs/V7_7_11G_SAFE_ADAPTIVE_UI_SURFACE.md`.
+- `docs/V7_7_11G_SAFE_ADAPTIVE_UI_SURFACE.md`;
+- `docs/V7_7_11H_IN_CHAT_CONSOLE.md`.
 
 ---
 
@@ -1403,7 +1422,11 @@ V7.7.10g/10h Context Retention + Semantic Capability Gateway (IN PROGRESS — de
         ↓
 V7.7.10i CairnStone Account Identity + Connector-Bound Authorization (P0 / REVIEW-CORRECTED — Console/account root -> wallet-backed first authenticator -> OAuth `/mcp/core-auth` connection -> immutable per-connection principal -> authenticated storage realm -> second-Perplexity isolation proof -> AC1/workspace/PCM bootstrap; gate before new Console expansion)
         ↓
-V7.7.11 Mobile Home / Guided Mode / Safe Adaptive UI (PLANNED — Console-first iPhone PWA + compact dashboard + semantic guide targets + declarative bounded surface composer; standalone repo gated on multi-source proof)
+V7.7.10j Role-Scoped Tool Belts (PLANNED — accepted, versioned capability projections; cannot widen broker/account/object authority)
+        ↓
+V7.7.10k Portable Response Profiles (PLANNED — team/project/user presentation policy, profile resolver, host-native renderer/fallback)
+        ↓
+V7.7.11 Mobile Home / Guided Mode / Safe Adaptive UI + In-Chat Console (PLANNED — iPhone PWA, bounded surface composer, host-supported MCP Apps projection; same backend/authority)
         ↓
 V7.8 CairnStone Federation / StoneLink (PLANNED / AFTER V7.7 ACCEPTANCE — public node manifest → DNS/.well-known discovery → external read-only Scope → signed external Stone envelopes → cross-vault grounded search/Q&A → federated AC1 → capability tiers → federation security gate)
         ↓
