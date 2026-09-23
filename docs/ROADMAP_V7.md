@@ -890,7 +890,7 @@ A belt may narrow authority but can never widen it.
 #### Relationship to existing CairnStone layers
 
 - `/mcp/core` remains the universal tiny bootstrap / deferred Tool Vault surface.
-- Tool Vault + native hydration answer **which capability does this task need now?**
+- Tool Vault + native hydration answer **which capability does this task need now.�ן�w�**
 - Tool Belt answers **which capability universe should this role inhabit at all?**
 - V7.7.10h Decision Plane may rank/select only candidates already inside the active belt.
 - Skills define procedures and verification over belt-available capabilities; skill dependency closure must never introduce a prohibited capability.
@@ -967,6 +967,9 @@ Later family slices extend that surface safely:
 
 - `V7.7.11h` — **In-Chat CairnStone Console / Host-Native App Surfaces**: optional compact authenticated Home/Work/Inbox/Evidence/10k Profile cards through supported host MCP Apps, backed by the same 11g trusted catalog, backend and 10i account principals. The permanent full standalone web/PWA Console retains complete authorized message inspection, system administration, custom tool testing, configuration and audit; it is never deprecated by 11h. Require host capability detection, functional read-only Markdown/deep-link fallback and an `Open Full Console` path. A rendered card grants nothing; consequential actions continue through the independent Human Commit/broker path.
 
+
+- `V7.7.11i` — **Cross-Host Team Communications (AC1-backed)**: after 10i human account isolation, extend existing AC1 beyond agent handoffs to explicit authorized human direct/group/project messaging; present the same secure Inbox/Composer in the permanent full standalone Console and optional 11h in-chat MCP App, with assistant-mediated tool or authenticated Console deep-link fallback. Introduce recipient discovery, participant-scoped ACLs, privacy/retention design, idempotent send/receipt semantics, rate limits and opt-in notifications as gated slices. Treat email (consented mailbox adapter) and voice/video (independent conferencing/WebRTC adapter with PWA fallback) as **separate future integrations** after messaging privacy acceptance, not automatic MCP capabilities. Never imply native host chat-history injection, universal in-chat camera/mic support, automatic recipient notifications, or blanket project-memory ingestion. The aside/future-feature parking lot includes calendar meetings, voice notes, consented transcription/translation, richer group collaboration and cross-org federation. Preserve 10i/10j authority and 11g/11h UI separation; full standalone Console remains the independent message/admin hub. Canonical candidate contract: `docs/V7_7_11I_CROSS_HOST_COMMUNICATIONS.md`.
+
 11g is inspired by `vercel-labs/json-render` at immutable upstream commit `3ad381881194e7011ad3ccd6d668033495a06c29`, preserved under CairnStone reference chain `reference:vercel-labs/json-render`. CairnStone adapts the catalog/spec/renderer/validation/action-separation pattern; it does not make json-render or Jev a correctness dependency. The stable V7.7.9 shell and Human Commit / Authorize boundary remain outside adaptive model control.
 
 Canonical detailed plans:
@@ -974,7 +977,8 @@ Canonical detailed plans:
 - `docs/V7_7_11_MOBILE_HOME_SURFACE.md`
 - `docs/V7_7_11E_GUIDED_MODE_SIMPLE_STONES.md`
 - `docs/V7_7_11G_SAFE_ADAPTIVE_UI_SURFACE.md`;
-- `docs/V7_7_11H_IN_CHAT_CONSOLE.md`.
+- `docs/V7_7_11H_IN_CHAT_CONSOLE.md`,
+- `docs/V7_7_11I_CROSS_HOST_COMMUNICATIONS.md`.
 
 ---
 
@@ -1428,7 +1432,7 @@ V7.7.10j Role-Scoped Tool Belts (PLANNED — accepted, versioned capability proj
         ↓
 V7.7.10k Portable Response Profiles (PLANNED — team/project/user presentation policy, profile resolver, host-native renderer/fallback)
         ↓
-V7.7.11 Mobile Home / Guided Mode / Safe Adaptive UI + In-Chat Console (PLANNED — iPhone PWA, bounded surface composer, host-supported MCP Apps projection; same backend/authority)
+V7.7.11 Mobile Home / Guided Mode / Safe Adaptive UI + In-Chat Console + Cross-Host Communications (PLANNED — iPhone PWA, bounded surface composer, host-supported MCP Apps, AC1-backed private human messaging; optional email/video gated separately; same backend/authority)
         ↓
 V7.8 CairnStone Federation / StoneLink (PLANNED / AFTER V7.7 ACCEPTANCE — public node manifest → DNS/.well-known discovery → external read-only Scope → signed external Stone envelopes → cross-vault grounded search/Q&A → federated AC1 → capability tiers → federation security gate)
         ↓
