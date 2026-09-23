@@ -890,7 +890,7 @@ A belt may narrow authority but can never widen it.
 #### Relationship to existing CairnStone layers
 
 - `/mcp/core` remains the universal tiny bootstrap / deferred Tool Vault surface.
-- Tool Vault + native hydration answer **which capability does this task need now.ù◊üäwù**
+- Tool Vault + native hydration answer **which capability does this task need now.ÔøΩ◊õßuÁ‚ùÁoøΩwÔøΩ**
 - Tool Belt answers **which capability universe should this role inhabit at all?**
 - V7.7.10h Decision Plane may rank/select only candidates already inside the active belt.
 - Skills define procedures and verification over belt-available capabilities; skill dependency closure must never introduce a prohibited capability.
@@ -955,6 +955,22 @@ Canonical detailed plan: `docs/V7_7_10K_PORTABLE_RESPONSE_PROFILES.md`.
 
 ---
 
+## V7.7.10l ‚Äî Standalone CairnStone Messages Mini MCP
+
+Status: **PLANNED / STANDALONE-FIRST PRODUCT CANDIDATE AFTER 10i HUMAN-IDENTITY/RESOURCE-AUTH CONTRACT.** Build a deliberately small remote MCP communications product that is useful without CairnStone Core, then make Core a first-class client of the same accepted service. Working product name: **CairnStone Messages**. Candidate independent repository after review: `nothinginfinity/cairnstone-messages`.
+
+The standalone connector exposes only account identity, permission-scoped contacts, thread list/read, explicit send, and read receipts. It owns human communications state in an independent Messages Worker + Messages D1/R2 boundary and must not expose Stones, code execution, arbitrary Tool Vault hydration, wallets, project search or the full Core catalog. Reuse AC1 concepts such as stable message/thread IDs, delivery state and idempotency, but private human message bodies are **not accepted project-memory Stones by default**.
+
+The product must work through ordinary MCP tools first, with an optional trusted Inbox/Thread/Composer MCP App on compatible hosts and an independent mobile-first Messages PWA fallback. A Messages-only account is valid; connecting Core is an optional upgrade. Prefer one CairnStone account/auth root with resource/audience-scoped authorization for the separate Messages resource server rather than a second identity universe. Core‚ÜíMessages integration may use an internal Worker service binding/RPC boundary, but downstream user/service authorization must remain explicit.
+
+Initial slices: `10l.0` product/security/privacy/resource-auth contract; `10l.1` independent repo + Worker/MCP skeleton; `10l.2` isolated 1:1 human message store + text MVP; `10l.3` cross-host connector acceptance (ChatGPT + an independent supported MCP host + same-provider multi-account isolation); `10l.4` trusted MCP App + standalone Messages PWA; `10l.5` CairnStone Core bridge without table/data duplication; `10l.6` opt-in notifications, abuse/privacy operations and controlled beta. Email, calendar, voice/video, attachments, group channels, federation and paid/x402 communications remain separate later modules.
+
+Hero proof: **ChatGPT-connected A sends ‚Üí independently authorized Claude-connected B reads/replies ‚Üí A sees the same thread/receipt state in Messages PWA, while unrelated C cannot enumerate the thread and no Core project is required.** Measure the ‚Äústicky connector‚Äù hypothesis with activation, first reply, cross-host reply and returning-user metrics rather than assuming retention.
+
+Canonical candidate plan: `docs/V7_7_10L_STANDALONE_MESSAGES_MCP.md`.
+
+---
+
 ## V7.7.11 ‚Äî Mobile Home Surface / Installable PWA Dashboard + Guided/Adaptive UI
 
 Status: **PLANNED / AFTER V7.7.10 ACCEPTANCE.** Preserve the independent full browser/PWA CairnStone Console as the permanent operator control center for all permission-scoped messages, backend observability, team/project settings, custom-tool/skill test and inspection, connection/access administration and Human Commit. The in-chat Console is an optional, smaller host-native projection over the same secured server contracts, never a replacement or the exclusive route to a backend function. Start inside `nothinginfinity/cairnstone-v6-console`, using the proven InfinityPaste PWA pattern. First deliver an installable iPhone Home Screen PWA and compact CairnStone dashboard, then test a generalized `Source + View + Action + Appearance` surface schema. Do **not** create a standalone repo until the schema proves useful across at least three distinct sources/products including a non-CairnStone source and the renderer/configuration lifecycle is clearly separable from Console releases. No new accepted-state or execution authority is introduced.
@@ -978,6 +994,7 @@ Canonical detailed plans:
 - `docs/V7_7_11E_GUIDED_MODE_SIMPLE_STONES.md`
 - `docs/V7_7_11G_SAFE_ADAPTIVE_UI_SURFACE.md`;
 - `docs/V7_7_11H_IN_CHAT_CONSOLE.md`,
+- `docs/V7_7_10L_STANDALONE_MESSAGES_MCP.md`,
 - `docs/V7_7_11I_CROSS_HOST_COMMUNICATIONS.md`.
 
 ---
@@ -1431,6 +1448,8 @@ V7.7.10i CairnStone Account Identity + Connector-Bound Authorization (P0 / REVIE
 V7.7.10j Role-Scoped Tool Belts (PLANNED ‚Äî accepted, versioned capability projections; cannot widen broker/account/object authority)
         ‚Üì
 V7.7.10k Portable Response Profiles (PLANNED ‚Äî team/project/user presentation policy, profile resolver, host-native renderer/fallback)
+        ‚Üì
+V7.7.10l Standalone CairnStone Messages Mini MCP (PLANNED ‚Äî independent human-messaging resource server + tiny connector + Messages PWA; Core becomes a client after standalone acceptance)
         ‚Üì
 V7.7.11 Mobile Home / Guided Mode / Safe Adaptive UI + In-Chat Console + Cross-Host Communications (PLANNED ‚Äî iPhone PWA, bounded surface composer, host-supported MCP Apps, AC1-backed private human messaging; optional email/video gated separately; same backend/authority)
         ‚Üì
