@@ -1,5 +1,6 @@
-// V7.7.10l.3 — Messages Auth Bridge (Core-side Worker entrypoint).
+// V7.7.10l.3 — Messages Auth Bridge (pure introspection helper).
 // One identity universe: Core Auth D1 stays the authority.
+// Named RPC class lives in src/worker.js (WorkerEntrypoint).
 // Messages workers must call this over a service binding and MUST NOT bind Auth D1.
 
 import {
@@ -20,7 +21,7 @@ function isAllowlistedMessagesResource(value) {
   return typeof value === "string" && MESSAGES_RESOURCE_ALLOWLIST.includes(value);
 }
 
-function boundFields(context) {
+function boundFields(context, expiry) {
   const scopes = Array.isArray(context?.scopes)
     ? context.scopes.filter((scope) => MESSAGES_SCOPES.includes(String(scope)))
     : [];
@@ -34,7 +35,7 @@ function boundFields(context) {
     principal_id: context.principal_id,
     resource: context.resource,
     scopes,
-    expiry: context.token_expires_at || null,
+    expiry: expiry || null,
     authz_version: context.authz_version ?? null
   };
 }
@@ -106,23 +107,7 @@ export async function introspectAccessToken(env, args = {}) {
     };
   }
 
-  return boundFields(context);
-}
-
-/**
- * Named Worker entrypoint for Messages service binding:
- *   binding = CORE_AUTH
- *   service = cairnstone-v6
- *   entrypoint = MessagesAuthBridge
- */
-export class MessagesAuthBridge {
-  constructor(ctx, env) {
-    this.env = env || ctx?.env || ctx || {};
-  }
-
-  async introspectAccessToken(args = {}) {
-    return introspectAccessToken(this.env, args);
-  }
+  return boundFields(context, validated.expires_at || null);
 }
 
 export function coreResourceOf(env, url) {
