@@ -973,6 +973,22 @@ Canonical candidate plan: `docs/V7_7_10L_STANDALONE_MESSAGES_MCP.md`.
 
 ---
 
+## V7.7.10m -- Task-First Harness Registry / Runnable Setup Catalog
+
+Status: **PLANNED / PRODUCT-LAYER CANDIDATE.** This is a composition, discovery, verification, and distribution layer over existing CairnStone primitives; it is not a new authority plane and does not outrank current 10i/10l authentication work.
+
+The product thesis is: **search what you want an AI to do, see proof that a tested setup works, then install or run that complete setup in the AI host you already use.** The catalog indexes reusable `cairnstone-harness-v1` manifests rather than plain prompt text. A Harness references versioned components such as an accepted provider-neutral Agent Profile, Tool Belt, Skill Pack, Context/Scope policy, Response Profile/output contract, model compatibility declarations, evaluation fixtures, budget/cost policy, authorization requirements, and immutable provenance. Referenced components keep their own authority and version identities; the Harness may narrow/select them but never grant capabilities by itself.
+
+The first product surface is task-first search and a proof-bearing Harness card: example input/output, supported hosts/models, required tools and permissions, immutable component versions, last-verified date, eval results, known failure cases, context/cost/runtime observations, execution/evaluation receipt references, and an explicit capability "nutrition label." Search/ranking should support task intent, host/model compatibility, tool requirements, read-vs-mutation risk, price/cost envelope, evidence strength, and freshness rather than popularity alone.
+
+Initial distribution should favor low-risk portability: export/install accepted prompt/context instructions where relevant, Skill bundles, Tool Belt/MCP configuration, Response Profile references, and host-specific setup instructions for ChatGPT/Claude/Grok or ordinary MCP clients. A hosted sandbox/BYOK trial runner is a later slice. Paid/rented execution and creator settlement must reuse V7.5/V7.10 economic authority and verified Work Receipts/x402 adapters rather than creating a marketplace-specific payment authority.
+
+Implementation sequence: `10m.0` contract/threat model + `cairnstone-harness-v1` schema; `10m.1` curated registry/index and task-first search; `10m.2` proof/eval cards, compatibility/freshness scoring, and dependency-staleness detection; `10m.3` export/install adapters and saved Harnesses; `10m.4` sandboxed BYOK trial runner with receipts and strict capability disclosure; `10m.5` verified creator submission/review/versioning; `10m.6` optional paid hosted/rental layer only after accepted economic-authority gates. Start with a smaller verified reference catalog and expand toward hundreds of high-quality Harnesses only after verification/update automation is proven.
+
+Canonical detailed plan: `docs/V7_7_10M_HARNESS_REGISTRY.md`.
+
+---
+
 ## V7.7.11 â€” Mobile Home Surface / Installable PWA Dashboard + Guided/Adaptive UI
 
 Status: **PLANNED / AFTER V7.7.10 ACCEPTANCE.** Preserve the independent full browser/PWA CairnStone Console as the permanent operator control center for all permission-scoped messages, backend observability, team/project settings, custom-tool/skill test and inspection, connection/access administration and Human Commit. The in-chat Console is an optional, smaller host-native projection over the same secured server contracts, never a replacement or the exclusive route to a backend function. Start inside `nothinginfinity/cairnstone-v6-console`, using the proven InfinityPaste PWA pattern. First deliver an installable iPhone Home Screen PWA and compact CairnStone dashboard, then test a generalized `Source + View + Action + Appearance` surface schema. Do **not** create a standalone repo until the schema proves useful across at least three distinct sources/products including a non-CairnStone source and the renderer/configuration lifecycle is clearly separable from Console releases. No new accepted-state or execution authority is introduced.
@@ -1452,6 +1468,8 @@ V7.7.10j Role-Scoped Tool Belts (PLANNED â€” accepted, versioned capability
 V7.7.10k Portable Response Profiles (PLANNED â€” team/project/user presentation policy, profile resolver, host-native renderer/fallback)
         â†“
 V7.7.10l Standalone CairnStone Messages Mini MCP (PLANNED â€” independent human-messaging resource server + tiny connector + Messages PWA; Core becomes a client after standalone acceptance)
+        â†“
+V7.7.10m Task-First Harness Registry / Runnable Setup Catalog (PLANNED â€” versioned composition manifest + task search + proof/evals + portable install/export; hosted/BYOK trials later; paid rental reuses V7.5/V7.10 authority)
         â†“
 V7.7.11 Mobile Home / Guided Mode / Safe Adaptive UI + In-Chat Console + Cross-Host Communications (PLANNED â€” iPhone PWA, bounded surface composer, host-supported MCP Apps, AC1-backed private human messaging; optional email/video gated separately; same backend/authority)
         â†“
