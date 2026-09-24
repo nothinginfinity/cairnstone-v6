@@ -4,6 +4,8 @@
 export const CORE_SCOPE = "mcp:core";
 export const MESSAGES_SCOPES = Object.freeze(["messages.read", "messages.write"]);
 export const CANONICAL_MESSAGES_RESOURCE = "https://cairnstone-messages.jaredtechfit.workers.dev";
+export const CANONICAL_CORE_ORIGIN = "https://cairnstone-v6.jaredtechfit.workers.dev";
+export const CANONICAL_CORE_RESOURCE = `${CANONICAL_CORE_ORIGIN}/mcp/core-auth`;
 
 export const RESOURCE_SCOPE_POLICY = Object.freeze({
   schema: "cairnstone-resource-scope-policy-v1",
@@ -43,18 +45,15 @@ export function isCanonicalMessagesResource(value) {
 export function isCanonicalCoreResource(value, env, url) {
   const resource = normalizeRegisteredResource(value);
   if (!resource) return false;
+  const allowed = new Set();
   const configured = typeof env?.CORE_AUTH_RESOURCE === "string"
     ? normalizeRegisteredResource(env.CORE_AUTH_RESOURCE)
     : "";
-  if (configured && resource === configured) return true;
-  if (resource.endsWith("/mcp/core-auth")) return true;
-  try {
-    const origin = url?.origin || "";
-    if (origin && resource === `${origin}/mcp/core-auth`) return true;
-  } catch {
-    /* ignore */
-  }
-  return false;
+  if (configured) allowed.add(configured);
+  allowed.add(CANONICAL_CORE_RESOURCE);
+  const origin = url?.origin ? normalizeRegisteredResource(url.origin) : "";
+  if (origin) allowed.add(`${origin}/mcp/core-auth`);
+  return allowed.has(resource);
 }
 
 export function resolveResourceClass(resource, env, url) {
