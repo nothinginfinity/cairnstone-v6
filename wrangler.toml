@@ -1,5 +1,5 @@
 name = "cairnstone-v6"
-main = "src/index.js"
+main = "src/worker.js"
 compatibility_date = "2026-06-21"
 keep_vars = true
 
@@ -22,10 +22,7 @@ database_name = "cairnstone-v6"
 database_id = "7c4ae99e-4ab0-44c3-afa3-3f1a2d64d319"
 migrations_dir = "migrations"
 
-# Dedicated auth D1 (V7.7.10i.1a). database_id is a PLACEHOLDER until Jared runs:
-#   npx wrangler d1 create cairnstone-v6-auth
-# then replaces PLACEHOLDER_CREATE_cairnstone-v6-auth with the returned UUID.
-# Do NOT substitute the shared cairnstone-v6 database_id here.
+# Dedicated auth D1 (V7.7.10i.1a). Messages workers must NOT bind this database.
 [[d1_databases]]
 binding = "CAIRNSTONE_AUTH_DB"
 database_name = "cairnstone-v6-auth"
