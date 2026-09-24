@@ -1676,6 +1676,7 @@ export async function validateAccessToken(env, accessToken, {
   return {
     ok: true,
     context,
+    expires_at: row.expires_at || null,
     // NF-25 residual risk acknowledgment for same-resource stolen bearer:
     residual_risk_stolen_bearer_replay: true
   };
