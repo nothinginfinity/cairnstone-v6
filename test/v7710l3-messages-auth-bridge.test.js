@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { hashSecret, validateAccessToken, assertCallerIdentity } from "../src/core-auth.js";
 import {
   CANONICAL_MESSAGES_RESOURCE,
-  MessagesAuthBridge,
   introspectAccessToken
 } from "../src/messages-auth-bridge.js";
 
@@ -153,15 +152,15 @@ function envFor(db) {
   return { CAIRNSTONE_AUTH_DB: db, CORE_AUTH_RESOURCE: CORE_RESOURCE };
 }
 
-test("Messages token introspects to bounded principal", async () => {
+test("Messages token introspects to bounded principal with truthful expiry", async () => {
   const db = new MiniAuthDb();
   await seedToken(db, {
     token: "csat_messages_ok",
     resource: CANONICAL_MESSAGES_RESOURCE,
-    scopes: ["messages.read", "messages.write"]
+    scopes: ["messages.read", "messages.write"],
+    expiresAt: "2099-01-01T00:00:00.000Z"
   });
-  const bridge = new MessagesAuthBridge(null, envFor(db));
-  const result = await bridge.introspectAccessToken({ token: "csat_messages_ok" });
+  const result = await introspectAccessToken(envFor(db), { token: "csat_messages_ok" });
   assert.equal(result.ok, true);
   assert.equal(result.active, true);
   assert.equal(result.account_id, "acct_alice");
@@ -171,6 +170,7 @@ test("Messages token introspects to bounded principal", async () => {
   assert.equal(result.resource, CANONICAL_MESSAGES_RESOURCE);
   assert.deepEqual(result.scopes, ["messages.read", "messages.write"]);
   assert.equal(result.authz_version, 1);
+  assert.equal(result.expiry, "2099-01-01T00:00:00.000Z");
   assert.equal("token_family_id" in result, false);
 });
 
