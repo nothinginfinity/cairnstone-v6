@@ -1,12 +1,12 @@
 # V7.7.10l — Standalone CairnStone Messages Mini MCP
 
-Status: **PLANNED / STANDALONE-FIRST PRODUCT CANDIDATE / DOCS ONLY.** No repository creation, Worker deployment, account migration, production database, paid provider enrollment, accepted path-HEAD movement, or public launch is authorized by this document.
+Status: **IMPLEMENTATION UNDERWAY / TESTER SLICE LIVE / NOT GA.** The standalone repo, Worker and isolated Messages D1 now exist. Version 0.1.3 has tester send/idempotency/receipt behavior live, but the deployed identity path still parses unverified JWT claims and is **not production identity**. The next P0 gate is a 10i-compatible Messages auth bridge; tester send should be closed again before that bridge is built and reopened only after the identity/isolation matrix passes.
 
 Parent roadmap: `docs/ROADMAP_V7.md`.
 Related follow-on: `docs/V7_7_11I_CROSS_HOST_COMMUNICATIONS.md`.
 Working product name: **CairnStone Messages**.
-Candidate implementation repository after review: `nothinginfinity/cairnstone-messages`.
-Candidate deployment boundary after review: an independent Messages Worker / remote MCP resource server plus a small standalone Messages web/PWA surface.
+Implementation repository: `nothinginfinity/cairnstone-messages`.
+Live tester deployment boundary: an independent Messages Worker / remote MCP resource server plus isolated Messages D1. The small standalone Messages web/PWA surface remains a later roadmap slice.
 Core principle: **Messages must be useful without CairnStone Core, while CairnStone Core can become a first-class client of the same service.**
 
 ## Why make Messages standalone-first
@@ -159,69 +159,84 @@ Use an internal service interface (candidate: Worker Service Binding/RPC) for Co
 ## Roadmap
 
 ### V7.7.10l.0 — Product/security contract
-- freeze product name/namespace only as a working identifier;
-- freeze resource-server identity, account/tenant/principal mapping, token audience/resource and scopes;
-- freeze human-message privacy/retention/deletion/export/block/report model;
-- freeze AC1 concepts to reuse versus human-message behavior that must stay separate;
-- threat model guessed user/thread IDs, stolen invite, cross-tenant read, token replay, prompt-driven unintended send, abusive signup/invite and attachment risks;
-- choose repository/deployment/storage names after review.
+Status: **CONTRACT FROZEN / IMPLEMENTATION BOUNDARY ESTABLISHED.**
+- one CairnStone account/auth root; Messages is a distinct resource/audience;
+- independent Messages Worker + Messages D1; no Core D1 sharing;
+- private human message bodies are operational Messages data, not project-memory Stones;
+- explicit send, exact receipts, idempotency, participant ACLs and fail-closed enumeration behavior;
+- privacy/retention/delete/export/block/report remain launch gates as implementation advances.
 
-**Gate:** no private-message implementation until account isolation and resource-specific token checks have a tested design.
+### V7.7.10l.1 — Independent repo + Worker/D1 skeleton
+Status: **COMPLETE / LIVE TESTER INFRASTRUCTURE.**
+- repo: `nothinginfinity/cairnstone-messages`;
+- independent Worker, CI and isolated `cairnstone-messages-db`;
+- remote `/mcp`, fixed six-tool catalog, D1-backed reads;
+- Core Worker/D1 remain untouched.
 
-### V7.7.10l.1 — Independent repo + Worker skeleton
-Candidate new repo: `nothinginfinity/cairnstone-messages`.
-- independent Cloudflare Worker and CI;
-- `/health`, remote `/mcp`, protected-resource + auth discovery;
-- six-tool deterministic mini catalog with stubs/read-only identity first;
-- separate Messages D1 binding; no Core D1 sharing;
-- optional internal service-binding interface contract, initially read-only;
-- structured audit/trace IDs and abuse/rate-limit hooks.
+### V7.7.10l.2 — Human message store + explicit tester send
+Status: **IMPLEMENTED / TESTER ONLY / NOT GA.**
+- 1:1 thread creation, membership isolation, send, mark-read and exact receipts;
+- duplicate `idempotency_key` replay returns the same receipt and stores one body;
+- guessed recipients/threads and non-member reads/sends fail closed;
+- verified evidence: CI `35938133244` SUCCESS, deploy `35938143064` SUCCESS, deployed tip `75f9e7dea404d7d3391a5d214e2e0ced37341b07`, service version `0.1.3`.
 
-**Gate:** two separately authenticated accounts must remain isolated before send is enabled.
+**Open security caveat:** the current Worker still derives identity from `decodeUnverifiedJwt()` claims. This is a test stub, not production identity. Tester send must be treated as temporary exposure and should be closed again before the next auth implementation begins.
 
-### V7.7.10l.2 — Human message store + text MVP
-- account-scoped contacts/invites;
-- direct 1:1 threads first;
-- explicit send, list, read and mark-read;
-- idempotency and duplicate-suppression;
-- block/report/rate-limit minimums;
-- exact delivery receipt semantics;
-- retention/export/delete mechanics sufficient for controlled testers;
-- no attachments, email or video yet.
+### V7.7.10l.3 — 10i-compatible Messages Auth Bridge — P0 NEXT
+1. Set `MESSAGES_SEND_ENABLED=false` again while preserving send code/tests.
+2. Extend the existing 10i authorization service with a distinct Messages resource and `messages.read` / `messages.write` scopes.
+3. Keep one CairnStone account root. Do **not** create a second JWT identity universe merely for Messages. Current 10i access tokens are opaque `csat_*` bearers, so the first bridge should validate those through a narrow server-side verification/introspection contract.
+4. Prefer a Cloudflare Service Binding/RPC path from Messages to Core-auth where practical. Messages must not bind directly to Core/Auth D1.
+5. The verifier returns only bounded server-derived identity/authorization fields such as `active`, `account_id`, `tenant_id`, `connection_id`, `principal_id`, `resource`, `scopes`, expiry and `authz_version`.
+6. Remove `decodeUnverifiedJwt()` from the authorization path. Caller-supplied account/tenant/connection/sub claims never become authority.
+7. Add negative tests: forged JWT; random bearer; expired/revoked token; Core-resource token at Messages; Messages token at Core; read-only token attempting send; wrong principal; C attempting A/B read/send.
+8. Re-enable tester send only after those tests pass against the live isolated Messages Worker.
 
-**Proof:** user A and user B exchange messages through the Messages backend while unrelated user C cannot enumerate either thread or private participant state.
+**Gate:** no invites, PWA account flows, Core integration, or GA on top of claim-only identity.
 
-### V7.7.10l.3 — Cross-host connector acceptance
-- connect independent accounts through at least ChatGPT and one independent MCP host where current support permits;
-- test two different accounts of the same provider separately;
-- text-tool fallback must work without MCP Apps;
-- reconnect/revocation/token refresh/client cache behavior;
-- connector onboarding guide and host-compatibility matrix.
+### V7.7.10l.4 — Invitation + contact bootstrap
+- invitation creation/claim is separately permission-scoped and rate-limited;
+- opaque single-use + expiring invite identity;
+- acceptance binds to the already authenticated CairnStone account root;
+- stolen/raced invite proves one bind; replay becomes `invite_spent`;
+- no global directory or unsolicited bulk invite flow;
+- accepted invitation creates only the intended contact/thread relationship.
 
-**Hero demonstration:** ChatGPT-connected A sends → Claude-connected B reads/replies → A sees reply, with the same thread/receipt state visible in Messages PWA and no Core project required.
+**Ordering rule:** invitations are built **after 10l.3 auth acceptance and before the PWA**, so the UI is built over real account/contact semantics rather than temporary principals.
 
-### V7.7.10l.4 — Messages MCP App + standalone PWA
-- Inbox / Thread / Composer trusted MCP App for compliant hosts;
+### V7.7.10l.5 — Authenticated cross-host hero acceptance
+- independently authenticated account A on ChatGPT;
+- independently authenticated account B on another supported MCP host (Claude first where current support permits);
+- same-provider two-account isolation test;
+- A sends → B reads/replies → A observes the reply + exact thread revision/receipt;
+- unrelated account C cannot enumerate participants, thread IDs or bodies;
+- reconnect, revoke, refresh and client-cache behavior are tested;
+- ordinary MCP-tool fallback works without MCP Apps.
+
+**Manual Jared gate:** this is the next meaningful human test after 10l.3 reopens tester send.
+
+### V7.7.10l.6 — Messages MCP App + standalone PWA
+- trusted Inbox / Thread / Composer MCP App where host support exists;
+- independent mobile-first PWA with sign-in, inbox, compose/reply, contacts/invites, privacy controls and install/connect guidance;
 - no arbitrary model-generated executable UI;
-- standalone mobile-first PWA with account/inbox/compose/connect instructions;
-- accessibility, stale/offline/error/unsent states;
+- accessibility plus stale/offline/error/unsent states;
 - PWA remains the reliable fallback for unsupported hosts.
 
-### V7.7.10l.5 — CairnStone Core bridge
-- Core binds to the accepted Messages service contract rather than copying tables;
-- map same CairnStone account root to separate Core and Messages resource authorization;
-- show human Messages in full Console with clear separation from AC1 agent/work planes;
-- optional explicit project/workspace thread linking;
-- 10j Tool Belt / object grants can further narrow Core-originated access;
-- prove Core outage does not break standalone Messages and Messages outage degrades Core communications without corrupting project authority.
+### V7.7.10l.7 — CairnStone Core bridge
+- Core consumes the accepted Messages service contract rather than copying tables;
+- same CairnStone account root, separate Core and Messages resource authorization;
+- explicit service caller + end-user context on Worker-to-Worker calls;
+- human Messages remain visibly distinct from AC1 agent/work correspondence;
+- optional project/workspace links use explicit grants/pointers only;
+- Core outage cannot break standalone Messages; Messages outage cannot corrupt Core authority.
 
-### V7.7.10l.6 — Notifications + controlled beta
+### V7.7.10l.8 — Notifications + controlled beta
 - opt-in PWA/in-app notifications first;
-- delivery cursor/duplicate suppression/unsubscribe;
-- operational dashboards, abuse queue, rate/cost limits, backups/recovery;
-- privacy/security review and incident runbook;
-- invite activation + first-message + reply funnels measured;
-- limited public/beta release only after isolation and deletion/retention acceptance.
+- delivery cursor / duplicate suppression / unsubscribe;
+- abuse queue, rate/cost limits, backups/recovery and incident runbook;
+- retention/delete/export acceptance;
+- measured invitation activation, first-message, cross-host reply and returning-user funnels;
+- limited beta only after identity, isolation and privacy gates close.
 
 ### Later modules — separately gated
 - email adapter;
@@ -275,5 +290,5 @@ Therefore the standalone Messages work does **not** need to wait for V7.7.10k Re
 
 The existing V7.7.11 generic “standalone renderer extraction” gate does not block a Messages repository. This is a product/security/service boundary, not extraction of the generic adaptive renderer.
 
-This document authorizes planning only. Independent review, explicit implementation authorization and the normal GitHub/CairnStone accepted-source procedure remain required.
+This document now records both the original product contract and the verified standalone implementation sequence. It does not by itself authorize production identity, GA, paid resources, new provider integrations, or widening of Core/tenant authority. Exact implementation, deploy and acceptance gates remain separate.
 
