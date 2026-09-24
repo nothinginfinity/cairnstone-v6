@@ -2064,7 +2064,7 @@ export async function handleOauthAuthorizeRequest(params, env, url, { fetchImpl 
     state,
     account_id: accountId,
     cimd_content_hash: cimdContentHash,
-    scopes: stepped.scopes,
+    scopes,
     // Never include secrets beyond the one-time code for the redirect.
   };
 }
