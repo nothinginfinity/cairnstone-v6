@@ -4,6 +4,7 @@ import {
   advertisedAuthorizationScopes,
   parseRequestedScopes,
   resolveResourceScopePolicy,
+  CANONICAL_CORE_RESOURCE,
   CANONICAL_MESSAGES_RESOURCE
 } from "../src/resource-scope-policy.js";
 import { mergeScopesForStepUp } from "../src/core-auth.js";
@@ -69,4 +70,25 @@ test("refresh cannot widen resource/scopes", () => {
 
 test("advertised AS scopes list registered families only", () => {
   assert.deepEqual(advertisedAuthorizationScopes(), ["mcp:core", "messages.read", "messages.write"]);
+});
+
+test("foreign origin with /mcp/core-auth suffix is invalid_target", () => {
+  const evil = resolveResourceScopePolicy("https://evil.example/mcp/core-auth", "mcp:core", env, url);
+  assert.equal(evil.error, "invalid_target");
+  const lookalike = resolveResourceScopePolicy(
+    "https://cairnstone-v6.jaredtechfit.workers.dev.evil.example/mcp/core-auth",
+    "mcp:core",
+    env,
+    url
+  );
+  assert.equal(lookalike.error, "invalid_target");
+});
+
+test("exact configured and exact live Core resources succeed; trailing slash does not broaden origin", () => {
+  const configured = resolveResourceScopePolicy(`${CORE_RESOURCE}/`, "mcp:core", env, url);
+  assert.equal(configured.ok, true);
+  const live = resolveResourceScopePolicy(CANONICAL_CORE_RESOURCE, "mcp:core", env, url);
+  assert.equal(live.ok, true);
+  const slashOrigin = resolveResourceScopePolicy("https://evil.example//mcp/core-auth", "mcp:core", env, url);
+  assert.equal(slashOrigin.error, "invalid_target");
 });
