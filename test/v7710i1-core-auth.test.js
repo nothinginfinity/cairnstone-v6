@@ -1695,7 +1695,7 @@ test("10i.1c1 token exchange preserves exact client_id + redirect_uri + PKCE + i
   assert.ok(ok.access_token);
 });
 
-test("10l.3 Messages-resource authorize does not mint mcp:core; token resource must match code", async () => {
+test("10l.7 Messages-resource authorize narrows AS-union scope; token excludes mcp:core", async () => {
   const db = new FakeAuthD1();
   const env = envFor(db, { CORE_AUTH_DCR_ENABLED: "true" });
   const registered = await handleOauthRegisterRequest({
@@ -1712,9 +1712,11 @@ test("10l.3 Messages-resource authorize does not mint mcp:core; token resource m
     code_challenge: challenge,
     code_challenge_method: "S256",
     resource: messagesResource,
-    scope: "messages.read messages.write"
+    scope: "mcp:core messages.read messages.write"
   }, env, urlFor());
   assert.equal(authz.ok, true);
+  assert.deepEqual(authz.scopes, ["messages.read", "messages.write"]);
+  assert.equal(authz.scopes.includes("mcp:core"), false);
   const mismatch = await handleOauthTokenRequest({
     grant_type: "authorization_code",
     code: authz.code,
