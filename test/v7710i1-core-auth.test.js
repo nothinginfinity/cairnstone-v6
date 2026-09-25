@@ -1695,6 +1695,55 @@ test("10i.1c1 token exchange preserves exact client_id + redirect_uri + PKCE + i
   assert.ok(ok.access_token);
 });
 
+test("10l.3 Messages-resource authorize does not mint mcp:core; token resource must match code", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, { CORE_AUTH_DCR_ENABLED: "true" });
+  const registered = await handleOauthRegisterRequest({
+    redirect_uris: ["https://client.example/cb"],
+    token_endpoint_auth_method: "none"
+  }, env);
+  const verifier = "verifier_" + "m".repeat(43);
+  const challenge = await pkceChallengeS256(verifier);
+  const messagesResource = "https://cairnstone-messages.jaredtechfit.workers.dev";
+  const authz = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: registered.client_id,
+    redirect_uri: "https://client.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: messagesResource,
+    scope: "messages.read messages.write"
+  }, env, urlFor());
+  assert.equal(authz.ok, true);
+  const mismatch = await handleOauthTokenRequest({
+    grant_type: "authorization_code",
+    code: authz.code,
+    redirect_uri: "https://client.example/cb",
+    client_id: registered.client_id,
+    code_verifier: verifier,
+    resource: RESOURCE
+  }, env, urlFor());
+  assert.equal(mismatch.ok, false);
+  assert.equal(mismatch.error, "invalid_grant");
+  const minted = await handleOauthTokenRequest({
+    grant_type: "authorization_code",
+    code: authz.code,
+    redirect_uri: "https://client.example/cb",
+    client_id: registered.client_id,
+    code_verifier: verifier,
+    resource: messagesResource
+  }, env, urlFor());
+  assert.equal(minted.ok, true);
+  const validated = await validateAccessToken(env, minted.access_token, { expectedResource: messagesResource });
+  assert.equal(validated.ok, true);
+  assert.deepEqual(validated.context.scopes, ["messages.read", "messages.write"]);
+  assert.equal(validated.context.scopes.includes("mcp:core"), false);
+  const refreshWiden = await rotateRefreshToken(env, minted.refresh_token, {
+    expectedResource: RESOURCE
+  });
+  assert.equal(refreshWiden.ok, false);
+});
+
 // --- V7.7.10i.1c1a DCR rate-limit / gate hardening ---
 
 function dcrBody(n = 0) {

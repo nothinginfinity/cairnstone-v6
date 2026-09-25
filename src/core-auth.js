@@ -11,6 +11,10 @@
 // - Stolen same-resource bearer replay is residual risk (NF-25), not claimed solved.
 
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
+import {
+  advertisedAuthorizationScopes,
+  resolveResourceScopePolicy
+} from "./resource-scope-policy.js";
 
 export const CORE_AUTH_REALM = "core-auth";
 export const CORE_AUTH_RESOURCE_PATH = "/mcp/core-auth";
@@ -238,7 +242,7 @@ export function authorizationServerMetadata(env, url) {
     grant_types_supported: ["authorization_code", "refresh_token"],
     response_types_supported: ["code"],
     token_endpoint_auth_methods_supported: ["none"],
-    scopes_supported: [...DEFAULT_SCOPES],
+    scopes_supported: advertisedAuthorizationScopes(),
     // CIMD preferred; kernel already validates HTTPS client metadata documents.
     client_id_metadata_document_supported: true,
     dcr_enabled: dcrEnabled,
@@ -1954,8 +1958,18 @@ export async function handleOauthAuthorizeRequest(params, env, url, { fetchImpl 
     ? params.resource.trim()
     : canonicalCoreAuthResource(env, url);
   const state = typeof params?.state === "string" ? params.state : null;
-  const scopes = parseScopes(params?.scope);
   const issuer = authorizationServerIssuer(env, url);
+  const scoped = resolveResourceScopePolicy(resource, params?.scope, env, url);
+  if (!scoped.ok) {
+    return {
+      ok: false,
+      error: scoped.error,
+      status: scoped.status || 400,
+      reason: scoped.reason || null,
+      disallowed: scoped.disallowed || null
+    };
+  }
+  const scopes = scoped.scopes;
 
   if (!clientId || !redirectUri || !codeChallenge) {
     return { ok: false, error: "invalid_request", status: 400, detail: "client_id, redirect_uri, and code_challenge required" };
@@ -2021,9 +2035,8 @@ export async function handleOauthAuthorizeRequest(params, env, url, { fetchImpl 
     authenticatorId = boot.authenticator.authenticator_id;
   }
 
-  // Scope step-up only via AS (this authorize path).
-  const stepped = mergeScopesForStepUp(DEFAULT_SCOPES, scopes, { viaAuthorizationServer: true });
-
+  // Resource policy already selected exact scopes. Do not union DEFAULT_SCOPES
+  // (mcp:core) onto a Messages-resource family.
   const code = await createAuthorizationCode(env, {
     accountId,
     tenantId,
@@ -2033,7 +2046,7 @@ export async function handleOauthAuthorizeRequest(params, env, url, { fetchImpl 
     codeChallenge,
     codeChallengeMethod: "S256",
     resource,
-    scopes: stepped.scopes,
+    scopes,
     iss: issuer
   });
   if (!code.ok) return { ...code, status: 400 };
@@ -2051,7 +2064,7 @@ export async function handleOauthAuthorizeRequest(params, env, url, { fetchImpl 
     state,
     account_id: accountId,
     cimd_content_hash: cimdContentHash,
-    scopes: stepped.scopes,
+    scopes,
     // Never include secrets beyond the one-time code for the redirect.
   };
 }
