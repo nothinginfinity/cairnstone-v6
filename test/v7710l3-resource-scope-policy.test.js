@@ -11,6 +11,7 @@ import { mergeScopesForStepUp } from "../src/core-auth.js";
 
 const CORE_RESOURCE = "https://cairnstone.test/mcp/core-auth";
 const MESSAGES_RESOURCE = CANONICAL_MESSAGES_RESOURCE;
+const MESSAGES_MCP = `${CANONICAL_MESSAGES_RESOURCE}/mcp`;
 const url = new URL("https://cairnstone.test/oauth/authorize");
 const env = { CORE_AUTH_RESOURCE: CORE_RESOURCE };
 
@@ -20,7 +21,7 @@ test("Core audience + mcp:core succeeds", () => {
   assert.deepEqual(result.scopes, ["mcp:core"]);
 });
 
-test("Core audience + messages.read/write fails", () => {
+test("Core audience + messages.read/write fails after zero-narrow", () => {
   const result = resolveResourceScopePolicy(CORE_RESOURCE, "messages.read messages.write", env, url);
   assert.equal(result.ok, false);
   assert.equal(result.error, "invalid_scope");
@@ -91,4 +92,10 @@ test("exact configured and exact live Core resources succeed; trailing slash doe
   assert.equal(live.ok, true);
   const slashOrigin = resolveResourceScopePolicy("https://evil.example//mcp/core-auth", "mcp:core", env, url);
   assert.equal(slashOrigin.error, "invalid_target");
+});
+
+test("Messages origin/mcp is the same family as origin", () => {
+  const result = resolveResourceScopePolicy(MESSAGES_MCP, "messages.read", env, url);
+  assert.equal(result.ok, true);
+  assert.equal(result.resource_class, "messages");
 });
