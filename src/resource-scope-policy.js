@@ -1,5 +1,6 @@
-// V7.7.10l.3 — fail-closed resource → allowed-scopes policy for Core AS.
-// Extensible for future standalone services. Unknown resources do not mint.
+// V7.7.10l.7 — fail-closed resource → allowed-scopes policy for Core AS.
+// Cross-resource registered scopes are narrowed, never granted.
+// Unknown resources do not mint. Unknown scopes fail closed.
 
 export const CORE_SCOPE = "mcp:core";
 export const MESSAGES_SCOPES = Object.freeze(["messages.read", "messages.write"]);
@@ -62,10 +63,23 @@ export function resolveResourceClass(resource, env, url) {
   return null;
 }
 
+export function registeredScopeOwner(scope) {
+  if (scope === CORE_SCOPE) return "core";
+  if (MESSAGES_SCOPES.includes(scope)) return "messages";
+  return null;
+}
+
+export function allRegisteredScopes() {
+  return [CORE_SCOPE, ...MESSAGES_SCOPES];
+}
+
 /**
  * Resolve scopes for an authorization request.
- * Fail closed on unknown resource or disallowed scope.
- * Does NOT union mcp:core onto a Messages family.
+ * Unknown resource => invalid_target.
+ * Known registered scopes owned by a different family are ignored (narrowed).
+ * Unknown/unregistered scopes => invalid_scope.
+ * After narrowing, zero remaining scopes => invalid_scope (no silent default).
+ * Empty request retains per-resource defaults. Never unions mcp:core onto Messages.
  */
 export function resolveResourceScopePolicy(resource, requestedScopes, env, url) {
   const klass = resolveResourceClass(resource, env, url);
@@ -85,28 +99,48 @@ export function resolveResourceScopePolicy(resource, requestedScopes, env, url) 
       ok: true,
       resource_class: klass,
       scopes: [...policy.defaultScopes],
-      defaulted: true
+      defaulted: true,
+      narrowed: []
     };
   }
-  const disallowed = requested.filter((scope) => !allowed.has(scope));
-  if (disallowed.length) {
+  const eligible = [];
+  const foreign = [];
+  const unknown = [];
+  for (const scope of requested) {
+    const owner = registeredScopeOwner(scope);
+    if (!owner) unknown.push(scope);
+    else if (!allowed.has(scope) || owner !== klass) foreign.push(scope);
+    else if (!eligible.includes(scope)) eligible.push(scope);
+  }
+  if (unknown.length) {
     return {
       ok: false,
       error: "invalid_scope",
       status: 400,
       reason: "scope_not_allowed_for_resource",
-      disallowed,
+      disallowed: unknown,
+      resource_class: klass
+    };
+  }
+  if (!eligible.length) {
+    return {
+      ok: false,
+      error: "invalid_scope",
+      status: 400,
+      reason: "scope_not_allowed_for_resource",
+      disallowed: foreign,
       resource_class: klass
     };
   }
   return {
     ok: true,
     resource_class: klass,
-    scopes: requested,
-    defaulted: false
+    scopes: eligible,
+    defaulted: false,
+    narrowed: foreign
   };
 }
 
 export function advertisedAuthorizationScopes() {
-  return [CORE_SCOPE, ...MESSAGES_SCOPES];
+  return allRegisteredScopes();
 }
