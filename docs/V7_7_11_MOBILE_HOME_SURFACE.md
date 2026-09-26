@@ -14,6 +14,8 @@ Turn the iPhone Home Screen into a lightweight CairnStone entry surface: one app
 
 The installed surface is a presentation/client layer only. It creates no accepted state, grants no authority, and must not persist capability bearers or secrets merely to support installation.
 
+**Permanent full Console requirement:** the browser/PWA CairnStone Console is not only a compact launchpad or fallback for unsupported chat apps. It remains the independent, fully capable operator UI for permission-scoped all-project/all-agent message inspection, team and project settings, Response Profile/Skill/Tool Belt administration, custom tool development and isolated tests, Cloudflare/GitHub and connector observability, receipts, security reviews and explicit Human Commit workflows. The mobile Home dashboard is a fast entry point into that *full* Console; the V7.7.11h in-chat mini-Console is an optional smaller projection of the same backend. Neither removes or replaces the full operator surface.
+
 ## V7.7.11a — CairnStone Console PWA packaging
 
 Add the installable PWA shell to the existing Console using the InfinityPaste pattern:
@@ -81,13 +83,16 @@ The schema should eventually describe other Home Screen surfaces such as GitHub,
 
 This experiment remains inside the CairnStone/Console workstream first. It must not create a second authority plane.
 
-## V7.7.11e–g — Guided workflows + portable recipes + Safe Adaptive UI
+## V7.7.11e–h — Guided workflows + portable recipes + Safe Adaptive UI + In-Chat Console
 
 The later V7.7.11 family extends the same mobile/Console surface without creating a second UI authority plane:
 
 - **V7.7.11e — Guided Mode / Conversational Cursor + Simple Stone Workflows** instruments stable semantic UI targets and lets CairnStone guide a user through existing Console workflows without blind coordinate automation.
 - **V7.7.11f — Simple Stone Library / portability** saves, versions, validates, imports/exports, and later shares those declarative workflows.
 - **V7.7.11g — Safe Adaptive UI / Surface Composer** turns the `Source + View + Action + Appearance` idea into a bounded component catalog + declarative surface spec + renderer architecture. It is inspired by the catalog/spec/validation patterns in `vercel-labs/json-render`, including its experimental Jev UI composer, but CairnStone remains the authority boundary and does not require json-render as a runtime dependency.
+- **V7.7.11h — In-Chat CairnStone Console** reuses that same trusted UI catalog, actions and existing Console backend to render compact authenticated Home/Work/Inbox/Profile cards inside host-supported MCP Apps. It is an optional distribution channel, with read-only native rich response or authenticated PWA deep-link fallback if the host does not support interactive embedding. `V7.7.10k` Response Profiles remain presentation policy only.
+
+- **V7.7.11i — Cross-Host Team Communications** follows 11h's initially read-only Inbox with a privacy-gated human Inbox/Composer on the same full standalone Console/PWA backend and optionally as a host-supported in-chat MCP App; no independent store, trusted actor-ID guessing, native-host notification guarantees, or project-memory auto-ingestion. Initial scope: authenticated direct/team messages plus explicit read/send receipts and separate account isolation. The first mobile fallback must always work as an authenticated Console/PWA deep link. Email and video calling remain optional separately gated future adapters, not MVP requirements. Candidate plan: \`docs/V7_7_11I_CROSS_HOST_COMMUNICATIONS.md\`.
 
 V7.7.11g may use the V7.7.10h Decision Plane to choose among **application-supplied UI candidates** for visibility, grouping, ordering, or an allowed layout template. It may not invent executable component/action IDs, widen capabilities, approve a mutation, or bypass Human Commit.
 
@@ -95,6 +100,7 @@ Canonical detailed contracts:
 
 - `docs/V7_7_11E_GUIDED_MODE_SIMPLE_STONES.md`
 - `docs/V7_7_11G_SAFE_ADAPTIVE_UI_SURFACE.md`
+- `docs/V7_7_11H_IN_CHAT_CONSOLE.md`
 
 External design-reference snapshot:
 

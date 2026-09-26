@@ -4,6 +4,8 @@ Status: **PLANNED / FOLLOW-ON WITHIN V7.7.11 — implementation not started.**
 
 Primary implementation home: `nothinginfinity/cairnstone-v6-console`.
 
+Downstream optional host renderer: `V7.7.11h` In-Chat CairnStone Console (`docs/V7_7_11H_IN_CHAT_CONSOLE.md`). It reuses the exact trusted catalog, validated surface specification, semantic actions and existing authorization; it does not fork surface truth or allow model-generated executable UI. `V7.7.10k` Response Profiles select presentation and authorized surface preferences, never execution rights.
+
 External design reference: `vercel-labs/json-render` at immutable commit `3ad381881194e7011ad3ccd6d668033495a06c29` (Apache-2.0), preserved in CairnStone chain `reference:vercel-labs/json-render`.
 
 ## Why this slice exists
@@ -28,6 +30,8 @@ This is a strong fit for CairnStone Console, especially Home, Work, Chat, Inbox,
 ## Product boundary
 
 V7.7.11g does **not** replace the V7.7.9 Console UX architecture.
+
+The existing full web/PWA CairnStone Console remains a permanent comprehensive operator interface, with independently accessible message archives, team/project configuration, custom-tool testbench, system observability and authorization/audit views. The V7.7.11h in-chat mini-Console reuses this bounded catalog and its backend contracts; it is not a second Console backend, a replacement for complex administration, or an alternative authority source. Safe adaptive layouts must preserve the full Console path and deep-link to it when a host cannot support a required view or action.
 
 The stable human-designed shell remains authoritative for presentation rules:
 
