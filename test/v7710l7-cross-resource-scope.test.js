@@ -94,3 +94,53 @@ test("refresh cannot widen messages.read to include mcp:core", () => {
   assert.equal(refresh.widened, false);
   assert.deepEqual(refresh.scopes, ["messages.read"]);
 });
+
+test("authorize stores canonical bare-origin Messages resource when client sends /mcp", async () => {
+  const captured = [];
+  const db = {
+    prepare(sql) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      return {
+        bind(...args) {
+          return {
+            async first() {
+              return null;
+            },
+            async run() {
+              if (/INSERT INTO auth_authorization_codes/.test(normalized)) {
+                captured.push({ sql: normalized, args });
+              }
+              return { success: true, meta: { changes: 1 } };
+            }
+          };
+        }
+      };
+    }
+  };
+  const result = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    resource: MESSAGES_RESOURCE,
+    scope: "messages.read",
+    client_id: "https://example.invalid/cimd.json",
+    redirect_uri: "https://chatgpt.com/connector/oauth/-/callback",
+    code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+    code_challenge_method: "S256",
+    account_id: "acct_test",
+    tenant_id: "ten_test",
+    authenticator_id: "authn_test"
+  }, { CAIRNSTONE_AUTH_DB: db, CORE_AUTH_RESOURCE: CORE_RESOURCE }, url, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      client_id: "https://example.invalid/cimd.json",
+      redirect_uris: ["https://chatgpt.com/connector/oauth/-/callback"]
+    }), { status: 200, headers: { "content-type": "application/json" } })
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(captured.length, 1);
+  // createAuthorizationCode bind order: codeHash, realm, accountId, tenantId,
+  // connectionId, principalId, authenticatorId, clientId, redirectUri,
+  // codeChallenge, resource, scopes_json, iss, expires, created
+  const storedResource = captured[0].args[10];
+  assert.equal(storedResource, CANONICAL_MESSAGES_RESOURCE);
+  assert.notEqual(storedResource, MESSAGES_RESOURCE);
+});

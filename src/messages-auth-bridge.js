@@ -8,17 +8,23 @@ import {
   canonicalCoreAuthResource,
   validateAccessToken
 } from "./core-auth.js";
+import {
+  CANONICAL_MESSAGES_RESOURCE,
+  MESSAGES_SCOPES as POLICY_MESSAGES_SCOPES,
+  canonicalizeMessagesResource,
+  isCanonicalMessagesResource
+} from "./resource-scope-policy.js";
 
 export const MESSAGES_AUTH_BRIDGE_SCHEMA = "cairnstone-messages-auth-bridge-v1";
-export const CANONICAL_MESSAGES_RESOURCE = "https://cairnstone-messages.jaredtechfit.workers.dev";
+export { CANONICAL_MESSAGES_RESOURCE };
 export const MESSAGES_RESOURCE_ALLOWLIST = Object.freeze([
   CANONICAL_MESSAGES_RESOURCE,
   `${CANONICAL_MESSAGES_RESOURCE}/mcp`
 ]);
-export const MESSAGES_SCOPES = Object.freeze(["messages.read", "messages.write"]);
+export const MESSAGES_SCOPES = POLICY_MESSAGES_SCOPES;
 
 function isAllowlistedMessagesResource(value) {
-  return typeof value === "string" && MESSAGES_RESOURCE_ALLOWLIST.includes(value);
+  return isCanonicalMessagesResource(value);
 }
 
 function boundFields(context, expiry) {
@@ -33,7 +39,8 @@ function boundFields(context, expiry) {
     tenant_id: context.tenant_id,
     connection_id: context.connection_id,
     principal_id: context.principal_id,
-    resource: context.resource,
+    // Always publish the canonical bare-origin audience after allowlist match.
+    resource: CANONICAL_MESSAGES_RESOURCE,
     scopes,
     expiry: expiry || null,
     authz_version: context.authz_version ?? null
@@ -43,14 +50,16 @@ function boundFields(context, expiry) {
 /**
  * Introspect an opaque csat_* token for the canonical Messages resource only.
  * Caller-supplied resource cannot select Core or any other audience.
+ * Accepts either allowlisted form (bare origin or …/mcp); normalizes before
+ * validateAccessToken and context.resource checks so legacy `/mcp` tokens work.
  */
 export async function introspectAccessToken(env, args = {}) {
   const token = typeof args.token === "string" ? args.token : args.access_token;
-  const requested = args.resource == null || args.resource === ""
+  const requestedRaw = args.resource == null || args.resource === ""
     ? CANONICAL_MESSAGES_RESOURCE
     : String(args.resource);
 
-  if (!isAllowlistedMessagesResource(requested)) {
+  if (!isAllowlistedMessagesResource(requestedRaw)) {
     return {
       ok: false,
       active: false,
@@ -60,8 +69,10 @@ export async function introspectAccessToken(env, args = {}) {
     };
   }
 
+  const expectedResource = canonicalizeMessagesResource(requestedRaw);
   const validated = await validateAccessToken(env, token, {
-    expectedResource: CANONICAL_MESSAGES_RESOURCE
+    expectedResource,
+    acceptedResources: [...MESSAGES_RESOURCE_ALLOWLIST]
   });
   if (!validated.ok) {
     return {
@@ -74,7 +85,7 @@ export async function introspectAccessToken(env, args = {}) {
   }
 
   const context = validated.context;
-  if (!context || context.resource !== CANONICAL_MESSAGES_RESOURCE) {
+  if (!context || !canonicalizeMessagesResource(context.resource)) {
     return {
       ok: false,
       active: false,

@@ -4,6 +4,8 @@ import {
   advertisedAuthorizationScopes,
   parseRequestedScopes,
   resolveResourceScopePolicy,
+  canonicalizeMessagesResource,
+  messagesResourcesEquivalent,
   CANONICAL_CORE_RESOURCE,
   CANONICAL_MESSAGES_RESOURCE
 } from "../src/resource-scope-policy.js";
@@ -98,4 +100,14 @@ test("Messages origin/mcp is the same family as origin", () => {
   const result = resolveResourceScopePolicy(MESSAGES_MCP, "messages.read", env, url);
   assert.equal(result.ok, true);
   assert.equal(result.resource_class, "messages");
+});
+
+test("canonicalizeMessagesResource maps /mcp form to bare origin", () => {
+  assert.equal(canonicalizeMessagesResource(MESSAGES_RESOURCE), CANONICAL_MESSAGES_RESOURCE);
+  assert.equal(canonicalizeMessagesResource(MESSAGES_MCP), CANONICAL_MESSAGES_RESOURCE);
+  assert.equal(canonicalizeMessagesResource(`${MESSAGES_MCP}/`), CANONICAL_MESSAGES_RESOURCE);
+  assert.equal(canonicalizeMessagesResource(CORE_RESOURCE), null);
+  assert.equal(canonicalizeMessagesResource("https://evil.example/mcp"), null);
+  assert.equal(messagesResourcesEquivalent(MESSAGES_RESOURCE, MESSAGES_MCP), true);
+  assert.equal(messagesResourcesEquivalent(MESSAGES_MCP, CORE_RESOURCE), false);
 });
