@@ -1226,6 +1226,22 @@ export async function approveAuthorizeSession(env, {
     return { ok: false, error: "authentication_required", status: 401 };
   }
 
+  // Claim the session BEFORE minting a code so concurrent Approve cannot issue two codes.
+  // Only one UPDATE from status='authenticated' succeeds (changes === 1).
+  const claimed = await loaded.db.prepare(
+    `UPDATE auth_authorize_sessions SET status = 'approved', completed_at = ?
+     WHERE realm = ? AND session_id = ? AND status = 'authenticated'`
+  ).bind(nowIso(nowMs), CORE_AUTH_REALM, session.session_id).run();
+  const claimChanges = Number(claimed?.meta?.changes ?? claimed?.changes ?? 0);
+  if (claimChanges !== 1) {
+    return {
+      ok: false,
+      error: "authorize_already_approved",
+      status: 409,
+      detail: "This authorization request was already approved"
+    };
+  }
+
   const stepUpConfirmed = Number(session.step_up_confirmed) === 1;
   const scopes = parseScopesJson(session.scopes_json);
   const code = await createAuthorizationCode(env, {
@@ -1242,12 +1258,11 @@ export async function approveAuthorizeSession(env, {
     stepUpConfirmed,
     nowMs
   });
-  if (!code.ok) return { ...code, status: 400 };
-
-  await loaded.db.prepare(
-    `UPDATE auth_authorize_sessions SET status = 'approved', completed_at = ?
-     WHERE realm = ? AND session_id = ? AND status = 'authenticated'`
-  ).bind(nowIso(nowMs), CORE_AUTH_REALM, session.session_id).run();
+  if (!code.ok) {
+    // Session is already claimed approved; do not reverse into a second-code race.
+    // Client must restart authorize — safer than leaving a usable orphan code.
+    return { ...code, status: 400, session_claimed: true };
+  }
 
   const redirect = new URL(session.redirect_uri);
   redirect.searchParams.set("code", code.code);

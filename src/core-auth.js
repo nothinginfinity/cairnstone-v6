@@ -862,7 +862,9 @@ export async function bootstrapAccountConnection(env, {
   selectTenantId = null,
   admitCanary = false,
   canaryLabel = null,
-  stepUpConfirmed = true,
+  // Default false: real UV/step-up must be passed explicitly. Authorize must not
+  // be rewired through bootstrap with a casual true default (Issue 2).
+  stepUpConfirmed = false,
   mintConnection = true
 } = {}) {
   const pair = validateAuthenticatorPair(method, assuranceClass);

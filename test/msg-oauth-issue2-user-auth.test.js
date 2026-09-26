@@ -488,6 +488,79 @@ test("approve without authentication fails and issues no code", async () => {
   assert.equal(db.tables.auth_authorization_codes.size, 0);
 });
 
+test("concurrent double Approve issues only one code", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db);
+  const owner = await createOwnerAccount(env, { displayName: "Jared", accountKey: "owner-race" });
+  const invite = await mintLoginInvite(env, { accountId: owner.account.account_id });
+  const client = await registerClient(env, "race-client");
+  const started = await beginOauthAuthorize({
+    response_type: "code",
+    client_id: client.client_id,
+    redirect_uri: "https://client.example/cb",
+    code_challenge: await pkceChallengeS256("verifier_" + "r".repeat(43)),
+    code_challenge_method: "S256",
+    resource: RESOURCE
+  }, env, urlFor());
+  const redeemed = await redeemLoginInviteForSession(env, {
+    sessionToken: started.session_token,
+    inviteCode: invite.invite_code,
+    clientIp: "203.0.113.77"
+  });
+  assert.equal(redeemed.ok, true);
+
+  // Gate the conditional claim UPDATE until two Approves have both loaded the
+  // authenticated session, so we exercise the changes===1 race (not just
+  // loadAuthorizeSessionByToken rejecting an already-approved row).
+  const origPrepare = db.prepare.bind(db);
+  const claimWaiters = [];
+  db.prepare = (sql) => {
+    const normalized = String(sql).replace(/\s+/g, " ").trim();
+    const stmt = origPrepare(sql);
+    if (!/^UPDATE auth_authorize_sessions SET status = 'approved'/i.test(normalized)) {
+      return stmt;
+    }
+    return {
+      bind(...args) {
+        const bound = stmt.bind(...args);
+        return {
+          async run() {
+            await new Promise((resolve) => {
+              claimWaiters.push(resolve);
+              if (claimWaiters.length >= 2) {
+                const ready = claimWaiters.splice(0, claimWaiters.length);
+                // Release claims sequentially so FakeAuthD1 status checks serialize.
+                ready[0]();
+                queueMicrotask(() => ready[1]());
+              }
+            });
+            return bound.run();
+          }
+        };
+      }
+    };
+  };
+
+  const [first, second] = await Promise.all([
+    approveAuthorizeSession(env, { sessionToken: started.session_token, url: urlFor() }),
+    approveAuthorizeSession(env, { sessionToken: started.session_token, url: urlFor() })
+  ]);
+
+  const outcomes = [first, second];
+  const winners = outcomes.filter(r => r.ok === true);
+  const losers = outcomes.filter(r => r.ok === false);
+  assert.equal(winners.length, 1, JSON.stringify(outcomes));
+  assert.equal(losers.length, 1, JSON.stringify(outcomes));
+  assert.ok(winners[0].code);
+  assert.equal(losers[0].error, "authorize_already_approved");
+  assert.equal(losers[0].status, 409);
+  assert.equal(db.tables.auth_authorization_codes.size, 1);
+  assert.equal(
+    [...db.tables.auth_authorize_sessions.values()].filter(s => s.status === "approved").length,
+    1
+  );
+});
+
 test("invite then passkey enroll sets step_up_confirmed on session", async () => {
   const db = new FakeAuthD1();
   const env = envFor(db);
