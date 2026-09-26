@@ -862,7 +862,9 @@ export async function bootstrapAccountConnection(env, {
   selectTenantId = null,
   admitCanary = false,
   canaryLabel = null,
-  stepUpConfirmed = true,
+  // Default false: real UV/step-up must be passed explicitly. Authorize must not
+  // be rewired through bootstrap with a casual true default (Issue 2).
+  stepUpConfirmed = false,
   mintConnection = true
 } = {}) {
   const pair = validateAuthenticatorPair(method, assuranceClass);
@@ -1859,6 +1861,7 @@ export async function createAuthorizationCode(env, {
   iss,
   connectionId = null,
   principalId = null,
+  stepUpConfirmed = false,
   nowMs = Date.now()
 }) {
   if (codeChallengeMethod !== "S256") {
@@ -1872,8 +1875,8 @@ export async function createAuthorizationCode(env, {
     `INSERT INTO auth_authorization_codes
       (code_hash, realm, account_id, tenant_id, connection_id, principal_id, authenticator_id,
        client_id, redirect_uri, code_challenge, code_challenge_method, resource, scopes_json, iss,
-       status, expires_at, created_at, used_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'S256', ?, ?, ?, 'unused', ?, ?, NULL)`
+       status, expires_at, created_at, used_at, step_up_confirmed)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'S256', ?, ?, ?, 'unused', ?, ?, NULL, ?)`
   ).bind(
     codeHash,
     CORE_AUTH_REALM,
@@ -1889,9 +1892,136 @@ export async function createAuthorizationCode(env, {
     JSON.stringify(parseScopes(scopes)),
     iss,
     plusSecondsIso(AUTH_CODE_TTL_SECONDS, nowMs),
-    nowIso(nowMs)
+    nowIso(nowMs),
+    stepUpConfirmed === true ? 1 : 0
   ).run();
-  return { ok: true, code, expires_in: AUTH_CODE_TTL_SECONDS };
+  return { ok: true, code, expires_in: AUTH_CODE_TTL_SECONDS, step_up_confirmed: stepUpConfirmed === true };
+}
+
+/**
+ * Mint a new connection + token family under an EXISTING account/authenticator.
+ * Used by OAuth redeem after real user auth — does not create accounts or wallet authenticators.
+ */
+export async function mintConnectionUnderAccount(env, {
+  accountId,
+  tenantId,
+  authenticatorId,
+  clientFamily = "cimd",
+  routingAliases = [],
+  resource,
+  scopes = DEFAULT_SCOPES,
+  admitCanary = false,
+  canaryLabel = null,
+  stepUpConfirmed = false
+} = {}) {
+  const dbRes = authDb(env);
+  if (!dbRes.ok) return dbRes;
+  const db = dbRes.db;
+  const createdAt = nowIso();
+  const resourceUrl = resource || canonicalCoreAuthResource(env);
+
+  const accountRow = await db.prepare(
+    "SELECT * FROM auth_accounts WHERE realm = ? AND account_id = ?"
+  ).bind(CORE_AUTH_REALM, accountId).first();
+  if (!accountRow) return { ok: false, error: "account_not_found" };
+  if (accountRow.status === "suspended" || accountRow.status === "closed") {
+    return { ok: false, error: "account_not_active", status: accountRow.status };
+  }
+  const resolvedTenantId = tenantId || accountRow.home_tenant_id;
+  const membership = await db.prepare(
+    "SELECT * FROM auth_tenant_memberships WHERE realm = ? AND account_id = ? AND tenant_id = ? AND status = 'active'"
+  ).bind(CORE_AUTH_REALM, accountId, resolvedTenantId).first();
+  if (!membership) return { ok: false, error: "tenant_membership_required", status: 403 };
+
+  const authenticator = await db.prepare(
+    "SELECT * FROM auth_authenticators WHERE realm = ? AND authenticator_id = ? AND account_id = ?"
+  ).bind(CORE_AUTH_REALM, authenticatorId, accountId).first();
+  if (!authenticator || authenticator.status !== "active") {
+    return { ok: false, error: "authenticator_not_found" };
+  }
+
+  const connectionId = mintId("connection_id");
+  const principalId = mintId("principal_id");
+  const aliases = Array.isArray(routingAliases) ? routingAliases.slice(0, 16) : [];
+  await db.prepare(
+    `INSERT INTO auth_connection_principals
+      (connection_id, schema, realm, principal_id, account_id, tenant_id, status, client_family, routing_aliases_json, oauth_sub, created_at, revoked_at, accepted_state_authority)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, 0)`
+  ).bind(
+    connectionId,
+    CONNECTION_PRINCIPAL_SCHEMA,
+    CORE_AUTH_REALM,
+    principalId,
+    accountId,
+    resolvedTenantId,
+    clientFamily,
+    JSON.stringify(aliases),
+    principalId,
+    createdAt
+  ).run();
+
+  for (const alias of aliases) {
+    const claimed = await claimRoutingAlias(db, {
+      alias,
+      principalId,
+      accountId,
+      tenantId: resolvedTenantId,
+      createdAt
+    });
+    if (!claimed.ok) return claimed;
+  }
+
+  if (admitCanary) {
+    await db.prepare(
+      `INSERT INTO auth_canary_admissions (realm, connection_id, client_family, label, status, created_at)
+       VALUES (?, ?, ?, ?, 'admitted', ?)
+       ON CONFLICT(realm, connection_id) DO UPDATE SET status = 'admitted', label = excluded.label`
+    ).bind(CORE_AUTH_REALM, connectionId, clientFamily, canaryLabel || "canary", createdAt).run();
+  }
+
+  const minted = await mintTokenFamily(env, {
+    connectionId,
+    principalId,
+    accountId,
+    tenantId: resolvedTenantId,
+    authenticatorId,
+    resource: resourceUrl,
+    scopes: parseScopes(scopes),
+    authzVersion: accountRow.authz_version || 1
+  });
+  if (!minted.ok) return minted;
+
+  await audit(db, "connection_minted_under_account", {
+    account_id: accountId,
+    tenant_id: resolvedTenantId,
+    principal_id: principalId,
+    connection_id: connectionId,
+    token_family_id: minted.token_family.token_family_id,
+    step_up_confirmed: stepUpConfirmed === true
+  });
+
+  return {
+    ok: true,
+    account: rowToAccount(accountRow),
+    authenticator: rowToAuthenticator(authenticator),
+    connection: rowToConnectionPrincipal({
+      connection_id: connectionId,
+      principal_id: principalId,
+      account_id: accountId,
+      tenant_id: resolvedTenantId,
+      status: "active",
+      client_family: clientFamily,
+      routing_aliases_json: JSON.stringify(aliases),
+      oauth_sub: principalId,
+      created_at: createdAt,
+      revoked_at: null
+    }),
+    spend_authority: false,
+    economic_grant: false,
+    step_up_confirmed: stepUpConfirmed === true,
+    ...minted,
+    ...authorityClosed()
+  };
 }
 
 export async function redeemAuthorizationCode(env, {
@@ -1940,23 +2070,24 @@ export async function redeemAuthorizationCode(env, {
   const changes = Number(used?.meta?.changes ?? used?.changes ?? 0);
   if (changes !== 1) return { ok: false, error: "invalid_grant" };
 
-  // Fresh authorization under account: mint new connection/principal + token family.
-  // Resume account-owned home pointers (do not duplicate).
+  // Fresh connection under the EXISTING authenticated account.
+  // Do not create anonymous accounts or new wallet_proof authenticators here.
   // Selective canary: NEVER hardcode admitCanary true — gate on explicit allowlist /
   // CORE_AUTH_CANARY_AUTO_ADMIT / CORE_AUTH_CANARY_CONNECTIONS (family:/label:).
   // DCR/CIMD registration must NEVER auto-admit canary connections.
   const clientFamily = isCimdClientId(clientId) ? "cimd" : String(clientId).slice(0, 64);
   const canaryLabel = "oauth_redeem";
-  const boot = await bootstrapAccountConnection(env, {
+  const stepUpConfirmed = Number(row.step_up_confirmed) === 1;
+  const boot = await mintConnectionUnderAccount(env, {
+    accountId: row.account_id,
+    tenantId: row.tenant_id,
+    authenticatorId: row.authenticator_id,
     clientFamily,
-    method: "wallet_proof",
-    assuranceClass: "wallet_ownership",
-    existingAccountId: row.account_id,
-    selectTenantId: row.tenant_id,
     resource: row.resource,
     scopes: JSON.parse(row.scopes_json || "[]"),
     admitCanary: shouldAdmitCanaryOnMint(env, { clientFamily, label: canaryLabel }),
-    canaryLabel
+    canaryLabel,
+    stepUpConfirmed
   });
   if (!boot.ok) return boot;
 
@@ -1968,136 +2099,16 @@ export async function redeemAuthorizationCode(env, {
 }
 
 /**
- * Minimal authorization endpoint (GET/POST). Advertised in AS metadata.
- * Issues an authorization code after PKCE + redirect_uri validation.
- * Does not auto-admit canary connections.
+ * Authorization endpoint entry (GET/POST). Advertised in AS metadata.
+ *
+ * Messages OAuth Issue 2: after client/redirect/PKCE/resource checks, this starts
+ * a consent session and returns HTML — it does NOT bootstrap anonymous accounts
+ * and does NOT issue a code until authentication + Approve.
  */
 export async function handleOauthAuthorizeRequest(params, env, url, { fetchImpl } = {}) {
-  const responseType = String(params?.response_type || "");
-  if (responseType !== "code") {
-    return { ok: false, error: "unsupported_response_type", status: 400 };
-  }
-
-  const clientId = typeof params?.client_id === "string" ? params.client_id.trim() : "";
-  const redirectUri = typeof params?.redirect_uri === "string" ? params.redirect_uri.trim() : "";
-  const codeChallenge = typeof params?.code_challenge === "string" ? params.code_challenge.trim() : "";
-  const codeChallengeMethod = String(params?.code_challenge_method || "S256");
-  const resourceRaw = typeof params?.resource === "string" && params.resource.trim()
-    ? params.resource.trim()
-    : canonicalCoreAuthResource(env, url);
-  // Issue Messages codes/tokens against the bare-origin canonical audience even
-  // when the client requested …/mcp (MCP connector resource URL).
-  const resource = canonicalizeOauthResource(resourceRaw);
-  const state = typeof params?.state === "string" ? params.state : null;
-  const issuer = authorizationServerIssuer(env, url);
-  const scoped = resolveResourceScopePolicy(resourceRaw, params?.scope, env, url);
-  if (!scoped.ok) {
-    return {
-      ok: false,
-      error: scoped.error,
-      status: scoped.status || 400,
-      reason: scoped.reason || null,
-      disallowed: scoped.disallowed || null
-    };
-  }
-  const scopes = scoped.scopes;
-
-  if (!clientId || !redirectUri || !codeChallenge) {
-    return { ok: false, error: "invalid_request", status: 400, detail: "client_id, redirect_uri, and code_challenge required" };
-  }
-  if (codeChallengeMethod !== "S256") {
-    return { ok: false, error: "invalid_request", status: 400, detail: "S256 required" };
-  }
-
-  // CIMD (HTTPS URL client_id): validate redirect allowlist (fail closed on fetch error).
-  // Opaque client_id: MUST resolve to an active persisted DCR client + exact redirect.
-  let cimdContentHash = null;
-  if (isCimdClientId(clientId)) {
-    const dbRes = authDb(env);
-    const allowed = await requireAllowlistedRedirectUri(clientId, redirectUri, {
-      fetchImpl,
-      cacheDb: dbRes.ok ? dbRes.db : null
-    });
-    if (!allowed.ok) {
-      return { ok: false, error: allowed.error || "invalid_request", status: 400 };
-    }
-    cimdContentHash = allowed.cimd?.content_hash || null;
-
-    // NF-37: if a prior cache hash is presented, revalidate mutation.
-    if (typeof params?.cimd_content_hash === "string" && params.cimd_content_hash) {
-      const reval = await revalidateCimdOrFail(clientId, params.cimd_content_hash, {
-        fetchImpl,
-        cacheDb: dbRes.ok ? dbRes.db : null
-      });
-      if (!reval.ok) return { ok: false, error: reval.error, status: 400 };
-    }
-  } else {
-    const registered = await requireRegisteredOpaqueClientRedirect(env, clientId, redirectUri);
-    if (!registered.ok) {
-      return {
-        ok: false,
-        error: registered.error || "invalid_client",
-        status: 400,
-        detail: registered.detail || registered.error
-      };
-    }
-  }
-
-  // Authenticator path: reuse existing account when provided; otherwise bootstrap
-  // a zero-balance wallet-proof account for the authorize request (canary).
-  let accountId = typeof params?.account_id === "string" ? params.account_id.trim() : null;
-  let tenantId = typeof params?.tenant_id === "string" ? params.tenant_id.trim() : null;
-  let authenticatorId = typeof params?.authenticator_id === "string" ? params.authenticator_id.trim() : null;
-
-  if (!accountId || !authenticatorId || !tenantId) {
-    const boot = await bootstrapAccountConnection(env, {
-      clientFamily: isCimdClientId(clientId) ? "cimd" : String(clientId).slice(0, 64),
-      method: "wallet_proof",
-      assuranceClass: "wallet_ownership",
-      resource,
-      scopes,
-      // Authorize never auto-admits; admission is a separate selective step.
-      admitCanary: false,
-      mintConnection: false
-    });
-    if (!boot.ok) return { ...boot, status: 400 };
-    accountId = boot.account.account_id;
-    tenantId = boot.account.home_tenant_id;
-    authenticatorId = boot.authenticator.authenticator_id;
-  }
-
-  // Resource policy already selected exact scopes. Do not union DEFAULT_SCOPES
-  // (mcp:core) onto a Messages-resource family.
-  const code = await createAuthorizationCode(env, {
-    accountId,
-    tenantId,
-    authenticatorId,
-    clientId,
-    redirectUri,
-    codeChallenge,
-    codeChallengeMethod: "S256",
-    resource,
-    scopes,
-    iss: issuer
-  });
-  if (!code.ok) return { ...code, status: 400 };
-
-  const redirect = new URL(redirectUri);
-  redirect.searchParams.set("code", code.code);
-  redirect.searchParams.set("iss", issuer);
-  if (state) redirect.searchParams.set("state", state);
-
-  return {
-    ok: true,
-    redirect_uri: redirect.toString(),
-    code: code.code,
-    iss: issuer,
-    state,
-    account_id: accountId,
-    cimd_content_hash: cimdContentHash,
-    scopes,
-    // Never include secrets beyond the one-time code for the redirect.
-  };
+  // Dynamic import avoids a static cycle with oauth-user-auth.js.
+  const { beginOauthAuthorize } = await import("./oauth-user-auth.js");
+  return beginOauthAuthorize(params, env, url, { fetchImpl });
 }
 
 export async function handleOauthTokenRequest(body, env, url) {

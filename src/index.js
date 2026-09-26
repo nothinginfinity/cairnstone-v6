@@ -239,7 +239,6 @@ import {
   authorizationServerMetadata,
   canonicalCoreAuthResource,
   enforceCoreAuthRequest,
-  handleOauthAuthorizeRequest,
   handleOauthRegisterRequest,
   handleOauthRevokeRequest,
   handleOauthTokenRequest,
@@ -250,6 +249,23 @@ import {
   resolveEnforcementMode,
   wwwAuthenticateChallenge
 } from "./core-auth.js";
+import {
+  approveAuthorizeSession,
+  beginOauthAuthorize,
+  buildAuthorizeSessionCookie,
+  clearAuthorizeSessionCookie,
+  createAssertionOptions,
+  createOwnerAccount,
+  createRegistrationOptions,
+  denyAuthorizeSession,
+  mintLoginInvite,
+  parseAuthorizeSessionCookie,
+  redeemLoginInviteForSession,
+  reloadAuthorizeHtml,
+  resolveDcrClientIp,
+  verifyAssertionForSession,
+  verifyRegistrationForSession
+} from "./oauth-user-auth.js";
 
 const VERSION = "0.5.43";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
@@ -322,22 +338,233 @@ export default {
             params = await request.json().catch(() => ({}));
           }
         }
-        const result = await handleOauthAuthorizeRequest(params, env, url);
+        // Resume an existing session cookie (e.g. reload after passkey) without re-validating query.
+        const existingToken = parseAuthorizeSessionCookie(request.headers.get("cookie") || "");
+        if (existingToken && !params.client_id) {
+          const reloaded = await reloadAuthorizeHtml(env, { sessionToken: existingToken, url });
+          if (reloaded.ok) {
+            return withCors(new Response(reloaded.html, {
+              status: 200,
+              headers: {
+                "content-type": "text/html; charset=utf-8",
+                "cache-control": "no-store"
+              }
+            }));
+          }
+        }
+        const result = await beginOauthAuthorize(params, env, url);
         if (!result.ok) {
           return json({ error: result.error, error_description: result.detail || result.error }, result.status || 400);
         }
         const accept = request.headers.get("accept") || "";
+        const headers = {
+          "cache-control": "no-store",
+          "set-cookie": buildAuthorizeSessionCookie(result.session_token, {
+            secure: url.protocol === "https:"
+          })
+        };
+        // JSON mode for automated tests — never includes an authorization code.
         if (accept.includes("application/json") || params.response_mode === "json") {
+          return json({
+            ok: true,
+            mode: "consent",
+            session_id: result.session_id,
+            client_name: result.client_name,
+            scopes: result.scopes,
+            resource: result.resource,
+            state: result.state || undefined,
+            iss: result.iss,
+            // Explicitly absent until Approve after authentication.
+            code: null
+          }, 200, headers);
+        }
+        return withCors(new Response(result.html, {
+          status: 200,
+          headers: {
+            ...headers,
+            "content-type": "text/html; charset=utf-8"
+          }
+        }));
+      }
+      if (request.method === "POST" && url.pathname === "/oauth/authorize/invite") {
+        const sessionToken = parseAuthorizeSessionCookie(request.headers.get("cookie") || "");
+        const ct = request.headers.get("content-type") || "";
+        let inviteCode = "";
+        if (ct.includes("application/json")) {
+          const body = await request.json().catch(() => ({}));
+          inviteCode = typeof body.invite_code === "string" ? body.invite_code : "";
+        } else {
+          const form = Object.fromEntries(new URLSearchParams(await request.text()).entries());
+          inviteCode = typeof form.invite_code === "string" ? form.invite_code : "";
+        }
+        const redeemed = await redeemLoginInviteForSession(env, {
+          sessionToken,
+          inviteCode,
+          clientIp: resolveDcrClientIp({ request })
+        });
+        const accept = request.headers.get("accept") || "";
+        if (accept.includes("application/json") || ct.includes("application/json")) {
+          if (!redeemed.ok) {
+            return json({ error: redeemed.error, error_description: redeemed.detail || redeemed.error }, redeemed.status || 400);
+          }
+          return json({
+            ok: true,
+            account_id: redeemed.account_id,
+            auth_method: redeemed.auth_method,
+            step_up_confirmed: redeemed.step_up_confirmed,
+            offer_passkey_enroll: redeemed.offer_passkey_enroll
+          });
+        }
+        if (!redeemed.ok) {
+          const page = await reloadAuthorizeHtml(env, {
+            sessionToken,
+            url,
+            error: redeemed.error || "invite_failed"
+          });
+          if (page.ok) {
+            return withCors(new Response(page.html, {
+              status: 400,
+              headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
+            }));
+          }
+          return json({ error: redeemed.error }, redeemed.status || 400);
+        }
+        const page = await reloadAuthorizeHtml(env, { sessionToken, url });
+        return withCors(new Response(page.html, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
+        }));
+      }
+      if (request.method === "POST" && url.pathname === "/oauth/authorize/approve") {
+        const sessionToken = parseAuthorizeSessionCookie(request.headers.get("cookie") || "");
+        const result = await approveAuthorizeSession(env, { sessionToken, url });
+        const accept = request.headers.get("accept") || "";
+        if (!result.ok) {
+          if (accept.includes("application/json")) {
+            return json({ error: result.error, error_description: result.detail || result.error }, result.status || 400);
+          }
+          return json({ error: result.error, error_description: result.detail || result.error }, result.status || 400);
+        }
+        const clearCookie = clearAuthorizeSessionCookie({ secure: url.protocol === "https:" });
+        if (accept.includes("application/json")) {
           return json({
             ok: true,
             redirect_uri: result.redirect_uri,
             code: result.code,
             iss: result.iss,
             state: result.state || undefined,
-            account_id: result.account_id
-          });
+            account_id: result.account_id,
+            step_up_confirmed: result.step_up_confirmed
+          }, 200, { "set-cookie": clearCookie });
         }
-        return withCors(Response.redirect(result.redirect_uri, 302));
+        return withCors(new Response(null, {
+          status: 302,
+          headers: {
+            location: result.redirect_uri,
+            "set-cookie": clearCookie,
+            "cache-control": "no-store"
+          }
+        }));
+      }
+      if (request.method === "POST" && url.pathname === "/oauth/authorize/deny") {
+        const sessionToken = parseAuthorizeSessionCookie(request.headers.get("cookie") || "");
+        const result = await denyAuthorizeSession(env, { sessionToken });
+        if (!result.ok) {
+          return json({ error: result.error }, result.status || 400);
+        }
+        const clearCookie = clearAuthorizeSessionCookie({ secure: url.protocol === "https:" });
+        const accept = request.headers.get("accept") || "";
+        if (accept.includes("application/json")) {
+          return json({
+            ok: true,
+            redirect_uri: result.redirect_uri,
+            error: "access_denied"
+          }, 200, { "set-cookie": clearCookie });
+        }
+        return withCors(new Response(null, {
+          status: 302,
+          headers: {
+            location: result.redirect_uri,
+            "set-cookie": clearCookie,
+            "cache-control": "no-store"
+          }
+        }));
+      }
+      if (request.method === "POST" && url.pathname === "/oauth/webauthn/assertion/options") {
+        const sessionToken = parseAuthorizeSessionCookie(request.headers.get("cookie") || "");
+        const result = await createAssertionOptions(env, { sessionToken, url });
+        if (!result.ok) return json({ error: result.error }, result.status || 400);
+        return json({ ok: true, publicKey: result.publicKey });
+      }
+      if (request.method === "POST" && url.pathname === "/oauth/webauthn/assertion/verify") {
+        const sessionToken = parseAuthorizeSessionCookie(request.headers.get("cookie") || "");
+        const body = await request.json().catch(() => ({}));
+        const result = await verifyAssertionForSession(env, { sessionToken, credential: body, url });
+        if (!result.ok) return json({ error: result.error }, result.status || 400);
+        return json({
+          ok: true,
+          account_id: result.account_id,
+          auth_method: result.auth_method,
+          step_up_confirmed: result.step_up_confirmed
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/oauth/webauthn/registration/options") {
+        const sessionToken = parseAuthorizeSessionCookie(request.headers.get("cookie") || "");
+        const result = await createRegistrationOptions(env, { sessionToken, url });
+        if (!result.ok) return json({ error: result.error }, result.status || 400);
+        return json({ ok: true, publicKey: result.publicKey });
+      }
+      if (request.method === "POST" && url.pathname === "/oauth/webauthn/registration/verify") {
+        const sessionToken = parseAuthorizeSessionCookie(request.headers.get("cookie") || "");
+        const body = await request.json().catch(() => ({}));
+        const result = await verifyRegistrationForSession(env, { sessionToken, credential: body, url });
+        if (!result.ok) return json({ error: result.error }, result.status || 400);
+        return json({
+          ok: true,
+          account_id: result.account_id,
+          authenticator_id: result.authenticator_id,
+          step_up_confirmed: result.step_up_confirmed
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/oauth/operator/owner-account") {
+        const auth = await requireOperatorAuthorization(request, env);
+        if (!auth.ok) return json({ error: auth.error }, auth.status || 401);
+        const body = await request.json().catch(() => ({}));
+        const result = await createOwnerAccount(env, {
+          displayName: typeof body.display_name === "string" ? body.display_name : "Jared",
+          accountKey: typeof body.account_key === "string" ? body.account_key : "owner",
+          issuedBy: auth.subject
+        });
+        if (!result.ok) return json({ error: result.error }, result.status || 400);
+        return json({
+          ok: true,
+          existing: result.existing,
+          account_id: result.account.account_id,
+          home_tenant_id: result.account.home_tenant_id,
+          display_name: result.account.display_name
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/oauth/operator/login-invites") {
+        const auth = await requireOperatorAuthorization(request, env);
+        if (!auth.ok) return json({ error: auth.error }, auth.status || 401);
+        const body = await request.json().catch(() => ({}));
+        const accountId = typeof body.account_id === "string" ? body.account_id.trim() : "";
+        if (!accountId) return json({ error: "account_id_required" }, 400);
+        const result = await mintLoginInvite(env, {
+          accountId,
+          ttlSeconds: body.ttl_seconds,
+          issuedBy: auth.subject
+        });
+        if (!result.ok) return json({ error: result.error }, result.status || 400);
+        // Plaintext invite_code returned once to the operator — never logged here.
+        return json({
+          ok: true,
+          invite_id: result.invite_id,
+          invite_code: result.invite_code,
+          account_id: result.account_id,
+          expires_in: result.expires_in,
+          expires_at: result.expires_at
+        });
       }
       if (request.method === "POST" && url.pathname === "/oauth/token") {
         const parsed = await parseOauthPostBody(request);
@@ -797,6 +1024,15 @@ function routes() {
     "GET /oauth/.well-known/oauth-authorization-server",
     "GET /oauth/authorize",
     "POST /oauth/authorize",
+    "POST /oauth/authorize/invite",
+    "POST /oauth/authorize/approve",
+    "POST /oauth/authorize/deny",
+    "POST /oauth/webauthn/assertion/options",
+    "POST /oauth/webauthn/assertion/verify",
+    "POST /oauth/webauthn/registration/options",
+    "POST /oauth/webauthn/registration/verify",
+    "POST /oauth/operator/owner-account",
+    "POST /oauth/operator/login-invites",
     "POST /oauth/token",
     "POST /oauth/revoke",
     "POST /oauth/register",
@@ -3049,8 +3285,16 @@ function optionalNumber(value, fallback) {
   return value === undefined || value === null || value === "" ? fallback : Number(value);
 }
 
-function json(data, status = 200) {
-  return withCors(Response.json(data, { status }));
+function json(data, status = 200, extraHeaders = null) {
+  const response = Response.json(data, { status });
+  if (extraHeaders && typeof extraHeaders === "object") {
+    const headers = new Headers(response.headers);
+    for (const [key, value] of Object.entries(extraHeaders)) {
+      if (value != null) headers.set(key, String(value));
+    }
+    return withCors(new Response(response.body, { status: response.status, headers }));
+  }
+  return withCors(response);
 }
 
 function withCors(response) {

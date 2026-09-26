@@ -107,8 +107,14 @@ test("authorize stores canonical bare-origin Messages resource when client sends
               return null;
             },
             async run() {
-              if (/INSERT INTO auth_authorization_codes/.test(normalized)) {
+              if (/INSERT INTO auth_authorize_sessions/.test(normalized)) {
                 captured.push({ sql: normalized, args });
+              }
+              if (/INSERT INTO auth_audit_events/.test(normalized)) {
+                return { success: true, meta: { changes: 1 } };
+              }
+              if (/INSERT INTO auth_cimd_cache/.test(normalized)) {
+                return { success: true, meta: { changes: 1 } };
               }
               return { success: true, meta: { changes: 1 } };
             }
@@ -124,10 +130,7 @@ test("authorize stores canonical bare-origin Messages resource when client sends
     client_id: "https://example.invalid/cimd.json",
     redirect_uri: "https://chatgpt.com/connector/oauth/-/callback",
     code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
-    code_challenge_method: "S256",
-    account_id: "acct_test",
-    tenant_id: "ten_test",
-    authenticator_id: "authn_test"
+    code_challenge_method: "S256"
   }, { CAIRNSTONE_AUTH_DB: db, CORE_AUTH_RESOURCE: CORE_RESOURCE }, url, {
     fetchImpl: async () => new Response(JSON.stringify({
       client_id: "https://example.invalid/cimd.json",
@@ -136,11 +139,13 @@ test("authorize stores canonical bare-origin Messages resource when client sends
   });
 
   assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.code, null);
+  assert.equal(result.mode, "consent");
+  assert.equal(result.resource, CANONICAL_MESSAGES_RESOURCE);
   assert.equal(captured.length, 1);
-  // createAuthorizationCode bind order: codeHash, realm, accountId, tenantId,
-  // connectionId, principalId, authenticatorId, clientId, redirectUri,
-  // codeChallenge, resource, scopes_json, iss, expires, created
-  const storedResource = captured[0].args[10];
+  // beginOauthAuthorize bind: sessionId, realm, tokenHash, clientId, clientName,
+  // redirectUri, codeChallenge, resource, scopes_json, state, iss, cimdHash, expires, created
+  const storedResource = captured[0].args[7];
   assert.equal(storedResource, CANONICAL_MESSAGES_RESOURCE);
   assert.notEqual(storedResource, MESSAGES_RESOURCE);
 });
