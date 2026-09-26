@@ -274,3 +274,33 @@ test("foreign JWT never becomes a Messages principal", async () => {
   assert.equal(result.ok, false);
   assert.equal(result.active, false);
 });
+
+test("token stored with /mcp resource introspects after allowlist normalization", async () => {
+  const db = new MiniAuthDb();
+  const mcpResource = `${CANONICAL_MESSAGES_RESOURCE}/mcp`;
+  await seedToken(db, {
+    token: "csat_messages_mcp",
+    resource: mcpResource,
+    scopes: ["messages.read", "messages.write"],
+    expiresAt: "2099-01-01T00:00:00.000Z"
+  });
+
+  // Caller may omit resource, request bare origin, or request …/mcp.
+  for (const resource of [undefined, CANONICAL_MESSAGES_RESOURCE, mcpResource]) {
+    const args = { token: "csat_messages_mcp" };
+    if (resource !== undefined) args.resource = resource;
+    const result = await introspectAccessToken(envFor(db), args);
+    assert.equal(result.ok, true, `expected ok for resource=${resource}`);
+    assert.equal(result.active, true);
+    assert.equal(result.resource, CANONICAL_MESSAGES_RESOURCE);
+    assert.deepEqual(result.scopes, ["messages.read", "messages.write"]);
+    assert.equal(result.account_id, "acct_alice");
+  }
+
+  // Exact Core validateAccessToken still rejects /mcp Messages tokens.
+  const coreReject = await validateAccessToken(envFor(db), "csat_messages_mcp", {
+    expectedResource: CORE_RESOURCE
+  });
+  assert.equal(coreReject.ok, false);
+  assert.equal(coreReject.reason, "audience_mismatch");
+});

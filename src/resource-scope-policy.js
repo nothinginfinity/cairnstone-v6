@@ -43,6 +43,26 @@ export function isCanonicalMessagesResource(value) {
     || resource === `${CANONICAL_MESSAGES_RESOURCE}/mcp`;
 }
 
+/**
+ * Map either allowlisted Messages form (bare origin or …/mcp) to the
+ * canonical bare-origin audience stored on codes/tokens.
+ * Returns null when the value is not an allowlisted Messages resource.
+ */
+export function canonicalizeMessagesResource(value) {
+  if (!isCanonicalMessagesResource(value)) return null;
+  return CANONICAL_MESSAGES_RESOURCE;
+}
+
+/**
+ * True when both values are allowlisted Messages resources (either form).
+ * Does not equate Messages with Core or any other audience.
+ */
+export function messagesResourcesEquivalent(a, b) {
+  const left = canonicalizeMessagesResource(a);
+  const right = canonicalizeMessagesResource(b);
+  return left !== null && left === right;
+}
+
 export function isCanonicalCoreResource(value, env, url) {
   const resource = normalizeRegisteredResource(value);
   if (!resource) return false;

@@ -13,6 +13,8 @@
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
 import {
   advertisedAuthorizationScopes,
+  canonicalizeMessagesResource,
+  messagesResourcesEquivalent,
   resolveResourceScopePolicy
 } from "./resource-scope-policy.js";
 
@@ -153,6 +155,26 @@ export function canonicalCoreAuthResource(env, url) {
     return `${url.origin}${CORE_AUTH_RESOURCE_PATH}`;
   }
   return CORE_AUTH_RESOURCE_PATH;
+}
+
+/**
+ * Canonicalize a resource for storage on codes/tokens.
+ * Messages …/mcp collapses to bare origin; other audiences are unchanged.
+ */
+export function canonicalizeOauthResource(resource) {
+  if (typeof resource !== "string" || !resource.trim()) return resource;
+  const messages = canonicalizeMessagesResource(resource);
+  return messages || resource.trim();
+}
+
+/**
+ * Compare OAuth resource parameters across authorize ↔ token ↔ refresh.
+ * Messages bare origin and …/mcp are equivalent; Core remains exact.
+ */
+export function oauthResourcesMatch(stored, requested) {
+  if (stored === requested) return true;
+  if (messagesResourcesEquivalent(stored, requested)) return true;
+  return false;
 }
 
 export function authorizationServerIssuer(env, url) {
@@ -1246,7 +1268,7 @@ export async function rotateRefreshToken(env, refreshToken, {
   if (!family || family.status !== "active") {
     return { ok: false, error: "invalid_grant", status: 401 };
   }
-  if (expectedResource && family.resource !== expectedResource) {
+  if (expectedResource && !oauthResourcesMatch(family.resource, expectedResource)) {
     return { ok: false, error: "invalid_grant", status: 401 };
   }
 
@@ -1609,6 +1631,7 @@ export async function bindConnectionTenant(env, { connectionId, tenantId }) {
  */
 export async function validateAccessToken(env, accessToken, {
   expectedResource = null,
+  acceptedResources = null,
   url = null,
   nowMs = Date.now()
 } = {}) {
@@ -1633,7 +1656,12 @@ export async function validateAccessToken(env, accessToken, {
   if (row.expires_at < nowIso(nowMs)) return { ok: false, error: "invalid_token", status: 401 };
 
   const resource = expectedResource || canonicalCoreAuthResource(env, url);
-  if (row.resource !== resource) {
+  const allowedAudiences = Array.isArray(acceptedResources) && acceptedResources.length
+    ? acceptedResources
+    : [resource];
+  // Default remains exact match. Messages bridge may pass both allowlisted forms
+  // via acceptedResources; Core callers leave that unset and stay exact.
+  if (!allowedAudiences.includes(row.resource)) {
     return { ok: false, error: "invalid_token", status: 401, reason: "audience_mismatch" };
   }
 
@@ -1895,7 +1923,7 @@ export async function redeemAuthorizationCode(env, {
   if (expectedIss && row.iss !== expectedIss) {
     return { ok: false, error: "invalid_grant", reason: "issuer_mismatch" };
   }
-  if (resource && row.resource !== resource) {
+  if (resource && !oauthResourcesMatch(row.resource, resource)) {
     return { ok: false, error: "invalid_grant", reason: "resource_mismatch" };
   }
 
@@ -1954,12 +1982,15 @@ export async function handleOauthAuthorizeRequest(params, env, url, { fetchImpl 
   const redirectUri = typeof params?.redirect_uri === "string" ? params.redirect_uri.trim() : "";
   const codeChallenge = typeof params?.code_challenge === "string" ? params.code_challenge.trim() : "";
   const codeChallengeMethod = String(params?.code_challenge_method || "S256");
-  const resource = typeof params?.resource === "string" && params.resource.trim()
+  const resourceRaw = typeof params?.resource === "string" && params.resource.trim()
     ? params.resource.trim()
     : canonicalCoreAuthResource(env, url);
+  // Issue Messages codes/tokens against the bare-origin canonical audience even
+  // when the client requested …/mcp (MCP connector resource URL).
+  const resource = canonicalizeOauthResource(resourceRaw);
   const state = typeof params?.state === "string" ? params.state : null;
   const issuer = authorizationServerIssuer(env, url);
-  const scoped = resolveResourceScopePolicy(resource, params?.scope, env, url);
+  const scoped = resolveResourceScopePolicy(resourceRaw, params?.scope, env, url);
   if (!scoped.ok) {
     return {
       ok: false,
@@ -2071,7 +2102,8 @@ export async function handleOauthAuthorizeRequest(params, env, url, { fetchImpl 
 
 export async function handleOauthTokenRequest(body, env, url) {
   const grantType = String(body?.grant_type || "");
-  const resource = typeof body?.resource === "string" ? body.resource : canonicalCoreAuthResource(env, url);
+  const resourceRaw = typeof body?.resource === "string" ? body.resource : canonicalCoreAuthResource(env, url);
+  const resource = canonicalizeOauthResource(resourceRaw);
   const issuer = authorizationServerIssuer(env, url);
 
   if (grantType === "authorization_code") {
