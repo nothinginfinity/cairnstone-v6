@@ -12,6 +12,7 @@ import {
   redeemAuthorizationCode
 } from "../src/core-auth.js";
 import {
+  AUTHORIZE_SESSION_COOKIE,
   approveAuthorizeSession,
   beginOauthAuthorize,
   createAssertionOptions,
@@ -20,6 +21,7 @@ import {
   denyAuthorizeSession,
   mintLoginInvite,
   redeemLoginInviteForSession,
+  renderAuthorizeHtml,
   verifyAssertionForSession,
   verifyRegistrationForSession
 } from "../src/oauth-user-auth.js";
@@ -52,6 +54,28 @@ function envFor(db, extra = {}) {
 
 function urlFor(path = "/oauth/authorize") {
   return new URL(`${ORIGIN}${path}`);
+}
+
+/** Extract `name=value` cookie pair from a Set-Cookie header. */
+function sessionCookieFromResponse(response) {
+  const raw = response.headers.get("set-cookie") || "";
+  const match = raw.match(new RegExp(`(?:^|,\\s*)${AUTHORIZE_SESSION_COOKIE}=([^;]+)`));
+  assert.ok(match, `expected ${AUTHORIZE_SESSION_COOKIE} in Set-Cookie: ${raw}`);
+  return `${AUTHORIZE_SESSION_COOKIE}=${match[1]}`;
+}
+
+function authorizeQuery({ clientId, challenge, state = "st1" }) {
+  const q = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: "https://client.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: RESOURCE,
+    scope: "mcp:core",
+    state
+  });
+  return `${ORIGIN}/oauth/authorize?${q.toString()}`;
 }
 
 async function registerClient(env, name = "test-client") {
@@ -679,4 +703,242 @@ test("owner account creation does not reuse anonymous acct rows", async () => {
   assert.notEqual(owner.account.account_id, anonId);
   assert.equal(owner.account.home_workspace_id, "owner_home_owner-fresh");
   assert.equal(db.tables.auth_accounts.has(anonId), true);
+});
+
+test("authorize HTML uses queryless replace after passkey success (not location.reload)", () => {
+  const html = renderAuthorizeHtml({
+    status: "pending_auth",
+    client_id: "client_x",
+    client_name: "Client X",
+    scopes_json: '["mcp:core"]',
+    resource: RESOURCE,
+    offer_passkey_enroll: 0,
+    step_up_confirmed: 0
+  }, { rpId: RP_ID });
+  assert.match(html, /window\.location\.replace\("\/oauth\/authorize"\)/);
+  assert.equal(/\blocation\.reload\s*\(/.test(html), false);
+
+  const enrolledHtml = renderAuthorizeHtml({
+    status: "authenticated",
+    client_id: "client_x",
+    client_name: "Client X",
+    scopes_json: '["mcp:core"]',
+    resource: RESOURCE,
+    offer_passkey_enroll: 1,
+    step_up_confirmed: 0
+  }, { rpId: RP_ID });
+  const replaceCount = (enrolledHtml.match(/window\.location\.replace\("\/oauth\/authorize"\)/g) || []).length;
+  assert.equal(replaceCount, 2, "assertion + enroll success must both navigate queryless");
+  assert.equal(/\blocation\.reload\s*\(/.test(enrolledHtml), false);
+});
+
+test("regression (a): invite → passkey enroll → queryless authorize resume → Approve issues code", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db);
+  const owner = await createOwnerAccount(env, { displayName: "Jared", accountKey: "owner-resume-invite" });
+  const invite = await mintLoginInvite(env, { accountId: owner.account.account_id });
+  const client = await registerClient(env, "resume-invite-client");
+  const verifier = "verifier_" + "j".repeat(43);
+  const challenge = await pkceChallengeS256(verifier);
+
+  const startRes = await worker.fetch(new Request(authorizeQuery({
+    clientId: client.client_id,
+    challenge,
+    state: "resume-invite"
+  }), { method: "GET" }), env);
+  assert.equal(startRes.status, 200);
+  const cookie = sessionCookieFromResponse(startRes);
+  assert.match(await startRes.text(), /Sign in with passkey/);
+  assert.equal(db.tables.auth_authorize_sessions.size, 1);
+
+  // Form POST invite (HTML accept) must PRG to queryless /oauth/authorize — not leave HTML at /invite.
+  const inviteRes = await worker.fetch(new Request(`${ORIGIN}/oauth/authorize/invite`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      cookie,
+      accept: "text/html"
+    },
+    body: new URLSearchParams({ invite_code: invite.invite_code }).toString()
+  }), env);
+  assert.equal(inviteRes.status, 303);
+  assert.equal(inviteRes.headers.get("location"), "/oauth/authorize");
+
+  const afterInvite = await worker.fetch(new Request(`${ORIGIN}/oauth/authorize`, {
+    method: "GET",
+    headers: { cookie, accept: "text/html" }
+  }), env);
+  assert.equal(afterInvite.status, 200);
+  const afterInviteHtml = await afterInvite.text();
+  assert.match(afterInviteHtml, /Approve/);
+  assert.match(afterInviteHtml, /Enroll passkey/);
+  assert.equal(db.tables.auth_authorize_sessions.size, 1, "queryless resume must not start a new session");
+
+  const regOptRes = await worker.fetch(new Request(`${ORIGIN}/oauth/webauthn/registration/options`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json", accept: "application/json" },
+    body: "{}"
+  }), env);
+  assert.equal(regOptRes.status, 200);
+  const regOpt = await regOptRes.json();
+  assert.equal(regOpt.ok, true);
+  const keyPair = await generateEs256KeyPair();
+  const credBytes = crypto.getRandomValues(new Uint8Array(16));
+  const reg = await craftRegistration({
+    privateKey: keyPair.privateKey,
+    challenge: regOpt.publicKey.challenge,
+    origin: ORIGIN,
+    rpId: RP_ID,
+    credentialIdBytes: credBytes
+  });
+  const enrollRes = await worker.fetch(new Request(`${ORIGIN}/oauth/webauthn/registration/verify`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      id: reg.credentialId,
+      rawId: reg.credentialId,
+      type: "public-key",
+      response: {
+        clientDataJSON: reg.clientDataJSONB64u,
+        attestationObject: reg.attestationObjectB64u
+      }
+    })
+  }), env);
+  assert.equal(enrollRes.status, 200);
+  const enrolled = await enrollRes.json();
+  assert.equal(enrolled.ok, true, enrolled.error);
+
+  // Simulate post-enroll window.location.replace('/oauth/authorize') (queryless cookie resume).
+  const resumeRes = await worker.fetch(new Request(`${ORIGIN}/oauth/authorize`, {
+    method: "GET",
+    headers: { cookie, accept: "text/html" }
+  }), env);
+  assert.equal(resumeRes.status, 200);
+  const resumeHtml = await resumeRes.text();
+  assert.match(resumeHtml, /Approve/);
+  assert.match(resumeHtml, /Signed in/);
+  assert.equal(db.tables.auth_authorize_sessions.size, 1);
+  const sessionRow = [...db.tables.auth_authorize_sessions.values()][0];
+  assert.equal(sessionRow.status, "authenticated");
+  assert.equal(sessionRow.completed_at, null);
+
+  const approveRes = await worker.fetch(new Request(`${ORIGIN}/oauth/authorize/approve`, {
+    method: "POST",
+    headers: { cookie, accept: "application/json" }
+  }), env);
+  assert.equal(approveRes.status, 200);
+  const approved = await approveRes.json();
+  assert.equal(approved.ok, true, approved.error);
+  assert.ok(approved.code);
+  assert.equal(approved.account_id, owner.account.account_id);
+  assert.equal(db.tables.auth_authorization_codes.size, 1);
+  assert.equal([...db.tables.auth_authorize_sessions.values()][0].status, "approved");
+});
+
+test("regression (b): passkey assertion from authorize URL with OAuth query → queryless resume → Approve", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db);
+  const owner = await createOwnerAccount(env, { displayName: "Jared", accountKey: "owner-resume-assert" });
+  const keyPair = await generateEs256KeyPair();
+  const jwk = await jwkFromCryptoKey(keyPair.privateKey);
+  const publicJwk = { kty: "EC", crv: "P-256", x: jwk.x, y: jwk.y, ext: true };
+  const authenticatorId = "authn_" + "q".repeat(36);
+  db.tables.auth_authenticators.set(authenticatorId, {
+    authenticator_id: authenticatorId,
+    schema: "cairnstone-authenticator-v1",
+    realm: "core-auth",
+    account_id: owner.account.account_id,
+    method: "passkey_webauthn",
+    status: "active",
+    assurance_class: "webauthn",
+    wallet_account_id: null,
+    created_at: new Date().toISOString(),
+    revoked_at: null,
+    accepted_state_authority: 0
+  });
+  const credentialId = await seedPasskey(env, owner.account.account_id, authenticatorId, {
+    publicKeyJwk: publicJwk,
+    signCount: 0
+  });
+
+  const client = await registerClient(env, "resume-assert-client");
+  const verifier = "verifier_" + "k".repeat(43);
+  const challenge = await pkceChallengeS256(verifier);
+  const authorizeWithQuery = authorizeQuery({
+    clientId: client.client_id,
+    challenge,
+    state: "resume-assert"
+  });
+
+  const startRes = await worker.fetch(new Request(authorizeWithQuery, { method: "GET" }), env);
+  assert.equal(startRes.status, 200);
+  const cookie = sessionCookieFromResponse(startRes);
+  assert.equal(db.tables.auth_authorize_sessions.size, 1);
+
+  const optRes = await worker.fetch(new Request(`${ORIGIN}/oauth/webauthn/assertion/options`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json", accept: "application/json" },
+    body: "{}"
+  }), env);
+  const options = await optRes.json();
+  assert.equal(options.ok, true);
+  const assertion = await craftAssertion({
+    privateKey: keyPair.privateKey,
+    challenge: options.publicKey.challenge,
+    origin: ORIGIN,
+    rpId: RP_ID,
+    signCount: 1
+  });
+  const verifyRes = await worker.fetch(new Request(`${ORIGIN}/oauth/webauthn/assertion/verify`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      id: credentialId,
+      rawId: credentialId,
+      type: "public-key",
+      response: {
+        clientDataJSON: assertion.clientDataJSONB64u,
+        authenticatorData: assertion.authenticatorDataB64u,
+        signature: assertion.signatureB64u
+      }
+    })
+  }), env);
+  assert.equal(verifyRes.status, 200);
+  const verified = await verifyRes.json();
+  assert.equal(verified.ok, true, verified.error);
+  assert.equal(verified.step_up_confirmed, true);
+
+  // Bug path: reloading the initial authorize URL keeps client_id → resume skipped → new pending session.
+  const reloadBug = await worker.fetch(new Request(authorizeWithQuery, {
+    method: "GET",
+    headers: { cookie, accept: "text/html" }
+  }), env);
+  assert.equal(reloadBug.status, 200);
+  const bugHtml = await reloadBug.text();
+  assert.match(bugHtml, /Sign in with passkey/);
+  assert.equal(bugHtml.includes("id=\"btnApprove\""), false);
+  assert.equal(db.tables.auth_authorize_sessions.size, 2, "reload-with-query starts a new pending session");
+
+  // Fix path: queryless /oauth/authorize with the original session cookie resumes authenticated consent.
+  const resumeRes = await worker.fetch(new Request(`${ORIGIN}/oauth/authorize`, {
+    method: "GET",
+    headers: { cookie, accept: "text/html" }
+  }), env);
+  assert.equal(resumeRes.status, 200);
+  const resumeHtml = await resumeRes.text();
+  assert.match(resumeHtml, /Approve/);
+  assert.match(resumeHtml, /Signed in/);
+  assert.match(resumeHtml, /passkey \(user verified\)/);
+
+  const approveRes = await worker.fetch(new Request(`${ORIGIN}/oauth/authorize/approve`, {
+    method: "POST",
+    headers: { cookie, accept: "application/json" }
+  }), env);
+  assert.equal(approveRes.status, 200);
+  const approved = await approveRes.json();
+  assert.equal(approved.ok, true, approved.error);
+  assert.ok(approved.code);
+  assert.equal(approved.account_id, owner.account.account_id);
+  assert.equal(approved.step_up_confirmed, true);
+  assert.equal(db.tables.auth_authorization_codes.size, 1);
 });

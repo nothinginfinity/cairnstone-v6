@@ -554,7 +554,9 @@ export function renderAuthorizeHtml(session, { rpId, error = null } = {}) {
             userHandle: cred.response.userHandle ? b64url(cred.response.userHandle) : null
           }
         });
-        location.reload();
+        // Queryless navigation hits cookie resume (existingToken && !client_id).
+        // Reloading the current URL keeps authorize query params and skips resume / breaks invite POST URL.
+        window.location.replace("/oauth/authorize");
       } catch (err) {
         setStatus(String(err && err.message ? err.message : err), true);
       }
@@ -586,7 +588,8 @@ export function renderAuthorizeHtml(session, { rpId, error = null } = {}) {
           }
         });
         setStatus("Passkey enrolled.");
-        location.reload();
+        // Same queryless resume as assertion — required after invite POST /oauth/authorize/invite.
+        window.location.replace("/oauth/authorize");
       } catch (err) {
         setStatus(String(err && err.message ? err.message : err), true);
       }

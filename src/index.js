@@ -429,10 +429,14 @@ export default {
           }
           return json({ error: redeemed.error }, redeemed.status || 400);
         }
-        const page = await reloadAuthorizeHtml(env, { sessionToken, url });
-        return withCors(new Response(page.html, {
-          status: 200,
-          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
+        // PRG: land on queryless /oauth/authorize so cookie resume works (and reload/enroll
+        // cannot GET the POST-only /oauth/authorize/invite URL).
+        return withCors(new Response(null, {
+          status: 303,
+          headers: {
+            location: "/oauth/authorize",
+            "cache-control": "no-store"
+          }
         }));
       }
       if (request.method === "POST" && url.pathname === "/oauth/authorize/approve") {
