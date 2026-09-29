@@ -45,6 +45,9 @@ import {
   UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION
 } from "./unified-conversations.js";
 import {
+  TURNSYNC_APPEND_MCP_TOOL_DEFINITION
+} from "./turnsync-ingest.js";
+import {
   ATTACHMENT_REF_RESOLVE_TOOL_DEFINITION
 } from "./attachment-refs.js";
 import {
@@ -1708,6 +1711,16 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     available: true,
     description: "V7.7.10j: authenticated account-scoped Unified Conversations aggregate; server-derived identities only; filters narrow only; legacy unauthenticated calls fail closed.",
     input_schema: UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_turnsync_append",
+    connector: "cairnstone",
+    handler: "cairnstone_turnsync_append",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10j: authenticated replay-safe end-of-turn append bridge; connection-bound actor identity; host eligibility policy remains external in this bootstrap slice.",
+    input_schema: TURNSYNC_APPEND_MCP_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
     tool_id: "cairnstone_conversation_session_update",
