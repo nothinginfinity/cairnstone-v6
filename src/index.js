@@ -179,6 +179,10 @@ import {
   CONVERSATION_SESSION_MCP_TOOL_DEFINITIONS
 } from "./conversation-session.js";
 import {
+  unifiedConversationsFromBody,
+  UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION
+} from "./unified-conversations.js";
+import {
   resolveAttachmentRefsFromBody,
   ATTACHMENT_REF_MCP_TOOL_DEFINITIONS
 } from "./attachment-refs.js";
@@ -1796,6 +1800,11 @@ async function callMcpTool(name, args, env, options = {}) {
   if (name === "cairnstone_conversation_session_create") return createConversationSessionFromBody(args, env);
   if (name === "cairnstone_conversation_session_get") return getConversationSessionFromBody(args, env);
   if (name === "cairnstone_conversation_session_list") return listConversationSessionsFromBody(args, env);
+  if (name === "cairnstone_unified_conversations") return unifiedConversationsFromBody(args, env, {
+    listThreads: (body, runtimeEnv) => listThreadsFromBody(body, runtimeEnv, {
+      createStone: stoneBody => createStoneFromBody(stoneBody, runtimeEnv)
+    })
+  });
   if (name === "cairnstone_conversation_session_update") return updateConversationSessionFromBody(args, env);
   if (name === "cairnstone_conversation_session_append_turn") return appendConversationTurnFromBody(args, env);
   if (name === "cairnstone_attachment_ref_resolve") return resolveAttachmentRefsFromBody(args, env);
@@ -2097,6 +2106,7 @@ function mcpTools() {
     ...CODE_SESSION_CONSOLE_MCP_TOOL_DEFINITIONS,
     ...GROUNDED_RESPONSE_MCP_TOOL_DEFINITIONS,
     ...CONVERSATION_SESSION_MCP_TOOL_DEFINITIONS,
+    UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION,
     ...ATTACHMENT_REF_MCP_TOOL_DEFINITIONS,
     ...ACCESS_GRANT_MCP_TOOL_DEFINITIONS,
     ...TASK_RUN_MCP_TOOL_DEFINITIONS,
