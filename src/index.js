@@ -183,6 +183,10 @@ import {
   UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION
 } from "./unified-conversations.js";
 import {
+  turnSyncAppendFromBody,
+  TURNSYNC_APPEND_MCP_TOOL_DEFINITION
+} from "./turnsync-ingest.js";
+import {
   resolveAttachmentRefsFromBody,
   ATTACHMENT_REF_MCP_TOOL_DEFINITIONS
 } from "./attachment-refs.js";
@@ -1805,6 +1809,7 @@ async function callMcpTool(name, args, env, options = {}) {
       createStone: stoneBody => createStoneFromBody(stoneBody, runtimeEnv)
     })
   });
+  if (name === "cairnstone_turnsync_append") return turnSyncAppendFromBody(args, env);
   if (name === "cairnstone_conversation_session_update") return updateConversationSessionFromBody(args, env);
   if (name === "cairnstone_conversation_session_append_turn") return appendConversationTurnFromBody(args, env);
   if (name === "cairnstone_attachment_ref_resolve") return resolveAttachmentRefsFromBody(args, env);
@@ -2107,6 +2112,7 @@ function mcpTools() {
     ...GROUNDED_RESPONSE_MCP_TOOL_DEFINITIONS,
     ...CONVERSATION_SESSION_MCP_TOOL_DEFINITIONS,
     UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION,
+    TURNSYNC_APPEND_MCP_TOOL_DEFINITION,
     ...ATTACHMENT_REF_MCP_TOOL_DEFINITIONS,
     ...ACCESS_GRANT_MCP_TOOL_DEFINITIONS,
     ...TASK_RUN_MCP_TOOL_DEFINITIONS,
