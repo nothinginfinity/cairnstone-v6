@@ -42,6 +42,9 @@ import {
   CONVERSATION_SESSION_APPEND_TURN_TOOL_DEFINITION
 } from "./conversation-session.js";
 import {
+  UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION
+} from "./unified-conversations.js";
+import {
   ATTACHMENT_REF_RESOLVE_TOOL_DEFINITION
 } from "./attachment-refs.js";
 import {
@@ -1695,6 +1698,16 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     available: true,
     description: "V7.7.10a: list Conversation Sessions visible to an actor; never moves HEADs.",
     input_schema: CONVERSATION_SESSION_LIST_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_unified_conversations",
+    connector: "cairnstone",
+    handler: "cairnstone_unified_conversations",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "V7.7.10j: authenticated account-scoped Unified Conversations aggregate; server-derived identities only; filters narrow only; legacy unauthenticated calls fail closed.",
+    input_schema: UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
     tool_id: "cairnstone_conversation_session_update",
