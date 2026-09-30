@@ -1,15 +1,20 @@
 // V7.7.10j — authenticated, replay-safe TurnSync end-of-turn append bridge.
 //
-// This is a bootstrap ingestion primitive for provider/host end-of-turn hooks.
-// It does NOT implement project/workspace Sync ON/OFF/ASK policy yet. The host
-// must decide that the turn is eligible before calling this tool. The bridge
-// only makes the append identity-safe, connection-bound, and retry-friendly.
+// This is the provider/host end-of-turn ingestion boundary. New appends are
+// gated by authenticated account-owned standing policy derived from the target
+// Conversation Session (workspace -> chain -> account -> safe default ASK).
+// Stable exact replays are non-mutating and may return without re-authorizing
+// an upload that already happened.
 
 import { authDb } from "./core-auth.js";
 import {
   appendConversationTurn,
   getConversationSession
 } from "./conversation-session.js";
+import {
+  evaluateTurnSyncStandingPolicy,
+  getEffectiveTurnSyncPolicy
+} from "./turnsync-policy.js";
 
 export const TURNSYNC_APPEND_SCHEMA = "cairnstone-turnsync-append-v1";
 export const TURNSYNC_APPEND_TOOL_ID = "cairnstone_turnsync_append";
@@ -105,6 +110,12 @@ export async function resolveTurnSyncActor(env = {}, requestedActorId = null) {
     connection_id: String(row?.connection_id || authContext.connection_id),
     principal_id: String(row?.principal_id || authContext.principal_id)
   };
+}
+
+export function turnSyncScopeFromSession(session = {}) {
+  const workspaceId = String(session?.workspace_id || "").trim() || null;
+  const chain = String(session?.selected_chain || "").trim() || null;
+  return { workspace_id: workspaceId, chain };
 }
 
 async function findTurnIdentity(db, turnId, messageId) {
@@ -229,6 +240,7 @@ export async function turnSyncAppendFromBody(body = {}, env = {}, deps = {}) {
   const db = env.CAIRNSTONE_DB;
   const getSession = deps.getConversationSession || getConversationSession;
   const appendTurn = deps.appendConversationTurn || appendConversationTurn;
+  const getPolicy = deps.getEffectiveTurnSyncPolicy || getEffectiveTurnSyncPolicy;
   const existingFirst = deps.replayOrConflict
     ? await deps.replayOrConflict(db, expected)
     : await replayOrConflict(db, expected);
@@ -239,11 +251,49 @@ export async function turnSyncAppendFromBody(body = {}, env = {}, deps = {}) {
     return { ok: false, error: "conversation_session_not_found", conversation_id: expected.conversation_id, ...authorityClosedFields() };
   }
 
+  const syncScope = turnSyncScopeFromSession(session);
+  const policyResolved = await getPolicy(env, syncScope);
+  if (!policyResolved?.ok) {
+    return {
+      ...policyResolved,
+      schema: TURNSYNC_APPEND_SCHEMA,
+      sync_policy_evaluated: true,
+      sync_scope: syncScope,
+      ...authorityClosedFields()
+    };
+  }
+  const policyGate = evaluateTurnSyncStandingPolicy(policyResolved.effective);
+  const oneTimeConfirmed = policyGate.requires_human_confirmation === true
+    && body.sync_confirmed === true
+    && policyResolved.effective?.payload_mode === "full_turns";
+  const syncPolicy = {
+    mode: policyResolved.effective?.mode || null,
+    payload_mode: policyResolved.effective?.payload_mode || null,
+    scope_kind: policyResolved.effective?.scope_kind || null,
+    scope_key: policyResolved.effective?.scope_key || null,
+    revision: Number(policyResolved.effective?.revision || 0),
+    defaulted: policyResolved.defaulted === true,
+    one_time_confirmation: oneTimeConfirmed
+  };
+  if (!policyGate.allow_append && !oneTimeConfirmed) {
+    return {
+      ok: false,
+      schema: TURNSYNC_APPEND_SCHEMA,
+      error: policyGate.error || "turnsync_policy_denied",
+      requires_human_confirmation: policyGate.requires_human_confirmation === true,
+      sync_policy_evaluated: true,
+      sync_scope: syncScope,
+      sync_policy: syncPolicy,
+      ...authorityClosedFields()
+    };
+  }
+
   const appendArgs = {
     ...body,
     actor_id: selected.actor_id
   };
   delete appendArgs.base_revision;
+  delete appendArgs.sync_confirmed;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const result = await appendTurn(db, {
@@ -261,8 +311,10 @@ export async function turnSyncAppendFromBody(body = {}, env = {}, deps = {}) {
           client_family: selected.client_family || null,
           actor_id: selected.actor_id
         },
-        sync_policy_evaluated: false,
-        sync_policy_note: "Host/provider eligibility is required in this bootstrap slice; project/workspace ON/OFF/ASK standing policy is not yet evaluated here.",
+        sync_policy_evaluated: true,
+        sync_scope: syncScope,
+        sync_policy: syncPolicy,
+        sync_confirmation_recorded: oneTimeConfirmed,
         ...authorityClosedFields()
       };
     }
@@ -271,14 +323,30 @@ export async function turnSyncAppendFromBody(body = {}, env = {}, deps = {}) {
       const replay = deps.replayOrConflict
         ? await deps.replayOrConflict(db, expected)
         : await replayOrConflict(db, expected);
-      if (replay) return replay;
+      if (replay) {
+        return {
+          ...replay,
+          sync_policy_evaluated: true,
+          sync_scope: syncScope,
+          sync_policy: syncPolicy,
+          sync_confirmation_recorded: oneTimeConfirmed
+        };
+      }
       if (result.error === "conversation_session_conflict" && attempt === 0) {
         session = await getSession(db, expected.conversation_id);
         if (!session) return result;
         continue;
       }
     }
-    return { ...result, schema: TURNSYNC_APPEND_SCHEMA, replayed: false, sync_policy_evaluated: false };
+    return {
+      ...result,
+      schema: TURNSYNC_APPEND_SCHEMA,
+      replayed: false,
+      sync_policy_evaluated: true,
+      sync_scope: syncScope,
+      sync_policy: syncPolicy,
+      sync_confirmation_recorded: oneTimeConfirmed
+    };
   }
 
   return {
@@ -286,14 +354,17 @@ export async function turnSyncAppendFromBody(body = {}, env = {}, deps = {}) {
     schema: TURNSYNC_APPEND_SCHEMA,
     error: "conversation_session_conflict",
     replayed: false,
-    sync_policy_evaluated: false,
+    sync_policy_evaluated: true,
+    sync_scope: syncScope,
+    sync_policy: syncPolicy,
+    sync_confirmation_recorded: oneTimeConfirmed,
     ...authorityClosedFields()
   };
 }
 
 export const TURNSYNC_APPEND_MCP_TOOL_DEFINITION = Object.freeze({
   name: TURNSYNC_APPEND_TOOL_ID,
-  description: "V7.7.10j: authenticated, retry-safe TurnSync end-of-turn append bridge. Actor identity is constrained to the current Core-auth connection; duplicate stable turn/message identity replays safely. This bootstrap slice does not evaluate project/workspace Sync ON/OFF/ASK policy and never promotes conversation history to accepted project memory.",
+  description: "V7.7.10j: authenticated, retry-safe TurnSync end-of-turn append bridge. Actor identity is constrained to the current Core-auth connection; new appends enforce workspace/chain/account standing policy with safe default ASK; duplicate stable turn/message identity replays safely. Never promotes conversation history to accepted project memory.",
   inputSchema: {
     type: "object",
     required: ["conversation_id", "turn_id", "message_id", "role"],
@@ -303,6 +374,7 @@ export const TURNSYNC_APPEND_MCP_TOOL_DEFINITION = Object.freeze({
       turn_id: { type: "string" },
       message_id: { type: "string" },
       role: { type: "string", enum: [...ROLE_SET] },
+      sync_confirmed: { type: "boolean", description: "One-turn explicit confirmation marker used only when the effective standing policy is ASK. It does not override OFF or payload transform requirements." },
       turn_type: { type: "string" },
       content_ref: { type: ["string", "null"] },
       content_preview: { type: ["string", "null"], maxLength: 512 },
