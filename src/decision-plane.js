@@ -94,12 +94,18 @@ function authorityClosedFields() {
   };
 }
 
+function receiptTransport(scorer_transport) {
+  if (scorer_transport === "http" || scorer_transport === "binding") return scorer_transport;
+  return undefined;
+}
+
 export async function decide({
   kind,
   task = "",
   candidates = [],
   selected_id = null,
   scorer_source = "deterministic",
+  scorer_transport = null,
   scores = null,
   confidence = null,
   candidate_set_digest = null,
@@ -116,6 +122,7 @@ export async function decide({
       receipt: {
         schema: DECISION_RECEIPT_SCHEMA,
         scorer_source: SOURCE_SET.has(scorer_source) ? scorer_source : "deterministic",
+        scorer_transport: receiptTransport(scorer_transport),
         candidate_set_digest: null,
         policy_outcome: "kind_unsupported"
       },
@@ -137,6 +144,7 @@ export async function decide({
       receipt: {
         schema: DECISION_RECEIPT_SCHEMA,
         scorer_source: SOURCE_SET.has(scorer_source) ? scorer_source : "deterministic",
+        scorer_transport: receiptTransport(scorer_transport),
         candidate_set_digest: digest,
         requested_digest: candidate_set_digest,
         policy_outcome: "candidate_set_mismatch"
@@ -177,6 +185,7 @@ export async function decide({
       receipt: {
         schema: DECISION_RECEIPT_SCHEMA,
         scorer_source: SOURCE_SET.has(scorer_source) ? scorer_source : "deterministic",
+        scorer_transport: receiptTransport(scorer_transport),
         candidate_set_digest: digest,
         invented_id: selected_id,
         policy_outcome: "invented_candidate_rejected"
@@ -226,6 +235,7 @@ export async function decide({
       receipt: {
         schema: DECISION_RECEIPT_SCHEMA,
         scorer_source: SOURCE_SET.has(scorer_source) ? scorer_source : "deterministic",
+        scorer_transport: receiptTransport(scorer_transport),
         candidate_set_digest: digest,
         selected_id: winner.id,
         scores: scores || undefined,
@@ -247,6 +257,7 @@ export async function decide({
     receipt: {
       schema: DECISION_RECEIPT_SCHEMA,
       scorer_source: SOURCE_SET.has(scorer_source) ? scorer_source : "deterministic",
+      scorer_transport: receiptTransport(scorer_transport),
       candidate_set_digest: digest,
       policy_outcome: "ambiguous_no_winner"
     },
