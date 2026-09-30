@@ -312,6 +312,18 @@ const CORE_TOOL_NAMES = Object.freeze(new Set([
   "cairnstone_load_tools"
 ]));
 
+// V7.7.10j: authenticated Core adds only the account-bound conversation
+// surfaces that require CORE_AUTH_CONTEXT. Legacy /mcp/core stays at the
+// original bounded boot profile; these direct mutation/settings tools are not
+// added to generic native hydration or to unauthenticated Core.
+const AUTH_CORE_TOOL_NAMES = Object.freeze(new Set([
+  ...CORE_TOOL_NAMES,
+  "cairnstone_unified_conversations",
+  "cairnstone_turnsync_append",
+  "cairnstone_turnsync_policy_get",
+  "cairnstone_turnsync_policy_set"
+]));
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -1418,7 +1430,11 @@ export async function handleMcpRpc(rpc, env, options = {}) {
 
     if (method === "tools/list") {
       const hydrated = await getSessionHydratedToolIds(env, core, sessionId);
-      return rpcResult(id, { tools: mcpToolsForProfile(core, hydrated) });
+      const listed = mcpToolsForProfile(core, hydrated);
+      if (!core || !auth) return rpcResult(id, { tools: listed });
+      const listedNames = new Set(listed.map(tool => tool.name));
+      const authAdditions = mcpTools().filter(tool => AUTH_CORE_TOOL_NAMES.has(tool.name) && !listedNames.has(tool.name));
+      return rpcResult(id, { tools: [...listed, ...authAdditions] });
     }
 
     if (method === "tools/call") {
@@ -1440,7 +1456,8 @@ export async function handleMcpRpc(rpc, env, options = {}) {
       }
 
       const hydrated = await getSessionHydratedToolIds(env, core, sessionId);
-      if (core && !CORE_TOOL_NAMES.has(name) && !hydrated.has(name)) {
+      const nativeProfileNames = auth ? AUTH_CORE_TOOL_NAMES : CORE_TOOL_NAMES;
+      if (core && !nativeProfileNames.has(name) && !hydrated.has(name)) {
         // V7.6.2a/b bounded profile: policy-equivalent, honest denial rather
         // than a silent/ambiguous failure. The full catalog is still
         // reachable generically from this same core surface.
@@ -1448,7 +1465,9 @@ export async function handleMcpRpc(rpc, env, options = {}) {
           ok: false,
           error: "tool_not_in_core_profile",
           name,
-          hint: "Not in the /mcp/core boot surface or this session's hydrated set. Use cairnstone_tool_search + cairnstone_get_tool_contract + cairnstone_tool_policy_preview + cairnstone_tool_execute from /mcp/core to reach it generically, call cairnstone_load_tools to natively hydrate an eligible read+automatic tool for this session, or call the full /mcp surface directly."
+          hint: auth
+            ? "Not in the authenticated Core native profile or this session's hydrated set. Use the bounded Core discovery/broker path for other tools."
+            : "Not in the /mcp/core boot surface or this session's hydrated set. Use cairnstone_tool_search + cairnstone_get_tool_contract + cairnstone_tool_policy_preview + cairnstone_tool_execute from /mcp/core to reach it generically, call cairnstone_load_tools to natively hydrate an eligible read+automatic tool for this session, or call the full /mcp surface directly."
         };
         return rpcResult(id, {
           content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
