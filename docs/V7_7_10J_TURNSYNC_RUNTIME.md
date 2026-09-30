@@ -8,12 +8,14 @@ Branch: `v7710j-turnsync-runtime`
 
 This slice adds the runtime half of CairnStone Unified Conversation Sync / TurnSync without creating a parallel transcript database. It composes existing Conversation Sessions, AC1 correspondence, Task Runs, event projection, and Core-auth connection identity.
 
-Two tools are added:
+Four authenticated TurnSync surfaces are added:
 
 - `cairnstone_unified_conversations` — authenticated account-scoped read model.
-- `cairnstone_turnsync_append` — authenticated replay-safe end-of-turn append bridge.
+- `cairnstone_turnsync_append` — authenticated replay-safe, policy-gated end-of-turn append bridge.
+- `cairnstone_turnsync_policy_get` — effective account/workspace/chain standing-policy read.
+- `cairnstone_turnsync_policy_set` — human-confirmed CAS write of account-owned operational policy.
 
-Neither tool grants accepted-state authority or promotes conversation history into project memory.
+None grants accepted-state authority or promotes conversation history into project memory.
 
 ## Authenticated aggregate read model
 
@@ -34,39 +36,59 @@ If `CORE_AUTH_CONTEXT` is absent, the tool fails closed with `authenticated_acco
 
 ## Replay-safe TurnSync append bridge
 
-`cairnstone_turnsync_append` is a bootstrap ingestion primitive for provider/host end-of-turn hooks.
+`cairnstone_turnsync_append` is the authenticated ingestion boundary for provider/host end-of-turn hooks.
 
 The bridge:
 
 1. resolves the current active Core-auth connection;
 2. constrains `actor_id` to that connection's principal/routing aliases;
-3. loads the current Conversation Session revision server-side;
-4. calls the existing append-only Conversation Session turn primitive;
-5. retries one clean CAS conflict with a freshly loaded session revision;
-6. treats an exact already-persisted `turn_id` + `message_id` identity as an idempotent replay instead of a second append.
+3. checks for an exact already-persisted stable replay before any new mutation;
+4. loads the current Conversation Session and derives policy scope only from its durable `workspace_id` / `selected_chain` bindings;
+5. evaluates workspace → chain → account → safe-default-ASK policy from the authenticated account's Auth D1 rows;
+6. calls the existing append-only Conversation Session turn primitive only when policy permits;
+7. retries one clean CAS conflict with a freshly loaded session revision;
+8. treats an exact already-persisted `turn_id` + `message_id` identity as an idempotent replay instead of a second append.
 
 A replay is reported only when the durable turn identity matches the same conversation, actor, and role **and** the Conversation Session `message_log` contains the corresponding turn/message projection. If a durable row exists without that projection, the bridge fails closed with `turnsync_turn_projection_incomplete` rather than claiming success.
 
 The caller does not provide `base_revision` to this bridge.
 
-## Sync policy boundary
+## Standing TurnSync policy boundary
 
-This slice intentionally does **not** evaluate project/workspace standing TurnSync policy (`ON | OFF | ASK`, payload mode, or project permission) inside the append bridge.
+Standing policy is account-owned operational authorization/preference state in the dedicated Core-auth D1, not project memory. The migration is `migrations/auth/0005_v7710j_turnsync_policy.sql`.
 
-For this bootstrap stage, the host/provider instruction or lifecycle layer must determine that a turn is eligible before calling `cairnstone_turnsync_append`. The tool returns `sync_policy_evaluated:false` so callers cannot mistake ingestion mechanics for standing authorization.
+Effective precedence is deterministic and fail-closed:
 
-The next runtime policy slice should make standing project/workspace sync permission deterministic and auditable before provider auto-upload is enabled broadly.
+1. exact Conversation Session `workspace_id` policy;
+2. exact Conversation Session `selected_chain` policy;
+3. authenticated account default;
+4. safe default `ASK + full_turns`.
+
+New append behavior:
+
+- `OFF` → `turnsync_sync_disabled`; no append.
+- `ASK + full_turns` → `turnsync_confirmation_required` unless the host/UI supplies an explicit one-turn `sync_confirmed:true` marker after human confirmation.
+- `ON + full_turns` → append allowed.
+- `decisions_tasks` or `summaries` → `turnsync_payload_transform_required`; no raw full-turn fallback occurs until a trusted transformer exists.
+
+`sync_confirmed` is a one-turn host/UI confirmation marker, not an override: it cannot bypass `OFF` or selective-payload transform requirements, and it is stripped before the durable turn append. Exact stable replays are checked first because they perform no new upload or mutation; an already-persisted turn may therefore be reported as replayed even after policy is later changed.
+
+Policy writes require `human_commit:true`; existing rows additionally require the current `base_revision`. Stale writes fail with a policy conflict instead of silently overwriting another tab/provider.
 
 ## Broker classification
 
 - `cairnstone_unified_conversations`: `risk_class: read`, `authorization: automatic`. It still fails closed without authenticated account context.
-- `cairnstone_turnsync_append`: `risk_class: mutation`, `authorization: scoped_grant`. It is never eligible for the automatic-read delegation loop.
+- `cairnstone_turnsync_append`: `risk_class: mutation`, `authorization: scoped_grant`.
+- `cairnstone_turnsync_policy_get`: `risk_class: read`, `authorization: scoped_grant` — intentionally not an automatic model read of account settings.
+- `cairnstone_turnsync_policy_set`: `risk_class: mutation`, `authorization: scoped_grant`.
+
+None of the append/policy surfaces is eligible for the automatic-read delegation loop.
 
 ## Console integration boundary
 
-The Console feature branch progressively prefers `cairnstone_unified_conversations`, but the current static Console default runtime still points at the legacy `/mcp` surface. Account-wide aggregation therefore requires a Console Core-auth/OAuth session against `/mcp/core-auth` before it is actually available to the operator.
+The Console feature branch includes a public-client PKCE Core-auth flow and switches authenticated sessions to `/mcp/core-auth`. The authenticated Core profile is additively extended with exactly four TurnSync-native surfaces: aggregate, append, policy-get, and policy-set. The legacy `/mcp/core` bounded boot surface is unchanged, and these mutation/settings tools are not added to generic native hydration.
 
-Until that integration exists, the Console honestly falls back to the prior actor-scoped `cairnstone_conversation_session_list` path and labels the fallback.
+When authenticated, the Console uses the account aggregate and reads/writes the account-default TurnSync policy. Without Core-auth it honestly falls back to the prior actor-scoped Conversation Session list and treats local TurnSync select values as browser drafts only.
 
 ## Validation performed on this feature branch
 
@@ -84,12 +106,14 @@ Node test execution has **not** been completed for this branch in the present en
 
 ## Remaining gates before merge/deploy consideration
 
-1. Wire the Console to a real Core-auth/OAuth session so the authenticated account aggregate can be exercised end to end.
-2. Implement auditable project/workspace standing TurnSync policy (`ON | OFF | ASK` plus payload mode).
-3. Run the focused Node tests and relevant broader runtime suite in CI or another executable environment.
-4. Canary the aggregate against multiple active provider connections and verify visibility/provenance.
-5. Canary duplicate/retry TurnSync append behavior, including the projection-incomplete fail-closed path.
-6. Only after those gates: review PRs and separately authorize merge/deploy.
+1. Run the focused Node tests and relevant broader runtime suite in CI or another executable environment.
+2. Review/apply the Auth D1 TurnSync-policy migration as part of an explicitly authorized deployment plan.
+3. Publish/canary the Console CIMD + PKCE flow, refresh rotation/revoke, and authenticated account policy editor.
+4. Canary the aggregate against multiple active provider connections and verify visibility/provenance and cross-account isolation.
+5. Canary `OFF`, `ASK`, `ON`, duplicate/retry, stale-CAS, and projection-incomplete TurnSync paths.
+6. Implement trusted selective-payload transformers before enabling `decisions_tasks` or `summaries` automatic append.
+7. Add deterministic provider/host end-of-turn lifecycle hooks; prompt/instruction-driven calls remain interim.
+8. Only after those gates: review PRs and separately authorize merge/deploy.
 
 ## Authority invariants
 
