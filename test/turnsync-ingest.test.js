@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import {
   TURNSYNC_APPEND_TOOL_ID,
   selectTurnSyncActor,
-  turnSyncAppendFromBody
+  turnSyncAppendFromBody,
+  turnSyncScopeFromSession
 } from "../src/turnsync-ingest.js";
 import { DEFAULT_TOOL_BROKER_REGISTRY } from "../src/model-router.js";
 import { listAutomaticReadToolIds } from "../src/delegate-loop.js";
@@ -39,6 +40,21 @@ function body(overrides = {}) {
     content_preview: "Completed the requested analysis.",
     ...overrides
   };
+}
+
+function standingPolicy(mode = "on", payloadMode = "full_turns", overrides = {}) {
+  return async () => ({
+    ok: true,
+    defaulted: false,
+    effective: {
+      mode,
+      payload_mode: payloadMode,
+      scope_kind: "account",
+      scope_key: "*",
+      revision: 1,
+      ...overrides
+    }
+  });
 }
 
 test("selectTurnSyncActor defaults to the single routing alias for the current active connection", () => {
@@ -80,6 +96,7 @@ test("append bridge derives the session revision server-side and binds the selec
     }),
     replayOrConflict: async () => null,
     getConversationSession: async () => ({ conversation_id: "cvs:demo", session_revision: 7, message_log: [] }),
+    getEffectiveTurnSyncPolicy: standingPolicy(),
     appendConversationTurn: async (_db, args) => {
       calls.push(args);
       return {
@@ -93,7 +110,8 @@ test("append bridge derives the session revision server-side and binds the selec
   assert.equal(got.ok, true);
   assert.equal(got.replayed, false);
   assert.equal(got.retry_count, 0);
-  assert.equal(got.sync_policy_evaluated, false);
+  assert.equal(got.sync_policy_evaluated, true);
+  assert.equal(got.sync_policy.mode, "on");
   assert.equal(calls.length, 1);
   assert.equal(calls[0].actor_id, "chatgpt:cairnstone-v6");
   assert.equal(calls[0].base_revision, 7);
@@ -106,6 +124,7 @@ test("append bridge retries one clean CAS conflict without asking the provider t
     resolveTurnSyncActor: async () => ({ ok: true, actor_id: "chatgpt:cairnstone-v6" }),
     replayOrConflict: async () => null,
     getConversationSession: async () => ({ conversation_id: "cvs:demo", session_revision: sessionRevision++, message_log: [] }),
+    getEffectiveTurnSyncPolicy: standingPolicy(),
     appendConversationTurn: async (_db, args) => {
       revisions.push(args.base_revision);
       if (revisions.length === 1) {
@@ -151,6 +170,73 @@ test("append bridge fails closed without Core-auth context in the real actor res
   const denied = await turnSyncAppendFromBody(body(), { CAIRNSTONE_DB: {} });
   assert.equal(denied.ok, false);
   assert.equal(denied.error, "authenticated_account_context_required");
+});
+
+test("TurnSync scope derives only from durable Conversation Session bindings", () => {
+  assert.deepEqual(turnSyncScopeFromSession({ workspace_id: "ws:demo", selected_chain: "chain-demo" }), {
+    workspace_id: "ws:demo",
+    chain: "chain-demo"
+  });
+  assert.deepEqual(turnSyncScopeFromSession({}), { workspace_id: null, chain: null });
+});
+
+test("standing OFF policy blocks a new append before mutation", async () => {
+  let appendCalls = 0;
+  const got = await turnSyncAppendFromBody(body(), { CAIRNSTONE_DB: {} }, {
+    resolveTurnSyncActor: async () => ({ ok: true, actor_id: "chatgpt:cairnstone-v6" }),
+    replayOrConflict: async () => null,
+    getConversationSession: async () => ({ conversation_id: "cvs:demo", session_revision: 2, workspace_id: "ws:demo", selected_chain: "chain-demo" }),
+    getEffectiveTurnSyncPolicy: standingPolicy("off"),
+    appendConversationTurn: async () => { appendCalls += 1; return { ok: true }; }
+  });
+  assert.equal(got.ok, false);
+  assert.equal(got.error, "turnsync_sync_disabled");
+  assert.equal(got.sync_policy_evaluated, true);
+  assert.equal(appendCalls, 0);
+});
+
+test("standing ASK policy requires one-turn confirmation and strips the marker before durable append", async () => {
+  let appendCalls = 0;
+  let appendedArgs = null;
+  const deps = {
+    resolveTurnSyncActor: async () => ({ ok: true, actor_id: "chatgpt:cairnstone-v6" }),
+    replayOrConflict: async () => null,
+    getConversationSession: async () => ({ conversation_id: "cvs:demo", session_revision: 3, workspace_id: "ws:demo", selected_chain: "chain-demo" }),
+    getEffectiveTurnSyncPolicy: standingPolicy("ask"),
+    appendConversationTurn: async (_db, args) => {
+      appendCalls += 1;
+      appendedArgs = args;
+      return { ok: true, conversation_session: { conversation_id: args.conversation_id, session_revision: args.base_revision + 1 } };
+    }
+  };
+
+  const denied = await turnSyncAppendFromBody(body(), { CAIRNSTONE_DB: {} }, deps);
+  assert.equal(denied.ok, false);
+  assert.equal(denied.error, "turnsync_confirmation_required");
+  assert.equal(denied.requires_human_confirmation, true);
+  assert.equal(appendCalls, 0);
+
+  const confirmed = await turnSyncAppendFromBody(body({ sync_confirmed: true }), { CAIRNSTONE_DB: {} }, deps);
+  assert.equal(confirmed.ok, true);
+  assert.equal(confirmed.sync_confirmation_recorded, true);
+  assert.equal(appendCalls, 1);
+  assert.equal(Object.hasOwn(appendedArgs, "sync_confirmed"), false);
+});
+
+test("selective payload modes fail closed even when a one-turn confirmation marker is present", async () => {
+  for (const payloadMode of ["decisions_tasks", "summaries"]) {
+    let appendCalls = 0;
+    const got = await turnSyncAppendFromBody(body({ sync_confirmed: true }), { CAIRNSTONE_DB: {} }, {
+      resolveTurnSyncActor: async () => ({ ok: true, actor_id: "chatgpt:cairnstone-v6" }),
+      replayOrConflict: async () => null,
+      getConversationSession: async () => ({ conversation_id: "cvs:demo", session_revision: 5 }),
+      getEffectiveTurnSyncPolicy: standingPolicy("on", payloadMode),
+      appendConversationTurn: async () => { appendCalls += 1; return { ok: true }; }
+    });
+    assert.equal(got.ok, false);
+    assert.equal(got.error, "turnsync_payload_transform_required");
+    assert.equal(appendCalls, 0);
+  }
 });
 
 test("TurnSync append is catalogued as scoped mutation, never automatic read", () => {
