@@ -53,6 +53,7 @@ test("mode=jev uses adapter and revalidates id", async () => {
   assert.equal(result.ok, true);
   assert.equal(result.selected.id, "cairnstone_ask_scope");
   assert.equal(result.receipt.scorer_source, "jev");
+  assert.equal(result.receipt.scorer_transport, "http");
   assert.equal(result.execution_authority, false);
 });
 
@@ -171,7 +172,7 @@ test("binding rejects invented choice and duplicate ids", async () => {
   assert.equal(invented.transport, "binding");
 
   const dup = await scoreWithJev({
-    env: { AI: { run: async () => ({ answers: { selected: { type: "choice", choice: "cairnstone_find_v2" } }) } } },
+    env: { AI: { run: async () => ({ answers: { selected: { type: "choice", choice: "cairnstone_find_v2" } } }) } },
     kind: "tool_route",
     candidates: [TWO[0], { ...TWO[0] }]
   });
@@ -209,4 +210,42 @@ test("binding timeout and malformed output fail closed", async () => {
 test("ask_jev kind enum matches DECISION_KINDS", () => {
   assert.deepEqual(ASK_JEV_TOOL_DEFINITION.inputSchema.properties.kind.enum, [...DECISION_KINDS]);
   assert.ok(JEV_MAX_RESPONSE_BYTES <= 4096);
+});
+
+test("routeDecision records binding transport on success and fallback", async () => {
+  const env = {
+    AI: {
+      run: async () => ({
+        answers: { selected: { type: "choice", choice: "cairnstone_ask_scope", confidence: 0.44 } }
+      })
+    }
+  };
+  const ok = await routeDecision({
+    kind: "tool_route",
+    candidates: TWO,
+    mode: "jev",
+    env
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.receipt.scorer_source, "jev");
+  assert.equal(ok.receipt.scorer_transport, "binding");
+
+  const fail = await routeDecision({
+    kind: "tool_route",
+    candidates: TWO,
+    mode: "jev",
+    env: {
+      AI: {
+        run: async () => {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          throw err;
+        }
+      }
+    }
+  });
+  assert.equal(fail.ok, false);
+  assert.equal(fail.receipt.scorer_source, "jev");
+  assert.equal(fail.receipt.scorer_transport, "binding");
+  assert.equal(fail.scorer_fallback, "jev_timeout");
 });
