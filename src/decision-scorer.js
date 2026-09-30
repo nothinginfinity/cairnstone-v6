@@ -125,6 +125,9 @@ export async function routeDecision({
     ? await (typeof scoreJev === "function" ? scoreJev({ env, task, kind, candidates }) : scoreWithJev({ env, task, kind, candidates }))
     : await scoreWithWorkersAi({ env, task, kind, candidates, model });
   const scorerSource = useJev ? "jev" : "workers_ai";
+  const scorerTransport = scored && (scored.transport === "http" || scored.transport === "binding")
+    ? scored.transport
+    : undefined;
   if (!scored.ok) {
     return {
       ...baseline,
@@ -134,6 +137,7 @@ export async function routeDecision({
       receipt: {
         ...baseline.receipt,
         scorer_source: scorerSource,
+        scorer_transport: scorerTransport,
         fallback_reason: scored.error,
         policy_outcome: "ambiguous_no_winner"
       }
@@ -146,6 +150,7 @@ export async function routeDecision({
     candidates,
     selected_id: scored.selected_id,
     scorer_source: scorerSource,
+    scorer_transport: scorerTransport,
     confidence: scored.confidence,
     candidate_set_digest: candidate_set_digest || await digestCandidateSet(
       Array.isArray(candidates) ? candidates.filter((c) => c && c.eligible !== false) : []
