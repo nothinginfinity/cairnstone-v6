@@ -1,0 +1,34 @@
+name: V7.7.10j feature validation
+
+on:
+  push:
+    branches:
+      - v7710j-turnsync-runtime
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact pushed commit
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Focused V7.7.10j tests
+        run: node --test test/unified-conversations.test.js test/turnsync-ingest.test.js test/turnsync-policy.test.js
+
+      - name: Broader conversation/runtime tests
+        run: node --test test/conversation-session.test.js test/correspondence.test.js test/task-run.test.js test/event-plane.test.js test/model-router.test.js test/delegate-loop.test.js
+
+      - name: Full repository check
+        run: npm run check
