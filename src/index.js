@@ -187,6 +187,12 @@ import {
   TURNSYNC_APPEND_MCP_TOOL_DEFINITION
 } from "./turnsync-ingest.js";
 import {
+  turnSyncPolicyGetFromBody,
+  turnSyncPolicySetFromBody,
+  TURNSYNC_POLICY_GET_TOOL_DEFINITION,
+  TURNSYNC_POLICY_SET_TOOL_DEFINITION
+} from "./turnsync-policy.js";
+import {
   resolveAttachmentRefsFromBody,
   ATTACHMENT_REF_MCP_TOOL_DEFINITIONS
 } from "./attachment-refs.js";
@@ -1810,6 +1816,8 @@ async function callMcpTool(name, args, env, options = {}) {
     })
   });
   if (name === "cairnstone_turnsync_append") return turnSyncAppendFromBody(args, env);
+  if (name === "cairnstone_turnsync_policy_get") return turnSyncPolicyGetFromBody(args, env);
+  if (name === "cairnstone_turnsync_policy_set") return turnSyncPolicySetFromBody(args, env);
   if (name === "cairnstone_conversation_session_update") return updateConversationSessionFromBody(args, env);
   if (name === "cairnstone_conversation_session_append_turn") return appendConversationTurnFromBody(args, env);
   if (name === "cairnstone_attachment_ref_resolve") return resolveAttachmentRefsFromBody(args, env);
@@ -2113,6 +2121,8 @@ function mcpTools() {
     ...CONVERSATION_SESSION_MCP_TOOL_DEFINITIONS,
     UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION,
     TURNSYNC_APPEND_MCP_TOOL_DEFINITION,
+    TURNSYNC_POLICY_GET_TOOL_DEFINITION,
+    TURNSYNC_POLICY_SET_TOOL_DEFINITION,
     ...ATTACHMENT_REF_MCP_TOOL_DEFINITIONS,
     ...ACCESS_GRANT_MCP_TOOL_DEFINITIONS,
     ...TASK_RUN_MCP_TOOL_DEFINITIONS,
