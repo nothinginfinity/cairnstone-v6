@@ -30,5 +30,14 @@ jobs:
       - name: Broader conversation/runtime tests
         run: node --test test/conversation-session.test.js test/correspondence.test.js test/task-run.test.js test/event-plane.test.js test/model-router.test.js test/delegate-loop.test.js
 
-      - name: Full repository check
-        run: npm run check
+      - name: Runtime syntax sweep
+        run: node --check src/index.js && node --check src/worker.js && node --check src/messages-auth-bridge.js && node --check src/resource-scope-policy.js && node --check src/core-auth.js && node --check src/oauth-user-auth.js && node --check src/webauthn.js && node --check src/v5-import.js && node --check src/correspondence.js && node --check src/ask.js && node --check src/skills.js && node --check src/skill-agent.js && node --check src/agent-bootstrap.js && node --check src/model-router.js && node --check src/delegate-loop.js && node --check src/subagent-result.js && node --check src/worker-session.js && node --check src/tool-authorization.js && node --check src/vault-catalog.js && node --check src/workspace.js && node --check src/workspace-tree.js && node --check src/workspace-invite.js && node --check src/code-session.js && node --check src/environment-sandbox.js && node --check src/code-session-console.js && node --check src/grounded-response.js && node --check src/conversation-session.js && node --check src/attachment-refs.js && node --check src/access-grant.js && node --check src/task-run.js && node --check src/forward-note.js && node --check src/intent-router.js && node --check src/executor-profile.js && node --check src/executor-adapters.js && node --check src/decision-plane.js && node --check src/decision-scorer.js && node --check src/decision-jev.js && node --check scripts/lint-skills.mjs
+
+      - name: Skill catalog lint
+        run: npm run lint:skills
+
+      - name: V7.3.3 authorization regression
+        run: npm run check:v733
+
+      - name: Full repository test suite
+        run: node --test
