@@ -11,6 +11,8 @@ import { parseObjectRef } from "./attachment-refs.js";
 export const OBJECT_LINK_SCHEMA = "cairnstone-object-link-v1";
 export const OBJECT_INSPECTOR_SCHEMA = "cairnstone-object-inspector-v1";
 export const OBJECT_INSPECT_TOOL_ID = "cairnstone_object_inspect";
+export const OBJECT_INSPECT_APP_RESOURCE_URI = "ui://cairnstone/stone-inspector-v1.html";
+export const OBJECT_INSPECT_APP_MIME_TYPE = "text/html;profile=mcp-app";
 
 const DEFAULT_PUBLIC_BASE_URL = "https://cairnstone-v6.jaredtechfit.workers.dev";
 const DEFAULT_EDGE_LIMIT = 12;
@@ -393,6 +395,7 @@ export async function objectInspectFromBody(body = {}, env = {}) {
 
 export const OBJECT_INSPECT_TOOL_DEFINITION = Object.freeze({
   name: OBJECT_INSPECT_TOOL_ID,
+  title: "Inspect CairnStone object",
   description: "V7.7.11i: read-only universal object inspector. Returns cairnstone-object-link-v1 for the existing typed object_ref grammar and fully hydrates only safe Stone objects with accepted-state classification, provenance, exact stored edges, bounded related cards, and graph payload. Correspondence-backed Stones fail closed to a restricted envelope; relationships never grant visibility; never moves HEADs or grants capability.",
   inputSchema: {
     type: "object",
@@ -403,6 +406,13 @@ export const OBJECT_INSPECT_TOOL_DEFINITION = Object.freeze({
       related_limit: { type: "integer", minimum: 1, maximum: MAX_RELATED_LIMIT }
     },
     additionalProperties: false
+  },
+  _meta: {
+    ui: {
+      resourceUri: OBJECT_INSPECT_APP_RESOURCE_URI,
+      visibility: ["model", "app"]
+    },
+    "openai/outputTemplate": OBJECT_INSPECT_APP_RESOURCE_URI
   }
 });
 
@@ -548,6 +558,58 @@ export function renderObjectInspectorHtml(result = {}) {
 export function objectInspectorHtmlResponse(result = {}) {
   const status = result?.ok ? 200 : (result?.error === "stone_not_found" ? 404 : 400);
   return new Response(renderObjectInspectorHtml(result), { status, headers: INSPECTOR_HTML_HEADERS });
+}
+
+export function renderObjectInspectorAppHtml() {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark"><title>CairnStone Stone Inspector</title><style>
+  :root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:light dark;--bg:var(--color-background-primary,#101318);--card:var(--color-background-secondary,#171c22);--line:var(--color-border-default,#303844);--text:var(--color-text-primary,#f3f6fa);--muted:var(--color-text-secondary,#9da9b8);--accent:var(--color-text-link,#9dc2ff)}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text)}main{padding:14px;max-width:980px;margin:auto}.hero,.panel{border:1px solid var(--line);background:var(--card);border-radius:18px;padding:16px}.hero h1{font-size:clamp(1.45rem,5vw,2.5rem);margin:.35rem 0}.eyebrow{font-size:.7rem;text-transform:uppercase;letter-spacing:.11em;color:var(--muted);font-weight:700}.summary,.muted{color:var(--muted);line-height:1.55}.ref{display:block;overflow:auto;padding:10px;border-radius:10px;border:1px solid var(--line);font:12px ui-monospace,SFMono-Regular,Menlo,monospace}.badges,.tabs{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.badge,.tabs button{border:1px solid var(--line);border-radius:999px;padding:6px 9px;background:transparent;color:var(--text);font-size:.75rem}.tabs{position:sticky;top:0;padding:9px 0;background:var(--bg);z-index:1}.tabs button[aria-selected="true"]{border-color:var(--accent);color:var(--accent)}.panel{margin-top:10px}.panel[hidden]{display:none}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.kv,.node,.related{border:1px solid var(--line);border-radius:12px;padding:11px;min-width:0}.kv small{display:block;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}.kv div,.related strong{overflow-wrap:anywhere}.graph{display:flex;flex-wrap:wrap;gap:8px}.node.focal{border-color:var(--accent)}.node.restricted{border-style:dashed}.related-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.empty{color:var(--muted);padding:12px 0}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.actions a{color:var(--accent);font-size:.82rem;text-decoration:none}.status{padding:26px;text-align:center;color:var(--muted)}@media(max-width:620px){main{padding:10px}.hero,.panel{border-radius:15px}.grid,.related-list{grid-template-columns:1fr}}</style></head><body><main id="app"><div id="loading" class="status">Loading CairnStone inspector…</div><div id="view" hidden><header class="hero"><div id="eyebrow" class="eyebrow"></div><h1 id="title"></h1><p id="summary" class="summary"></p><code id="object-ref" class="ref"></code><div id="badges" class="badges"></div><div class="actions"><a id="https-link" target="_blank" rel="noopener noreferrer" hidden>Open HTTPS inspector ↗</a></div></header><nav class="tabs" aria-label="Inspector sections"></nav><section id="summary-panel" class="panel"></section><section id="graph-panel" class="panel" hidden></section><section id="source-panel" class="panel" hidden></section><section id="related-panel" class="panel" hidden></section><section id="messages-panel" class="panel" hidden></section></div></main><script>
+(() => {
+  const pending = new Map(); let requestId = 1; let latest = null;
+  const $ = id => document.getElementById(id);
+  const text = (el, value) => { el.textContent = value == null || value === "" ? "—" : String(value); };
+  const clear = el => { while (el.firstChild) el.removeChild(el.firstChild); };
+  const safeHttps = value => { try { const url = new URL(String(value || "")); return url.protocol === "https:" ? url.toString() : null; } catch { return null; } };
+  function badge(value){ const el=document.createElement("span"); el.className="badge"; text(el,value); return el; }
+  function heading(panel, eyebrow, title){ const e=document.createElement("div"); e.className="eyebrow"; text(e,eyebrow); const h=document.createElement("h2"); text(h,title); panel.append(e,h); }
+  function kv(label,value){ const box=document.createElement("div"); box.className="kv"; const small=document.createElement("small"); text(small,label); const val=document.createElement("div"); text(val,value); box.append(small,val); return box; }
+  function render(result){ latest=result || {}; $("loading").hidden=true; $("view").hidden=false; const hydrated=latest.inspection_status==="hydrated"; const restricted=latest.inspection_status==="restricted"; const stone=latest.stone || {}; text($("eyebrow"), restricted ? "Access-bound object" : hydrated ? "Stone Inspector · V7.7.11i" : "Universal object deep link"); text($("title"), restricted ? "Restricted Stone" : (stone.title || latest.kind || "CairnStone object")); text($("summary"), restricted ? "Private correspondence metadata remains behind its authenticated object-specific surface." : (stone.lod5 || (hydrated ? "No compact summary available." : "This object is linkable but is not broadly hydrated by the universal inspector."))); text($("object-ref"), latest.object_ref || latest.input_ref || "Unknown object"); clear($("badges")); const classes=Array.isArray(latest.accepted_state?.classification)?latest.accepted_state.classification:[]; classes.forEach(v=>$("badges").append(badge(v))); $("badges").append(badge("read-only"),badge("zero authority")); if(latest.restricted_related_count) $("badges").append(badge(latest.restricted_related_count+" restricted")); const href=safeHttps(latest.object_link?.https_url); const link=$("https-link"); if(href){link.href=href;link.hidden=false}else{link.hidden=true;link.removeAttribute("href")}
+    const panels={Summary:$("summary-panel"),Graph:$("graph-panel"),Source:$("source-panel"),Related:$("related-panel"),Messages:$("messages-panel")}; const nav=document.querySelector(".tabs"); clear(nav); Object.entries(panels).forEach(([name,panel],i)=>{ const b=document.createElement("button"); b.type="button"; b.textContent=name; b.setAttribute("aria-selected",i===0?"true":"false"); b.onclick=()=>{Object.entries(panels).forEach(([n,p])=>{p.hidden=n!==name}); [...nav.children].forEach(x=>x.setAttribute("aria-selected",x===b?"true":"false"));}; nav.append(b); clear(panel); });
+    const summaryPanel=panels.Summary; heading(summaryPanel,"Summary","Identity & authority"); const grid=document.createElement("div"); grid.className="grid"; grid.append(kv("Author",stone.author),kv("Created",stone.created_at),kv("Chain",stone.chain),kv("Accepted state",classes.join(" + ") || (hydrated?"Historical / unscoped":"Access-bound"))); summaryPanel.append(grid); const policy=document.createElement("p"); policy.className="muted"; text(policy,"This native surface is a projection only. Rendering never moves HEADs, executes tools, mints capabilities, or turns graph relationships into visibility."); summaryPanel.append(policy);
+    const graphPanel=panels.Graph; heading(graphPanel,"Graph","Bounded relationship neighborhood"); const graph=document.createElement("div"); graph.className="graph"; const nodes=Array.isArray(latest.graph?.nodes)?latest.graph.nodes:[]; nodes.forEach(node=>{const n=document.createElement("div"); n.className="node"+(node.focal?" focal":"")+(node.restricted?" restricted":""); text(n,node.restricted?"Restricted":(node.label || String(node.id||"").slice(0,12))); graph.append(n);}); graphPanel.append(nodes.length?graph:Object.assign(document.createElement("div"),{className:"empty",textContent:"No graph neighborhood is available for this object."})); const edgeNote=document.createElement("p"); edgeNote.className="muted"; text(edgeNote,(Array.isArray(latest.graph?.edges)?latest.graph.edges.length:0)+" exact stored edge(s). Restricted relation notes stay redacted."); graphPanel.append(edgeNote);
+    const sourcePanel=panels.Source; heading(sourcePanel,"Source","Immutable provenance"); const sourceGrid=document.createElement("div"); sourceGrid.className="grid"; sourceGrid.append(kv("Repository",stone.repo),kv("Path",stone.path),kv("Commit",stone.commit_sha),kv("Immutable Git commit",latest.provenance?.immutable_git_commit?"yes":"not established")); sourcePanel.append(sourceGrid);
+    const relatedPanel=panels.Related; heading(relatedPanel,"Related","Connected Stones"); const list=document.createElement("div"); list.className="related-list"; const related=Array.isArray(latest.related)?latest.related:[]; related.forEach(item=>{const card=document.createElement("div"); card.className="related"; const strong=document.createElement("strong"); text(strong,item.restricted?"Restricted relation":(item.title || String(item.hash||"").slice(0,12))); const p=document.createElement("p"); p.className="muted"; text(p,item.restricted?"Relationship visible; private metadata hidden.":(item.lod5 || item.object_ref || "Related Stone")); card.append(strong,p); list.append(card);}); relatedPanel.append(related.length?list:Object.assign(document.createElement("div"),{className:"empty",textContent:"No related Stones were returned inside the bounded neighborhood."}));
+    const messagesPanel=panels.Messages; heading(messagesPanel,"Messages","Authenticated correspondence only"); const mp=document.createElement("p"); mp.className="muted"; text(mp,"Message-backed Stones and AC1 correspondence are never hydrated merely because they are connected in the graph. Authorized message inspection remains on the object-specific authenticated path."); messagesPanel.append(mp);
+  }
+  function send(message){ window.parent.postMessage(message,"*"); }
+  function request(method,params){ const id=requestId++; send({jsonrpc:"2.0",id,method,params}); return new Promise((resolve,reject)=>pending.set(id,{resolve,reject})); }
+  window.addEventListener("message",event=>{ if(event.source!==window.parent) return; const message=event.data; if(!message || message.jsonrpc!=="2.0") return; if(message.id!==undefined && pending.has(message.id)){ const p=pending.get(message.id); pending.delete(message.id); message.error?p.reject(message.error):p.resolve(message.result); return; } if(message.method==="ui/notifications/tool-result" && message.params?.structuredContent) render(message.params.structuredContent); },{passive:true});
+  const compatibility=typeof window.openai==="object" ? window.openai.toolOutput : null; if(compatibility) render(compatibility);
+  request("ui/initialize",{protocolVersion:"2025-11-21",appInfo:{name:"cairnstone-stone-inspector",title:"CairnStone Stone Inspector",version:"1.0.0"},appCapabilities:{availableDisplayModes:["inline","fullscreen"]}}).then(()=>send({jsonrpc:"2.0",method:"ui/notifications/initialized",params:{}})).catch(()=>{ if(!latest) text($("loading"),"Inspector host bridge unavailable. Use the HTTPS inspector fallback."); });
+})();
+</script></body></html>`;
+}
+
+export function objectInspectorAppResource() {
+  return {
+    uri: OBJECT_INSPECT_APP_RESOURCE_URI,
+    name: "CairnStone Stone Inspector",
+    description: "Read-only native MCP Apps projection for V7.7.11i typed object inspection.",
+    mimeType: OBJECT_INSPECT_APP_MIME_TYPE
+  };
+}
+
+export function objectInspectorAppResourceRead() {
+  return {
+    contents: [{
+      uri: OBJECT_INSPECT_APP_RESOURCE_URI,
+      mimeType: OBJECT_INSPECT_APP_MIME_TYPE,
+      text: renderObjectInspectorAppHtml(),
+      _meta: {
+        ui: { prefersBorder: true },
+        "openai/ui": { availableDisplayModes: ["inline", "fullscreen"] }
+      }
+    }]
+  };
 }
 
 export const OBJECT_INSPECT_MCP_TOOL_DEFINITIONS = Object.freeze([
