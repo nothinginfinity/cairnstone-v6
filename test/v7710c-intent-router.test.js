@@ -306,7 +306,8 @@ test("MCP + broker: intent router is read/scoped_grant and never automatic-read"
 
   const registry = toolRegistryFromBody({}, { registry: DEFAULT_TOOL_BROKER_REGISTRY });
   assert.equal(registry.ok, true);
-  assert.equal(registry.total, 96);
+  // V7.7.11i adds one automatic-read universal object inspector (96 -> 97).
+  assert.equal(registry.total, 97);
   const entry = registry.tools.find(t => t.tool_id === INTENT_ROUTE_BROKER_TOOL_IDS.route);
   assert.ok(entry);
   assert.equal(entry.risk_class, "read");
