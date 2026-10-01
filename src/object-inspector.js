@@ -220,6 +220,16 @@ async function relatedCard(db, hash) {
   return { ...compactStoneRow(row), found: true, restricted: false };
 }
 
+function redactRestrictedEdgeNotes(edges, restrictedHashes) {
+  const redact = edge => restrictedHashes.has(edge.from_hash) || restrictedHashes.has(edge.to_hash)
+    ? { ...edge, note: null, restricted_target: true }
+    : edge;
+  return {
+    outbound: edges.outbound.map(redact),
+    inbound: edges.inbound.map(redact)
+  };
+}
+
 function graphPayload(focal, related, edges) {
   const nodes = [
     {
@@ -343,7 +353,10 @@ export async function objectInspectFromBody(body = {}, env = {}) {
   for (const relatedHash of relationHashes) {
     related.push(await relatedCard(env.CAIRNSTONE_DB, relatedHash));
   }
-  const restrictedRelatedCount = related.filter(item => item.restricted === true).length;
+  const restrictedRelated = related.filter(item => item.restricted === true);
+  const restrictedRelatedCount = restrictedRelated.length;
+  const restrictedHashes = new Set(restrictedRelated.map(item => item.hash));
+  const visibleEdges = redactRestrictedEdgeNotes(edges, restrictedHashes);
   const objectLink = buildObjectLink(parsed, env, { title: stone.title });
 
   return {
@@ -363,10 +376,10 @@ export async function objectInspectFromBody(body = {}, env = {}) {
       immutable_git_commit: Boolean(stone.commit_sha && /^[0-9a-f]{40}$/i.test(stone.commit_sha))
     },
     accepted_state: acceptedState,
-    edges,
+    edges: visibleEdges,
     related,
     restricted_related_count: restrictedRelatedCount,
-    graph: graphPayload(stone, related, edges),
+    graph: graphPayload(stone, related, visibleEdges),
     bounds: {
       edge_limit: edgeLimit,
       related_limit: relatedLimit,
