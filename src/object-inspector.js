@@ -48,7 +48,7 @@ function publicBaseUrl(env = {}) {
     : DEFAULT_PUBLIC_BASE_URL;
   try {
     const url = new URL(raw);
-    if (url.protocol !== "https:" && url.protocol !== "http:") return DEFAULT_PUBLIC_BASE_URL;
+    if (url.protocol !== "https:") return DEFAULT_PUBLIC_BASE_URL;
     return `${url.protocol}//${url.host}${url.pathname.replace(/\/$/, "")}`;
   } catch {
     return DEFAULT_PUBLIC_BASE_URL;
@@ -405,6 +405,150 @@ export const OBJECT_INSPECT_TOOL_DEFINITION = Object.freeze({
     additionalProperties: false
   }
 });
+
+const INSPECTOR_HTML_HEADERS = Object.freeze({
+  "content-type": "text/html; charset=utf-8",
+  "cache-control": "private, no-store",
+  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'",
+  "referrer-policy": "no-referrer",
+  "x-content-type-options": "nosniff"
+});
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function shortHash(value, length = 12) {
+  const text = String(value || "");
+  return text.length > length ? `${text.slice(0, length)}…` : text;
+}
+
+function jsonInspectorUrl(result) {
+  const raw = result?.object_link?.https_url;
+  if (!isNonEmptyString(raw)) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:") return null;
+    url.searchParams.set("format", "json");
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function githubSourceUrl(stone = {}) {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(stone.repo || ""))) return null;
+  if (!/^[0-9a-f]{40}$/i.test(String(stone.commit_sha || ""))) return null;
+  if (!isNonEmptyString(stone.path)) return null;
+  const [owner, repo] = stone.repo.split("/");
+  const encodedPath = stone.path.split("/").map(segment => encodeURIComponent(segment)).join("/");
+  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/blob/${stone.commit_sha}/${encodedPath}`;
+}
+
+function renderBadge(label, tone = "neutral") {
+  return `<span class="badge badge-${escapeHtml(tone)}">${escapeHtml(label)}</span>`;
+}
+
+function renderDefinitionRows(rows) {
+  return rows.map(([label, value]) => `<div class="kv"><dt>${escapeHtml(label)}</dt><dd>${value == null || value === "" ? "—" : escapeHtml(value)}</dd></div>`).join("");
+}
+
+function renderGraphSvg(result) {
+  const nodes = Array.isArray(result?.graph?.nodes) ? result.graph.nodes.slice(0, 13) : [];
+  const edges = Array.isArray(result?.graph?.edges) ? result.graph.edges : [];
+  if (!nodes.length) return `<div class="empty">No graph neighborhood is available for this object.</div>`;
+
+  const width = 720;
+  const height = 420;
+  const cx = width / 2;
+  const cy = height / 2;
+  const radius = Math.min(width, height) * 0.34;
+  const focal = nodes.find(node => node.focal) || nodes[0];
+  const related = nodes.filter(node => node.id !== focal.id);
+  const positions = new Map([[focal.id, { x: cx, y: cy }]]);
+  related.forEach((node, index) => {
+    const angle = ((Math.PI * 2) * index / Math.max(related.length, 1)) - Math.PI / 2;
+    positions.set(node.id, { x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius });
+  });
+
+  const lineMarkup = edges.map(edge => {
+    const from = positions.get(edge.from);
+    const to = positions.get(edge.to);
+    if (!from || !to) return "";
+    return `<line x1="${from.x.toFixed(1)}" y1="${from.y.toFixed(1)}" x2="${to.x.toFixed(1)}" y2="${to.y.toFixed(1)}"><title>${escapeHtml(edge.type || "related")}</title></line>`;
+  }).join("");
+
+  const nodeMarkup = nodes.map(node => {
+    const position = positions.get(node.id) || { x: cx, y: cy };
+    const restricted = node.restricted === true;
+    const nodeClass = node.focal ? "node focal" : (restricted ? "node restricted" : "node");
+    const label = restricted ? "Restricted" : (node.label || shortHash(node.id));
+    return `<g class="${nodeClass}"><circle cx="${position.x.toFixed(1)}" cy="${position.y.toFixed(1)}" r="${node.focal ? 34 : 26}"></circle><text x="${position.x.toFixed(1)}" y="${(position.y + 50).toFixed(1)}" text-anchor="middle">${escapeHtml(String(label).slice(0, 28))}</text><title>${escapeHtml(label)}</title></g>`;
+  }).join("");
+
+  return `<div class="graph-wrap"><svg class="graph" viewBox="0 0 ${width} ${height}" role="img" aria-label="Bounded Stone relationship graph">${lineMarkup}${nodeMarkup}</svg></div>`;
+}
+
+function renderRelated(result) {
+  const related = Array.isArray(result?.related) ? result.related : [];
+  if (!related.length) return `<div class="empty">No related Stones were returned inside the bounded neighborhood.</div>`;
+  return `<div class="card-grid">${related.map(item => {
+    if (item.restricted) {
+      return `<article class="related-card restricted-card"><div class="eyebrow">Restricted relation</div><strong>${escapeHtml(shortHash(item.hash))}</strong><p>Relationship is visible; private object metadata is not.</p></article>`;
+    }
+    const href = isNonEmptyString(item.object_ref) ? `/inspect?ref=${encodeURIComponent(item.object_ref)}` : null;
+    const title = item.title || `Stone ${shortHash(item.hash)}`;
+    return `<article class="related-card"><div class="eyebrow">${escapeHtml(item.chain || "Stone")}</div><strong>${escapeHtml(title)}</strong><p>${escapeHtml(item.lod5 || "No compact summary available.")}</p>${href ? `<a class="text-link" href="${escapeHtml(href)}">Inspect related Stone →</a>` : ""}</article>`;
+  }).join("")}</div>`;
+}
+
+function renderInspectorBody(result) {
+  const objectRef = result?.object_ref || result?.input_ref || "Unknown object";
+  if (!result?.ok) {
+    return `<section class="hero"><div class="eyebrow">Inspector error</div><h1>Object unavailable</h1><p>${escapeHtml(result?.error || "Unable to inspect this object.")}</p><code>${escapeHtml(objectRef)}</code></section>`;
+  }
+
+  if (result.inspection_status === "restricted") {
+    return `<section class="hero"><div class="eyebrow">Access-bound object</div><h1>Restricted Stone</h1><p>This Stone is backed by private correspondence. The universal inspector exposes identity only; use the authenticated correspondence surface to read message metadata or content.</p><code>${escapeHtml(objectRef)}</code><div class="policy-row">${renderBadge("read-only", "good")}${renderBadge("relationship ≠ visibility", "warn")}${renderBadge("zero authority", "good")}</div></section>`;
+  }
+
+  if (result.inspection_status === "link_only") {
+    return `<section class="hero"><div class="eyebrow">Universal object deep link</div><h1>${escapeHtml(result.kind || "Object")}</h1><p>This typed reference is normalized and linkable, but V7.7.11i does not broadly hydrate this object kind through the public inspector.</p><code>${escapeHtml(objectRef)}</code><div class="policy-row">${renderBadge("link-only", "neutral")}${renderBadge("no private hydration", "warn")}${renderBadge("zero authority", "good")}</div></section>`;
+  }
+
+  const stone = result.stone || {};
+  const accepted = result.accepted_state || {};
+  const classifications = Array.isArray(accepted.classification) ? accepted.classification : [];
+  const sourceHref = githubSourceUrl(stone);
+  const edgeCount = Number(result?.bounds?.outbound_edges_returned || 0) + Number(result?.bounds?.inbound_edges_returned || 0);
+  const relatedCount = Array.isArray(result.related) ? result.related.length : 0;
+  const jsonUrl = jsonInspectorUrl(result);
+
+  return `<header class="hero"><div class="eyebrow">Stone Inspector · V7.7.11i</div><h1>${escapeHtml(stone.title || `Stone ${shortHash(stone.hash)}`)}</h1><p class="summary">${escapeHtml(stone.lod5 || "No LOD5 summary available.")}</p><code>${escapeHtml(objectRef)}</code><div class="policy-row">${classifications.map(value => renderBadge(value, "good")).join("")}${renderBadge(`${edgeCount} edges`, "neutral")}${renderBadge(`${relatedCount} related`, "neutral")}${result.restricted_related_count ? renderBadge(`${result.restricted_related_count} restricted`, "warn") : ""}</div></header>
+  <nav class="tabs" aria-label="Inspector sections"><a href="#summary">Summary</a><a href="#graph">Graph</a><a href="#source">Source</a><a href="#related">Related</a><a href="#messages">Messages</a></nav>
+  <section id="summary" class="panel"><div class="section-head"><div><div class="eyebrow">Summary</div><h2>Identity & authority</h2></div>${jsonUrl ? `<a class="text-link" href="${escapeHtml(jsonUrl)}">JSON view →</a>` : ""}</div><dl class="definition-grid">${renderDefinitionRows([["Author", stone.author], ["Created", stone.created_at], ["Chain", stone.chain], ["Accepted state", classifications.join(" + ") || "Historical / unscoped"]])}</dl><div class="authority-note"><strong>Read-only projection.</strong> This view cannot move HEADs, mint capabilities, execute tools, or convert a relationship into visibility.</div></section>
+  <section id="graph" class="panel"><div class="eyebrow">Graph</div><h2>Bounded relationship neighborhood</h2>${renderGraphSvg(result)}<p class="hint">Edges are exact stored Stone relationships. Restricted targets retain only ref-safe graph identity; notes are redacted.</p></section>
+  <section id="source" class="panel"><div class="section-head"><div><div class="eyebrow">Source</div><h2>Immutable provenance</h2></div>${sourceHref ? `<a class="text-link" href="${escapeHtml(sourceHref)}">Open immutable source →</a>` : ""}</div><dl class="definition-grid">${renderDefinitionRows([["Repository", stone.repo], ["Path", stone.path], ["Commit", stone.commit_sha], ["Immutable Git commit", result?.provenance?.immutable_git_commit ? "yes" : "not established"]])}</dl></section>
+  <section id="related" class="panel"><div class="eyebrow">Related</div><h2>Connected Stones</h2>${renderRelated(result)}</section>
+  <section id="messages" class="panel"><div class="eyebrow">Messages</div><h2>Authenticated correspondence only</h2><p>Message-backed Stones and AC1 correspondence are never hydrated merely because they are connected in the graph. Authorized message inspection remains on the object-specific authenticated path.</p></section>`;
+}
+
+export function renderObjectInspectorHtml(result = {}) {
+  const title = result?.stone?.title || result?.object_link?.label || "CairnStone Object Inspector";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark light"><title>${escapeHtml(title)} · CairnStone</title><style>
+  :root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:dark;background:#0b0d10;color:#f5f7fa}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 50% -20%,#27364d 0,#0b0d10 38rem);color:#f5f7fa}a{color:inherit}main{width:min(1080px,100%);margin:auto;padding:24px max(18px,env(safe-area-inset-right)) 72px max(18px,env(safe-area-inset-left))}.hero,.panel{background:rgba(20,24,30,.88);border:1px solid #2d3540;border-radius:22px;padding:22px;box-shadow:0 18px 60px rgba(0,0,0,.24)}.hero{margin-top:12px}.eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:.72rem;color:#9faabc;font-weight:700}h1{font-size:clamp(1.9rem,6vw,3.8rem);line-height:1.02;margin:.35rem 0 1rem}h2{font-size:1.35rem;margin:.3rem 0 1rem}.summary{font-size:1.05rem;line-height:1.65;color:#cbd3dd;max-width:70ch}code{display:block;max-width:100%;overflow:auto;padding:12px 14px;border-radius:12px;background:#090b0e;border:1px solid #252b33;color:#c8d6e8;font-size:.82rem}.policy-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}.badge{display:inline-flex;align-items:center;border:1px solid #394351;border-radius:999px;padding:6px 10px;font-size:.74rem;font-weight:700}.badge-good{border-color:#315c4c;color:#9ce5c7}.badge-warn{border-color:#705a32;color:#f4cf82}.badge-neutral{color:#c5ced9}.tabs{position:sticky;top:0;z-index:2;display:flex;gap:8px;overflow:auto;margin:16px 0;padding:10px 4px;background:rgba(11,13,16,.92);backdrop-filter:blur(12px)}.tabs a{text-decoration:none;white-space:nowrap;border:1px solid #303844;background:#151a20;border-radius:999px;padding:9px 13px;font-size:.82rem}.panel{margin-top:14px;scroll-margin-top:74px}.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.text-link{font-size:.84rem;color:#a9c9ff;text-decoration:none}.definition-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:#2c333d;border:1px solid #2c333d;border-radius:16px;overflow:hidden}.kv{background:#11151a;padding:14px;min-width:0}.kv dt{font-size:.72rem;color:#8995a5;text-transform:uppercase;letter-spacing:.08em}.kv dd{margin:6px 0 0;overflow-wrap:anywhere}.authority-note,.empty{margin-top:16px;padding:15px;border-radius:14px;background:#101820;border:1px solid #263746;color:#cbd6e3;line-height:1.55}.graph-wrap{overflow:auto;border-radius:16px;background:#0c1015;border:1px solid #26303a}.graph{display:block;width:100%;min-width:620px;max-height:480px}.graph line{stroke:#596675;stroke-width:2}.graph circle{fill:#18212b;stroke:#8ab4f8;stroke-width:2}.graph .focal circle{fill:#1c324b;stroke:#b8d2ff;stroke-width:3}.graph .restricted circle{fill:#2b2418;stroke:#dfbd75;stroke-dasharray:5 4}.graph text{fill:#cbd5e1;font-size:12px}.hint{color:#8995a5;font-size:.82rem;line-height:1.5}.card-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.related-card{border:1px solid #303844;border-radius:16px;background:#101419;padding:16px}.related-card strong{display:block;margin:.4rem 0}.related-card p{color:#aeb8c5;line-height:1.5}.restricted-card{border-style:dashed;border-color:#6d5b39}@media(max-width:640px){main{padding-top:12px}.hero,.panel{padding:17px;border-radius:18px}.definition-grid,.card-grid{grid-template-columns:1fr}.section-head{display:block}.section-head .text-link{display:inline-block;margin-bottom:8px}.graph{min-width:540px}}
+  @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}</style></head><body><main>${renderInspectorBody(result)}</main></body></html>`;
+}
+
+export function objectInspectorHtmlResponse(result = {}) {
+  const status = result?.ok ? 200 : (result?.error === "stone_not_found" ? 404 : 400);
+  return new Response(renderObjectInspectorHtml(result), { status, headers: INSPECTOR_HTML_HEADERS });
+}
 
 export const OBJECT_INSPECT_MCP_TOOL_DEFINITIONS = Object.freeze([
   OBJECT_INSPECT_TOOL_DEFINITION
