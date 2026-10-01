@@ -1,6 +1,6 @@
 # V7.7.11i — Stone Inspector + Universal Object Deep Links
 
-Status: IMPLEMENTATION SLICE 11i.0 + 11i.1
+Status: IMPLEMENTATION SLICES 11i.0 + 11i.1 + 11i.2
 
 ## Goal
 
@@ -26,7 +26,7 @@ Every supported typed reference can produce a link envelope containing:
 - policy evidence that UI rendering is not authority;
 - no raw capability bearer or secret in the URL.
 
-The stable route is `/inspect?ref=<canonical-object-ref>`. In 11i.0/11i.1 it may return the read-only machine-readable inspector envelope; the later 11i.2 surface may render the same URL as a mobile-first visual inspector without changing object identity.
+The stable route is `/inspect?ref=<canonical-object-ref>`. In 11i.2 the same URL renders the mobile-first visual inspector without changing object identity. Machine-readable clients can use `/v1/object-inspect` or append `format=json` to the stable inspector URL.
 
 ## `cairnstone_object_inspect`
 
@@ -68,9 +68,14 @@ The inspector:
 - never invents graph relationships;
 - never treats host-native rendering as authority.
 
+## 11i.2 mobile-first HTTPS inspector
+
+The stable HTTPS route now renders a responsive, iframe-compatible inspector with Summary, Graph, Source, Related, and Messages surfaces. The graph is a bounded projection of exact stored `stone_edges`; restricted related objects remain ref-safe placeholders and their edge notes stay redacted. Source links are emitted only when repository/path provenance is paired with a real immutable 40-hex commit. The page is `private, no-store`, HTML-escapes stored metadata, applies a restrictive CSP, includes no raw secret/capability bearer, and preserves a `format=json` view for machine-readable inspection.
+
+The Messages surface is deliberately access-bound in this slice: it explains the authenticated correspondence boundary but never hydrates private AC1/message content through the universal inspector. Full object-specific authenticated projections remain 11i.4.
+
 ## Next slices
 
-- **11i.2** — mobile-first HTTPS visual inspector (Summary / Graph / Source / Related / Messages where authorized).
 - **11i.3** — native MCP/App card/modal/fullscreen projection.
 - **11i.4** — authenticated object-specific related projections for messages, sessions, responses, task runs, receipts, and other typed objects.
 - **11i.5** — cross-host acceptance tests and deep-link parity.
