@@ -542,7 +542,8 @@ test("invokeExecutorAdapter dry-run for cursor", async () => {
 
 test("broker registry: 10d tools + risk classes; not automatic-read", () => {
   const registry = toolRegistryFromBody({});
-  assert.equal(registry.total, 96);
+  // V7.7.11i adds one automatic-read universal object inspector (96 -> 97).
+  assert.equal(registry.total, 97);
   assert.equal(DEFAULT_TOOL_BROKER_REGISTRY.length, 96);
 
   const byId = Object.fromEntries(DEFAULT_TOOL_BROKER_REGISTRY.map(e => [e.tool_id, e]));
