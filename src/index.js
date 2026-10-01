@@ -184,6 +184,7 @@ import {
 } from "./attachment-refs.js";
 import {
   objectInspectFromBody,
+  objectInspectorHtmlResponse,
   OBJECT_INSPECT_TOOL_DEFINITION
 } from "./object-inspector.js";
 import {
@@ -860,7 +861,9 @@ export default {
       }
       // V7.7.11i — stable HTTPS deep link + read-only object inspector.
       if (request.method === "GET" && url.pathname === "/inspect") {
-        return json(await objectInspectFromBody({ object_ref: url.searchParams.get("ref") || "" }, env));
+        const inspected = await objectInspectFromBody({ object_ref: url.searchParams.get("ref") || "" }, env);
+        if (url.searchParams.get("format") === "json") return json(inspected);
+        return objectInspectorHtmlResponse(inspected);
       }
       if (request.method === "POST" && url.pathname === "/v1/object-inspect") {
         return json(await objectInspectFromBody(await request.json(), env));
