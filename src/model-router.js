@@ -44,6 +44,7 @@ import {
 import {
   ATTACHMENT_REF_RESOLVE_TOOL_DEFINITION
 } from "./attachment-refs.js";
+import { OBJECT_INSPECT_TOOL_DEFINITION } from "./object-inspector.js";
 import {
   ACCESS_GRANT_CREATE_TOOL_DEFINITION,
   ACCESS_GRANT_GET_TOOL_DEFINITION,
@@ -1727,6 +1728,19 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     available: true,
     description: "V7.7.10b: resolve typed object_ref attachments; orientation only; never grants capability.",
     input_schema: ATTACHMENT_REF_RESOLVE_TOOL_DEFINITION.inputSchema
+  }),
+  // V7.7.11i first slice is safe for automatic read: only non-private Stone
+  // metadata is hydrated. Correspondence-backed Stones are redacted before
+  // metadata/edges and every non-Stone kind is link-only.
+  Object.freeze({
+    tool_id: "cairnstone_object_inspect",
+    connector: "cairnstone",
+    handler: "cairnstone_object_inspect",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "V7.7.11i: read-only universal object links + safe Stone inspector; correspondence fails closed; relationships never grant visibility.",
+    input_schema: OBJECT_INSPECT_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
     tool_id: "cairnstone_access_grant_create",
