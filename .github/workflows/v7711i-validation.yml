@@ -26,7 +26,16 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: V7.7.11i targeted regression tests
-        run: node --test test/object-inspector.test.js test/model-router.test.js test/tool-catalog.test.js
+        shell: bash
+        run: |
+          set +e
+          node --test test/object-inspector.test.js test/model-router.test.js test/tool-catalog.test.js > /tmp/v7711i-targeted.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            cat /tmp/v7711i-targeted.log
+            exit "$status"
+          fi
+          tail -n 18 /tmp/v7711i-targeted.log
 
       - name: Full repository checks
         shell: bash
