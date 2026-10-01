@@ -1123,6 +1123,8 @@ function routes() {
     "POST /v1/conversation-sessions/update",
     "POST /v1/conversation-sessions/append-turn",
     "POST /v1/attachment-refs/resolve",
+    "GET /inspect?ref=typed-object-ref",
+    "POST /v1/object-inspect",
     "POST /v1/access-grants",
     "POST /v1/access-grants/get",
     "POST /v1/access-grants/list",
