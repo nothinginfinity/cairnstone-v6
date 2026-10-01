@@ -1376,6 +1376,120 @@ V7.10 acceptance should prove at least two payment adapters or payment modes aga
 
 ---
 
+## V7.11 — CairnStone Content / MCP Content Runtime
+
+Status: **PLANNED / FUTURE PRODUCT LAYER — roadmap accepted direction; implementation not started.** Build only after the identity, capability, durable-task, content-reference, and cross-model foundations are sufficiently accepted to avoid creating a parallel media silo. This milestone does not change the current V7.7.10 priority order or authorize media-generation runtime work now.
+
+### Goal
+
+Turn MCP from a tool-access surface into a provider-neutral **content creation, continuity, retrieval, distribution, and playback runtime**. A user connected through ChatGPT, Claude, Grok, Perplexity, or another compatible host should be able to ask for content in natural language — for example `make a picture book`, `continue issue 4`, `turn this article into a five-minute video`, or `play episode 3` — while CairnStone owns the durable project state, data/assets, specialized skills, generation/rendering pipeline, provenance, permissions, and artifact references.
+
+The host model is the conversational reasoning/interface layer; **CairnStone Content is the persistent content runtime**. Provider/model choice must not redefine the identity or continuity of the creative project.
+
+### One runtime, multiple content profiles
+
+Do not begin by creating unrelated infrastructure for separate movie/book/comic products. Define one `CairnStone Content` / `MCP Content` capability with profile-specific recipes such as:
+
+```text
+content.article
+content.book
+content.picture_book
+content.comic
+content.audio
+content.podcast
+content.video
+content.movie
+content.interactive
+```
+
+Each profile resolves to a bounded capability/skill/executor graph. A comic may route through story/character continuity → script → panel planning → image generation → lettering/layout → package/export; a movie may route through source material → screenplay → shot list/storyboards → video generation → dialogue/TTS → music/SFX → compositor → streaming/download artifact.
+
+### Durable content contracts
+
+Initial contract candidates:
+
+- `cairnstone-content-project-v1` — provider-neutral creative/project identity; world/character/style bibles; source refs; timeline/continuity; rights/licensing/provenance; version graph; artifact/output refs;
+- `cairnstone-content-request-v1` — user intent, selected content profile, source Scope/object refs, creative/format constraints, requested outputs, and policy/budget bounds;
+- `cairnstone-content-pipeline-v1` — deterministic/accepted recipe or DAG mapping a content profile onto skills, tools, models, executors, generation adapters, validation steps, and packaging/rendering;
+- `cairnstone-content-artifact-v1` — media/output identity with MIME type, digest, bytes, `content_ref`/stream/download refs, project/version linkage, provenance, pipeline/receipt refs, and rights metadata.
+
+Large binaries must stay behind content-addressed/resource references rather than entering model context. Existing/future `content_ref`, Task Run, executor-routing, access-grant, receipt, Scope, Tool Vault/Tool Belt, Skills vNext, StoneLink, and economic-authority primitives should be reused rather than duplicated.
+
+### Execution model
+
+```text
+natural-language content intent
+  -> content profile / recipe resolution
+  -> exact project state + data/assets + permissions
+  -> durable Task Run / executor routing
+  -> text / image / audio / video generation adapters
+  -> composition / render / package / validation
+  -> content-addressed storage or external media store
+  -> artifact refs + receipts
+  -> host presentation / playback / export
+```
+
+Generation providers remain adapters. A future image/video/audio model can be swapped without changing the durable project, source authority, continuity graph, or artifact lineage.
+
+### Cross-model continuity
+
+A content project must be able to begin in one host and continue in another without becoming a host-specific project. Example target: create the story bible in Claude, continue/edit it in ChatGPT, use Grok for current research, and render/retrieve the resulting book/video/movie through another compatible client while preserving one CairnStone project identity and version/provenance graph.
+
+Persistent state should support recurring characters, locations, style constraints, episode/chapter ordering, asset reuse, script-to-shot/audio relationships, revision lineage, and exact output provenance. The durable object is the **creative project graph**, not merely the final `.pdf`, `.mp4`, or audio file.
+
+### Presentation and playback boundary
+
+MCP Content should return the richest portable artifact/resource contract it can, but the host controls final rendering. Degrade gracefully across clients:
+
+```text
+native/embedded player or reader
+  -> rich MCP/App-style content UI
+  -> file/artifact card
+  -> streaming/resource link
+  -> download/export reference
+```
+
+Correctness must never depend on one host supporting an inline movie player.
+
+### Rights, provenance, and publication invariants
+
+- generation capability does not imply publication/distribution rights;
+- source ownership, licenses, creator permissions, model/tool provenance, and derived-artifact lineage remain explicit;
+- private source/project access remains distinct from generation, mutation, publication, and economic authority;
+- payment or subscription may gate access but never silently changes accepted-state or rights authority;
+- content moderation/safety and provider-specific generation constraints are adapter/runtime policy concerns and must fail closed where required;
+- replay/idempotency and versioning prevent duplicate paid renders or ambiguous artifact identity.
+
+### Initial implementation slices
+
+- `V7.11.0` — content-project/request/artifact contracts + profile taxonomy + rights/provenance model;
+- `V7.11.1` — text-first article/book pipeline using durable Task Runs, content refs, receipts, and cross-host resume;
+- `V7.11.2` — illustrated content pipeline (picture book/comic) with persistent character/style/asset continuity;
+- `V7.11.3` — audio/podcast pipeline with script, voice, music/SFX, and packaged artifact lineage;
+- `V7.11.4` — short-video pipeline with shot/scene graph, generation adapters, compositor, captions/audio, and stream/download refs;
+- `V7.11.5` — movie/episodic long-form orchestration, resumable rendering, versioned edits, and content-library retrieval/playback;
+- `V7.11.6` — creator publication/distribution, federation/discovery, access/subscription/economic adapters where separately authorized;
+- `V7.11.7` — cross-model/host acceptance, scale/cost/latency, rights/provenance, replay, and media-delivery security gate.
+
+### Acceptance
+
+V7.11 is not complete until live acceptance proves at minimum:
+
+- one text/book project with durable identity and versioned artifact refs;
+- one illustrated picture-book/comic project whose recurring entities/style remain consistent across revisions;
+- one audio or short-video project whose script/visual/audio components remain independently traceable to the packaged output;
+- the same content project can be resumed/continued across at least ChatGPT and Claude, with a third independent host where practical;
+- large media bytes stay out of model context and are delivered through bounded content/resource refs;
+- provider/model swaps do not change content-project identity or silently discard continuity state;
+- every generated/published artifact exposes bounded provenance, rights/permission state, pipeline identity, and execution/render receipts;
+- replay/idempotency and versioning prevent duplicate/ambiguous render outcomes;
+- `read/open/play/export` degrades safely when a host lacks rich media rendering;
+- no content capability bypasses existing identity, access, mutation/execution, publication, or economic-authority boundaries.
+
+This milestone is intentionally downstream of the control-plane work that makes it portable and trustworthy. **CairnStone Messages remains the communication layer; CairnStone Core remains the agent/context/work layer; CairnStone Content becomes the creative/media layer.**
+
+---
+
 ## Phase ordering
 
 ```text
@@ -1410,6 +1524,8 @@ V7.8 CairnStone Federation / StoneLink (PLANNED / AFTER V7.7 ACCEPTANCE — publ
 V7.9 Skills vNext / Capability Recipes (PLANNED — behavioral guardrails → operational skills → abstract capability contracts → verification-bearing recipes → external-skill adaptation → cross-model/host acceptance)
         ↓
 V7.10 Economic Authority + Verifiable Work Receipts (PLANNED — rail-neutral economic authority → durable budget/job binding → bounded external procurement → Work Receipt → paid resource/context authority → publication adapters → commercial acceptance metrics)
+        ↓
+V7.11 CairnStone Content / MCP Content Runtime (PLANNED — provider-neutral persistent creative projects → content profiles/recipes → multimodal generation/render adapters → content refs/artifact lineage → cross-model continuation → portable playback/export → rights/provenance/distribution gate)
 ```
 
 Do not skip V7.0.
