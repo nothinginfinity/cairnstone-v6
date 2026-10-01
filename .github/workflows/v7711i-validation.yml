@@ -44,8 +44,8 @@ jobs:
           npm run check > /tmp/v7711i-check.log 2>&1
           status=$?
           if [ "$status" -ne 0 ]; then
-            echo "Full check failed; showing final 320 log lines:"
-            tail -n 320 /tmp/v7711i-check.log
+            echo "Full check failed; compact failure markers:"
+            grep -n -E 'not ok|failureType:|location:|Expected values|ERR_ASSERTION|# tests |# pass |# fail |Error:' /tmp/v7711i-check.log || true
             exit "$status"
           fi
           tail -n 40 /tmp/v7711i-check.log
