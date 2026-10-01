@@ -183,6 +183,10 @@ import {
   ATTACHMENT_REF_MCP_TOOL_DEFINITIONS
 } from "./attachment-refs.js";
 import {
+  objectInspectFromBody,
+  OBJECT_INSPECT_TOOL_DEFINITION
+} from "./object-inspector.js";
+import {
   createAccessGrantFromBody,
   getAccessGrantFromBody,
   listAccessGrantsFromBody,
@@ -853,6 +857,13 @@ export default {
       // V7.7.10b — typed attachments + access grants + task-run proposals + forward-with-note
       if (request.method === "POST" && url.pathname === "/v1/attachment-refs/resolve") {
         return json(await resolveAttachmentRefsFromBody(await request.json(), env));
+      }
+      // V7.7.11i — stable HTTPS deep link + read-only object inspector.
+      if (request.method === "GET" && url.pathname === "/inspect") {
+        return json(await objectInspectFromBody({ object_ref: url.searchParams.get("ref") || "" }, env));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/object-inspect") {
+        return json(await objectInspectFromBody(await request.json(), env));
       }
       if (request.method === "POST" && url.pathname === "/v1/access-grants") {
         return json(await createAccessGrantFromBody(await request.json(), env, {
@@ -1799,6 +1810,7 @@ async function callMcpTool(name, args, env, options = {}) {
   if (name === "cairnstone_conversation_session_update") return updateConversationSessionFromBody(args, env);
   if (name === "cairnstone_conversation_session_append_turn") return appendConversationTurnFromBody(args, env);
   if (name === "cairnstone_attachment_ref_resolve") return resolveAttachmentRefsFromBody(args, env);
+  if (name === "cairnstone_object_inspect") return objectInspectFromBody(args, env);
   if (name === "cairnstone_access_grant_create") {
     return createAccessGrantFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   }
@@ -2098,6 +2110,7 @@ function mcpTools() {
     ...GROUNDED_RESPONSE_MCP_TOOL_DEFINITIONS,
     ...CONVERSATION_SESSION_MCP_TOOL_DEFINITIONS,
     ...ATTACHMENT_REF_MCP_TOOL_DEFINITIONS,
+    OBJECT_INSPECT_TOOL_DEFINITION,
     ...ACCESS_GRANT_MCP_TOOL_DEFINITIONS,
     ...TASK_RUN_MCP_TOOL_DEFINITIONS,
     CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION,
