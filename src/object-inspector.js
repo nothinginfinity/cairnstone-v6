@@ -5,14 +5,23 @@
 // objects. Non-Stone refs are intentionally link-only in this slice. Stones
 // backed by private AC1 correspondence fail closed to a restricted envelope;
 // relationship edges never grant visibility into a related object.
+//
+// V7.7.11i.4a — authenticated correspondence projection. A caller that proves a
+// principal with a signed mailbox capability (scope mail.read:self) may inspect
+// correspondence-backed Stones it is a recipient of. Authorization is the
+// object-specific delivery row, never the graph edge. The inspector stays
+// read-only: it never advances delivery/read state and never returns bodies.
 
 import { parseObjectRef } from "./attachment-refs.js";
+import { verifyMailboxCapability } from "./worker-session.js";
 
 export const OBJECT_LINK_SCHEMA = "cairnstone-object-link-v1";
 export const OBJECT_INSPECTOR_SCHEMA = "cairnstone-object-inspector-v1";
 export const OBJECT_INSPECT_TOOL_ID = "cairnstone_object_inspect";
 export const OBJECT_INSPECT_APP_RESOURCE_URI = "ui://cairnstone/stone-inspector-v1.html";
 export const OBJECT_INSPECT_APP_MIME_TYPE = "text/html;profile=mcp-app";
+export const INSPECTOR_VIEWER_SCOPE = "mail.read:self";
+const ACTOR_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}:[a-z0-9][a-z0-9._-]{0,127}$/i;
 
 const DEFAULT_PUBLIC_BASE_URL = "https://cairnstone-v6.jaredtechfit.workers.dev";
 const DEFAULT_EDGE_LIMIT = 12;
@@ -30,8 +39,11 @@ function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function authorityPolicy() {
+function authorityPolicy(viewer = null) {
   return {
+    authenticated_projection: Boolean(viewer?.authenticated),
+    delivery_state_mutated: false,
+    message_body_returned: false,
     read_only: true,
     accepted_state_authority: false,
     execution_authority: false,
@@ -130,6 +142,123 @@ async function correspondenceRestriction(db, hash) {
   }
 }
 
+// V7.7.11i.4a — object-specific authorization for correspondence-backed Stones.
+// Recipient-only (matches the inbox/read path); the relationship graph, a bare
+// hash, or an asserted actor id never authorize. Any error fails closed.
+async function principalIsCorrespondenceRecipient(db, hash, principal) {
+  if (!principal) return false;
+  try {
+    const row = await db.prepare(
+      "SELECT stone_hash FROM correspondence_deliveries WHERE stone_hash = ? AND recipient_id = ? LIMIT 1"
+    ).bind(hash, principal).first();
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
+async function visibilityForViewer(db, hash, viewer) {
+  const restriction = await correspondenceRestriction(db, hash);
+  if (!restriction.restricted) return { ...restriction, basis: "non_correspondence_stone" };
+  if (restriction.reason === "correspondence_access_check_failed") return restriction;
+  if (viewer?.authenticated && await principalIsCorrespondenceRecipient(db, hash, viewer.principal_actor_id)) {
+    return { restricted: false, reason: null, basis: "correspondence_recipient" };
+  }
+  return restriction;
+}
+
+async function correspondenceProjection(db, hash, principal) {
+  try {
+    const row = await db.prepare(
+      "SELECT message_id, sender_id, thread_id, status, created_at, delivered_at, read_at FROM correspondence_deliveries WHERE stone_hash = ? AND recipient_id = ? ORDER BY created_at DESC LIMIT 1"
+    ).bind(hash, principal).first();
+    if (!row) return null;
+    return {
+      message_id: row.message_id || null,
+      sender_id: row.sender_id || null,
+      recipient_id: principal,
+      thread_id: row.thread_id || null,
+      delivery_status: row.status || null,
+      created_at: row.created_at || null,
+      delivered_at: row.delivered_at || null,
+      read_at: row.read_at || null,
+      other_recipients_disclosed: false,
+      content_access: {
+        body_returned: false,
+        use_tool: "cairnstone_read_message",
+        note: "The inspector never advances delivery state; reading the body remains on the authenticated mailbox path."
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveMessageForPrincipal(db, messageId, principal) {
+  try {
+    const rows = await db.prepare(
+      "SELECT DISTINCT stone_hash FROM correspondence_deliveries WHERE recipient_id = ? AND message_id = ? LIMIT 2"
+    ).bind(principal, messageId).all();
+    const hashes = (rows?.results || []).map(row => row.stone_hash).filter(Boolean);
+    if (hashes.length === 1) return { status: "unique", stone_hash: hashes[0] };
+    if (hashes.length > 1) return { status: "ambiguous" };
+    return { status: "none" };
+  } catch {
+    return { status: "none" };
+  }
+}
+
+function publicViewer(viewer) {
+  return viewer?.authenticated
+    ? { authenticated: true, principal_actor_id: viewer.principal_actor_id, scope: viewer.scope, basis: viewer.basis }
+    : { authenticated: false, principal_actor_id: null, scope: null, basis: null };
+}
+
+function viewerFailure(reason) {
+  return {
+    ok: false,
+    schema: OBJECT_INSPECTOR_SCHEMA,
+    error: "inspector_viewer_authentication_failed",
+    reason,
+    viewer: publicViewer(null),
+    object_link: null,
+    policy: authorityPolicy()
+  };
+}
+
+// Never forwards fields from the verifier result other than the stable error
+// code (a mismatch result echoes principal ids we do not need to repeat).
+async function resolveInspectorViewer(body, env, options) {
+  const hasCapability = isNonEmptyString(body?.mailbox_capability);
+  const hasPrincipal = isNonEmptyString(body?.principal_actor_id);
+  if (!hasCapability && !hasPrincipal) return { ok: true, viewer: null };
+  if (options?.viewerAuth !== true) {
+    return { ok: false, response: viewerFailure("viewer_authentication_not_available_on_this_surface") };
+  }
+  if (!hasCapability) return { ok: false, response: viewerFailure("mailbox_capability_required") };
+  if (!hasPrincipal) return { ok: false, response: viewerFailure("principal_actor_id_required") };
+  const principal = body.principal_actor_id.trim();
+  if (!ACTOR_ID_RE.test(principal)) return { ok: false, response: viewerFailure("invalid_principal_actor_id") };
+  let verified;
+  try {
+    verified = await verifyMailboxCapability(body.mailbox_capability.trim(), principal, [INSPECTOR_VIEWER_SCOPE], env);
+  } catch {
+    return { ok: false, response: viewerFailure("mailbox_capability_verification_failed") };
+  }
+  if (!verified?.ok) {
+    return { ok: false, response: viewerFailure(String(verified?.error || "mailbox_capability_rejected").slice(0, 96)) };
+  }
+  return {
+    ok: true,
+    viewer: {
+      authenticated: true,
+      principal_actor_id: verified.principal_actor_id,
+      scope: INSPECTOR_VIEWER_SCOPE,
+      basis: "mailbox_capability"
+    }
+  };
+}
+
 async function acceptedStateForStone(db, row) {
   const chain = row.chain_hash || null;
   const path = row.path || null;
@@ -203,8 +332,8 @@ function relatedHashes(hash, edges, limit) {
   return ordered;
 }
 
-async function relatedCard(db, hash) {
-  const visibility = await correspondenceRestriction(db, hash);
+async function relatedCard(db, hash, viewer = null) {
+  const visibility = await visibilityForViewer(db, hash, viewer);
   if (visibility.restricted) {
     return {
       object_ref: `stone:${hash}`,
@@ -219,7 +348,9 @@ async function relatedCard(db, hash) {
   if (!row) {
     return { object_ref: `stone:${hash}`, hash, found: false, restricted: false };
   }
-  return { ...compactStoneRow(row), found: true, restricted: false };
+  const card = { ...compactStoneRow(row), found: true, restricted: false };
+  if (visibility.basis === "correspondence_recipient") card.access_basis = visibility.basis;
+  return card;
 }
 
 function redactRestrictedEdgeNotes(edges, restrictedHashes) {
@@ -268,12 +399,18 @@ function bindingError(env) {
     : null;
 }
 
-export async function objectInspectFromBody(body = {}, env = {}) {
+export async function objectInspectFromBody(body = {}, env = {}, options = {}) {
   const missingBinding = bindingError(env);
   if (missingBinding) return missingBinding;
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, error: "invalid_object_inspect_request", policy: authorityPolicy() };
   }
+  // Authenticate first so an invalid capability always fails closed, whatever
+  // the ref. Surfaces that do not opt in (MCP tool path, GET /inspect) reject
+  // any presented capability instead of silently ignoring or honoring it.
+  const viewerResult = await resolveInspectorViewer(body, env, options);
+  if (!viewerResult.ok) return viewerResult.response;
+  const viewer = viewerResult.viewer;
   const raw = body.object_ref;
   const parsed = parseObjectRef(raw);
   if (!parsed.ok) {
@@ -292,8 +429,38 @@ export async function objectInspectFromBody(body = {}, env = {}) {
   const relatedLimit = clampInteger(body.related_limit, 1, MAX_RELATED_LIMIT, DEFAULT_RELATED_LIMIT);
 
   // V7.7.11i.0: every supported typed ref receives a canonical deep-link
-  // envelope. Only safe Stone objects are hydrated in i.1.
-  if (parsed.kind !== "stone") {
+  // envelope. Safe Stones hydrate for everyone; correspondence-backed objects
+  // (stone:/ac1:/msg:) hydrate only for an authenticated recipient (i.4a).
+  let hash = null;
+  let resolvedFrom = null;
+  if (parsed.kind === "stone") {
+    hash = parsed.stone_hash;
+  } else if (parsed.kind === "ac1" && viewer?.authenticated) {
+    if (await principalIsCorrespondenceRecipient(env.CAIRNSTONE_DB, parsed.stone_hash, viewer.principal_actor_id)) {
+      hash = parsed.stone_hash;
+      resolvedFrom = "ac1";
+    }
+  } else if (parsed.kind === "msg" && viewer?.authenticated) {
+    const resolved = await resolveMessageForPrincipal(env.CAIRNSTONE_DB, parsed.message_id, viewer.principal_actor_id);
+    if (resolved.status === "unique") {
+      hash = resolved.stone_hash;
+      resolvedFrom = "msg";
+    } else if (resolved.status === "ambiguous") {
+      return {
+        ok: true,
+        schema: OBJECT_INSPECTOR_SCHEMA,
+        object_ref: parsed.canonical_ref || parsed.object_ref,
+        kind: parsed.kind,
+        inspection_status: "link_only",
+        object_link: buildObjectLink(parsed, env),
+        hydration: { attempted: true, reason: "ambiguous_message_ref" },
+        viewer: publicViewer(viewer),
+        policy: authorityPolicy(viewer)
+      };
+    }
+  }
+
+  if (!hash) {
     return {
       ok: true,
       schema: OBJECT_INSPECTOR_SCHEMA,
@@ -305,12 +472,12 @@ export async function objectInspectFromBody(body = {}, env = {}) {
         attempted: false,
         reason: "object_kind_not_hydrated_in_v7_7_11i_1"
       },
-      policy: authorityPolicy()
+      viewer: publicViewer(viewer),
+      policy: authorityPolicy(viewer)
     };
   }
 
-  const hash = parsed.stone_hash;
-  const visibility = await correspondenceRestriction(env.CAIRNSTONE_DB, hash);
+  const visibility = await visibilityForViewer(env.CAIRNSTONE_DB, hash, viewer);
   if (visibility.restricted) {
     return {
       ok: true,
@@ -326,7 +493,8 @@ export async function objectInspectFromBody(body = {}, env = {}) {
       edges: null,
       related: [],
       graph: null,
-      policy: authorityPolicy()
+      viewer: publicViewer(viewer),
+      policy: authorityPolicy(viewer)
     };
   }
 
@@ -341,7 +509,8 @@ export async function objectInspectFromBody(body = {}, env = {}) {
       object_ref: parsed.canonical_ref,
       kind: "stone",
       object_link: buildObjectLink(parsed, env),
-      policy: authorityPolicy()
+      viewer: publicViewer(viewer),
+      policy: authorityPolicy(viewer)
     };
   }
 
@@ -353,21 +522,27 @@ export async function objectInspectFromBody(body = {}, env = {}) {
   const relationHashes = relatedHashes(hash, edges, relatedLimit);
   const related = [];
   for (const relatedHash of relationHashes) {
-    related.push(await relatedCard(env.CAIRNSTONE_DB, relatedHash));
+    related.push(await relatedCard(env.CAIRNSTONE_DB, relatedHash, viewer));
   }
   const restrictedRelated = related.filter(item => item.restricted === true);
   const restrictedRelatedCount = restrictedRelated.length;
   const restrictedHashes = new Set(restrictedRelated.map(item => item.hash));
   const visibleEdges = redactRestrictedEdgeNotes(edges, restrictedHashes);
   const objectLink = buildObjectLink(parsed, env, { title: stone.title });
+  const correspondence = visibility.basis === "correspondence_recipient"
+    ? await correspondenceProjection(env.CAIRNSTONE_DB, hash, viewer.principal_actor_id)
+    : null;
 
   return {
     ok: true,
     schema: OBJECT_INSPECTOR_SCHEMA,
     object_ref: parsed.canonical_ref,
-    kind: "stone",
+    kind: resolvedFrom ? parsed.kind : "stone",
+    ...(resolvedFrom ? { resolved_object_ref: `stone:${hash}`, resolved_from: resolvedFrom } : {}),
     inspection_status: "hydrated",
     restricted: false,
+    access: { basis: visibility.basis, principal_scoped: visibility.basis === "correspondence_recipient" },
+    ...(correspondence ? { correspondence } : {}),
     object_link: objectLink,
     stone,
     provenance: {
@@ -389,7 +564,8 @@ export async function objectInspectFromBody(body = {}, env = {}) {
       inbound_edges_returned: edges.inbound.length,
       related_returned: related.length
     },
-    policy: authorityPolicy()
+    viewer: publicViewer(viewer),
+    policy: authorityPolicy(viewer)
   };
 }
 

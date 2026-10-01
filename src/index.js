@@ -869,7 +869,12 @@ export default {
         return objectInspectorHtmlResponse(inspected);
       }
       if (request.method === "POST" && url.pathname === "/v1/object-inspect") {
-        return json(await objectInspectFromBody(await request.json(), env));
+        // V7.7.11i.4a: the only surface that accepts a signed mailbox capability
+        // (request body, never a URL). Responses may be principal-scoped, so
+        // they are never cacheable.
+        const inspected = await objectInspectFromBody(await request.json(), env, { viewerAuth: true });
+        const status = inspected?.error === "inspector_viewer_authentication_failed" ? 401 : 200;
+        return json(inspected, status, { "cache-control": "private, no-store" });
       }
       if (request.method === "POST" && url.pathname === "/v1/access-grants") {
         return json(await createAccessGrantFromBody(await request.json(), env, {
