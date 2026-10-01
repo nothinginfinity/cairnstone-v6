@@ -114,7 +114,8 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   // V7.7.7e adds nine environment/sandbox/execution-receipt tools (58 -> 67).
   // V7.7.7f adds cairnstone_code_session_console_view (67 -> 68).
   // V7.7.10b adds 10 access-grant/attachment/task-run/forward tools (76 -> 86; V7.7.10c +1 intent router -> 87; V7.7.10d +7 executor/task-run tools -> 94).
-  assert.equal(result.total, 96);
+  // V7.7.11i adds the safe read-only universal object inspector (96 -> 97).
+  assert.equal(result.total, 97);
 
   const health = result.tools.find(item => item.tool_id === "cairnstone_health");
   assert.equal(health.risk_class, "read");
@@ -146,6 +147,13 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
     assert.equal(mailboxRead.risk_class, "read");
     assert.equal(mailboxRead.authorization, "scoped_grant");
   }
+  const objectInspector = result.tools.find(item => item.tool_id === "cairnstone_object_inspect");
+  assert.ok(objectInspector);
+  assert.equal(objectInspector.risk_class, "read");
+  assert.equal(objectInspector.authorization, "automatic");
+  assert.equal(objectInspector.available, true);
+  assert.deepEqual(objectInspector.input_schema.required, ["object_ref"]);
+
   const mailboxPolicy = result.tools.find(item => item.tool_id === "cairnstone_mailbox_policy_preview");
   assert.ok(mailboxPolicy);
   assert.equal(mailboxPolicy.risk_class, "read");
