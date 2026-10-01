@@ -1,6 +1,6 @@
 # V7.7.11i — Stone Inspector + Universal Object Deep Links
 
-Status: IMPLEMENTATION SLICES 11i.0 + 11i.1 + 11i.2
+Status: IMPLEMENTATION SLICES 11i.0 + 11i.1 + 11i.2 + 11i.3
 
 ## Goal
 
@@ -74,8 +74,14 @@ The stable HTTPS route now renders a responsive, iframe-compatible inspector wit
 
 The Messages surface is deliberately access-bound in this slice: it explains the authenticated correspondence boundary but never hydrates private AC1/message content through the universal inspector. Full object-specific authenticated projections remain 11i.4.
 
-## Next slices
+## 11i.3 native MCP/App inspector
 
-- **11i.3** — native MCP/App card/modal/fullscreen projection.
+The existing read-only `cairnstone_object_inspect` tool now advertises one versioned MCP Apps resource at `ui://cairnstone/stone-inspector-v1.html`. This is intentionally attached to the existing inspector rather than creating a second render tool: non-UI clients retain the ordinary text result, while UI-capable hosts receive the same `cairnstone-object-inspector-v1` envelope as `structuredContent`.
+
+The hand-rolled MCP transport now advertises resource capability and supports `resources/list` and `resources/read`. The inspector resource is served as `text/html;profile=mcp-app`, initializes through the MCP Apps `ui/*` bridge, accepts `ui/notifications/tool-result`, and advertises inline/fullscreen presentation. The tool uses the standard `ui.resourceUri` metadata plus the OpenAI `openai/outputTemplate` compatibility alias.
+
+The native app remains a thin projection over CairnStone state: it performs no direct mutation, contains no capability bearer, renders stored values with DOM text primitives rather than HTML injection, and preserves the HTTPS inspector as fallback. Graph relationships still do not grant visibility and message-backed content remains behind authenticated object-specific surfaces.
+
+## Next slices
 - **11i.4** — authenticated object-specific related projections for messages, sessions, responses, task runs, receipts, and other typed objects.
 - **11i.5** — cross-host acceptance tests and deep-link parity.
