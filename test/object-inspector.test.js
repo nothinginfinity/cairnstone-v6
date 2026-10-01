@@ -3,10 +3,16 @@ import { test } from "node:test";
 import {
   OBJECT_INSPECTOR_SCHEMA,
   OBJECT_LINK_SCHEMA,
+  OBJECT_INSPECT_APP_MIME_TYPE,
+  OBJECT_INSPECT_APP_RESOURCE_URI,
+  OBJECT_INSPECT_TOOL_DEFINITION,
   objectInspectFromBody,
+  objectInspectorAppResourceRead,
   objectInspectorHtmlResponse,
+  renderObjectInspectorAppHtml,
   renderObjectInspectorHtml
 } from "../src/object-inspector.js";
+import { handleMcpRpc } from "../src/index.js";
 
 const A = "a".repeat(64);
 const B = "b".repeat(64);
@@ -208,4 +214,65 @@ test("V7.7.11i object links fail closed to HTTPS when public base override is in
   assert.equal(result.ok, true);
   assert.match(result.object_link.https_url, /^https:\/\/cairnstone-v6\.jaredtechfit\.workers\.dev\/inspect\?/);
   assert.equal(result.object_link.https_url.includes("insecure.example.test"), false);
+});
+
+test("V7.7.11i.3 inspector tool advertises one versioned MCP Apps resource", () => {
+  assert.equal(OBJECT_INSPECT_APP_RESOURCE_URI, "ui://cairnstone/stone-inspector-v1.html");
+  assert.equal(OBJECT_INSPECT_TOOL_DEFINITION._meta.ui.resourceUri, OBJECT_INSPECT_APP_RESOURCE_URI);
+  assert.deepEqual(OBJECT_INSPECT_TOOL_DEFINITION._meta.ui.visibility, ["model", "app"]);
+  assert.equal(OBJECT_INSPECT_TOOL_DEFINITION._meta["openai/outputTemplate"], OBJECT_INSPECT_APP_RESOURCE_URI);
+});
+
+test("V7.7.11i.3 resources/list + resources/read expose portable MCP Apps HTML", async () => {
+  const init = await handleMcpRpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }, {});
+  assert.deepEqual(init.result.capabilities.resources, {});
+
+  const listed = await handleMcpRpc({ jsonrpc: "2.0", id: 2, method: "resources/list", params: {} }, {});
+  assert.equal(listed.result.resources.length, 1);
+  assert.equal(listed.result.resources[0].uri, OBJECT_INSPECT_APP_RESOURCE_URI);
+  assert.equal(listed.result.resources[0].mimeType, OBJECT_INSPECT_APP_MIME_TYPE);
+
+  const read = await handleMcpRpc({ jsonrpc: "2.0", id: 3, method: "resources/read", params: { uri: OBJECT_INSPECT_APP_RESOURCE_URI } }, {});
+  assert.equal(read.result.contents.length, 1);
+  const resource = read.result.contents[0];
+  assert.equal(resource.uri, OBJECT_INSPECT_APP_RESOURCE_URI);
+  assert.equal(resource.mimeType, "text/html;profile=mcp-app");
+  assert.deepEqual(resource._meta["openai/ui"].availableDisplayModes, ["inline", "fullscreen"]);
+  assert.match(resource.text, /ui\/initialize/);
+  assert.match(resource.text, /ui\/notifications\/initialized/);
+  assert.match(resource.text, /ui\/notifications\/tool-result/);
+  assert.equal(resource.text.includes("innerHTML"), false);
+  assert.equal(resource.text.includes("Bearer "), false);
+});
+
+test("V7.7.11i.3 unknown MCP Apps resources fail closed", async () => {
+  const result = await handleMcpRpc({ jsonrpc: "2.0", id: 4, method: "resources/read", params: { uri: "ui://cairnstone/not-real.html" } }, {});
+  assert.equal(result.error.code, -32002);
+  assert.match(result.error.message, /Resource not found/);
+});
+
+test("V7.7.11i.3 object inspector tools/call returns structuredContent without losing text fallback", async () => {
+  const env = makeEnv();
+  const result = await handleMcpRpc({
+    jsonrpc: "2.0",
+    id: 5,
+    method: "tools/call",
+    params: { name: "cairnstone_object_inspect", arguments: { object_ref: "msg:private-message-id" } }
+  }, env);
+  assert.equal(result.result.structuredContent.ok, true);
+  assert.equal(result.result.structuredContent.object_ref, "msg:private-message-id");
+  assert.equal(result.result.structuredContent.inspection_status, "link_only");
+  assert.equal(result.result.content[0].type, "text");
+  assert.match(result.result.content[0].text, /cairnstone-object-inspector-v1/);
+});
+
+test("V7.7.11i.3 native resource helpers are deterministic and authority-free", () => {
+  const html = renderObjectInspectorAppHtml();
+  const first = objectInspectorAppResourceRead();
+  const second = objectInspectorAppResourceRead();
+  assert.equal(first.contents[0].text, html);
+  assert.deepEqual(first, second);
+  assert.match(html, /Rendering never moves HEADs/);
+  assert.match(html, /relationships into visibility/);
+  assert.match(html, /2025-11-21/);
 });
