@@ -544,7 +544,7 @@ test("broker registry: 10d tools + risk classes; not automatic-read", () => {
   const registry = toolRegistryFromBody({});
   // V7.7.11i adds one automatic-read universal object inspector (96 -> 97).
   assert.equal(registry.total, 97);
-  assert.equal(DEFAULT_TOOL_BROKER_REGISTRY.length, 96);
+  assert.equal(DEFAULT_TOOL_BROKER_REGISTRY.length, 97);
 
   const byId = Object.fromEntries(DEFAULT_TOOL_BROKER_REGISTRY.map(e => [e.tool_id, e]));
   assert.equal(byId[EXECUTOR_BROKER_TOOL_IDS.route].risk_class, "read");
