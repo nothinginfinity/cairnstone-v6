@@ -3,7 +3,9 @@ import { test } from "node:test";
 import {
   OBJECT_INSPECTOR_SCHEMA,
   OBJECT_LINK_SCHEMA,
-  objectInspectFromBody
+  objectInspectFromBody,
+  objectInspectorHtmlResponse,
+  renderObjectInspectorHtml
 } from "../src/object-inspector.js";
 
 const A = "a".repeat(64);
@@ -153,4 +155,57 @@ test("V7.7.11i historical Stone classification never infers authority from times
   assert.deepEqual(result.accepted_state.classification, ["HISTORICAL"]);
   assert.equal(result.accepted_state.accepted, false);
   assert.equal(result.accepted_state.timestamp_ordering_used, false);
+});
+
+test("V7.7.11i.2 HTTPS inspector renders mobile Summary/Graph/Source/Related/Messages safely", async () => {
+  const focal = makeStone(A, {
+    title: "<script>alert('x')</script>",
+    stone_json: JSON.stringify({ layers: { lod5: "Summary <img src=x onerror=alert(1)>" } })
+  });
+  const related = makeStone(B, { title: "Related <b>Stone</b>" });
+  const env = makeEnv({
+    chainHead: A,
+    pathHeads: { [`${focal.chain_hash}|${focal.path}`]: A },
+    stones: { [A]: focal, [B]: related },
+    edges: [{ from_hash: A, to_hash: B, edge_type: "references", note: "safe edge" }]
+  });
+  const result = await objectInspectFromBody({ object_ref: `stone:${A}` }, env);
+  const html = renderObjectInspectorHtml(result);
+  assert.match(html, /viewport-fit=cover/);
+  for (const section of ["Summary", "Graph", "Source", "Related", "Messages"]) assert.match(html, new RegExp(section));
+  assert.equal(html.includes("<script>alert('x')</script>"), false);
+  assert.equal(html.includes("<img src=x onerror=alert(1)>"), false);
+  assert.match(html, /&lt;script&gt;/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(html, /Bounded Stone relationship graph/);
+  assert.match(html, /JSON view/);
+});
+
+test("V7.7.11i.2 restricted HTTPS view never reveals correspondence-backed metadata", async () => {
+  const env = makeEnv({ correspondence: [A], stones: { [A]: makeStone(A, { title: "Private title must not render" }) } });
+  const result = await objectInspectFromBody({ object_ref: `stone:${A}` }, env);
+  const html = renderObjectInspectorHtml(result);
+  assert.match(html, /Restricted Stone/);
+  assert.match(html, /authenticated correspondence surface/);
+  assert.equal(html.includes("Private title must not render"), false);
+});
+
+test("V7.7.11i.2 HTML response is private/no-store and frame-compatible", async () => {
+  const result = await objectInspectFromBody({ object_ref: "msg:private-message-id" }, makeEnv());
+  const response = objectInspectorHtmlResponse(result);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /^text\/html/);
+  assert.equal(response.headers.get("cache-control"), "private, no-store");
+  assert.equal(response.headers.get("x-frame-options"), null);
+  assert.match(response.headers.get("content-security-policy"), /default-src 'none'/);
+  assert.match(await response.text(), /Universal object deep link/);
+});
+
+test("V7.7.11i object links fail closed to HTTPS when public base override is insecure", async () => {
+  const env = makeEnv();
+  env.CAIRNSTONE_PUBLIC_BASE_URL = "http://insecure.example.test";
+  const result = await objectInspectFromBody({ object_ref: "msg:private-message-id" }, env);
+  assert.equal(result.ok, true);
+  assert.match(result.object_link.https_url, /^https:\/\/cairnstone-v6\.jaredtechfit\.workers\.dev\/inspect\?/);
+  assert.equal(result.object_link.https_url.includes("insecure.example.test"), false);
 });
