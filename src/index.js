@@ -185,6 +185,9 @@ import {
 import {
   objectInspectFromBody,
   objectInspectorHtmlResponse,
+  objectInspectorAppResource,
+  objectInspectorAppResourceRead,
+  OBJECT_INSPECT_APP_RESOURCE_URI,
   OBJECT_INSPECT_TOOL_DEFINITION
 } from "./object-inspector.js";
 import {
@@ -1218,7 +1221,7 @@ async function handleMcp(request, env, url, options = {}) {
       protocol: "MCP JSON-RPC over HTTP",
       profile: auth ? "deferred_tool_vault_core_auth" : (core ? "deferred_tool_vault_core" : "legacy_full"),
       endpoint: `${url.origin}${endpointPath}`,
-      methods: ["initialize", "tools/list", "tools/call"],
+      methods: ["initialize", "tools/list", "tools/call", "resources/list", "resources/read"],
       tools: mcpToolsForProfile(core).map(tool => ({ name: tool.name, description: tool.description })),
       auth_required_for_protected_tools: auth === true,
       enforcement: auth ? resolveEnforcementMode(env) : undefined,
@@ -1407,7 +1410,10 @@ export async function handleMcpRpc(rpc, env, options = {}) {
       }
       return rpcResult(id, {
         protocolVersion: (typeof params.protocolVersion === "string" && params.protocolVersion) ? params.protocolVersion : MCP_PROTOCOL_VERSION,
-        capabilities: { tools: sessionEstablished ? { listChanged: true } : {} },
+        capabilities: {
+          tools: sessionEstablished ? { listChanged: true } : {},
+          resources: {}
+        },
         serverInfo: {
           name: auth ? "cairnstone-v6-core-auth" : (core ? "cairnstone-v6-core" : "cairnstone-v6"),
           version: VERSION
@@ -1421,6 +1427,16 @@ export async function handleMcpRpc(rpc, env, options = {}) {
     if (method === "tools/list") {
       const hydrated = await getSessionHydratedToolIds(env, core, sessionId);
       return rpcResult(id, { tools: mcpToolsForProfile(core, hydrated) });
+    }
+
+    if (method === "resources/list") {
+      return rpcResult(id, { resources: [objectInspectorAppResource()] });
+    }
+
+    if (method === "resources/read") {
+      const uri = requiredString(params.uri, "uri");
+      if (uri !== OBJECT_INSPECT_APP_RESOURCE_URI) return rpcError(id, -32002, `Resource not found: ${uri}`);
+      return rpcResult(id, objectInspectorAppResourceRead());
     }
 
     if (method === "tools/call") {
@@ -1458,10 +1474,12 @@ export async function handleMcpRpc(rpc, env, options = {}) {
         });
       }
       const output = await callMcpTool(name, args, env, { authContext });
-      return rpcResult(id, {
+      const toolResult = {
         content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
         isError: output && output.ok === false
-      });
+      };
+      if (name === "cairnstone_object_inspect") toolResult.structuredContent = output;
+      return rpcResult(id, toolResult);
     }
 
     return rpcError(id, -32601, `Method not found: ${method}`);
