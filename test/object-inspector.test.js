@@ -129,7 +129,7 @@ test("V7.7.11i related correspondence Stones are ref-safe redacted placeholders"
   const env = makeEnv({
     correspondence: [C],
     stones: { [A]: focal, [C]: privateRelated },
-    edges: [{ from_hash: C, to_hash: A, edge_type: "references", note: "relationship only" }]
+    edges: [{ from_hash: C, to_hash: A, edge_type: "references", note: "private edge annotation must not leak" }]
   });
   const result = await objectInspectFromBody({ object_ref: `stone:${A}` }, env);
   assert.equal(result.ok, true);
@@ -138,6 +138,9 @@ test("V7.7.11i related correspondence Stones are ref-safe redacted placeholders"
   assert.equal(result.related[0].restricted, true);
   assert.equal(Object.prototype.hasOwnProperty.call(result.related[0], "title"), false);
   assert.equal(JSON.stringify(result).includes("Private related title"), false);
+  assert.equal(JSON.stringify(result).includes("private edge annotation must not leak"), false);
+  assert.equal(result.edges.inbound[0].note, null);
+  assert.equal(result.edges.inbound[0].restricted_target, true);
   const relatedNode = result.graph.nodes.find(node => node.id === C);
   assert.equal(relatedNode.restricted, true);
   assert.equal(relatedNode.title, null);
