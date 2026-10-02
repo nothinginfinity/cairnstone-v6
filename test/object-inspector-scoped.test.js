@@ -262,3 +262,118 @@ test("V7.7.11i.4b object.inspect:self does not authorize non-correspondence fami
   assert.equal(result.inspection_status, "link_only");
   assert.equal(result.stone, undefined);
 });
+
+test("V7.7.11i.4c access grant hydrates only for grantor or principal", async () => {
+  const grantorCap = await mint(SENDER);
+  const strangerCap = await mint(STRANGER);
+  const grant = {
+    grant_id: "grant:demo-1",
+    object_ref: `stone:${STONE}`,
+    principal_actor_id: RECIPIENT,
+    permission: "read",
+    grantor_actor_id: SENDER,
+    created_at: "2026-10-01T04:00:00.000Z",
+    expires_at: null,
+    revoked_at: null,
+    status: "active"
+  };
+  function env() {
+    return {
+      ...SECRET_ENV,
+      CAIRNSTONE_PUBLIC_BASE_URL: "https://example.test",
+      CAIRNSTONE_DB: {
+        prepare(sql) {
+          let bound = [];
+          return {
+            bind(...args) { bound = args; return this; },
+            async first() {
+              if (sql.includes("FROM access_grants WHERE grant_id")) {
+                return bound[0] === grant.grant_id ? grant : null;
+              }
+              return null;
+            },
+            async all() { return { results: [] }; }
+          };
+        }
+      }
+    };
+  }
+  const allowed = await objectInspectScopedFromBody({
+    object_ref: "grant:demo-1",
+    principal_actor_id: SENDER,
+    mailbox_capability: grantorCap
+  }, env());
+  assert.equal(allowed.inspection_status, "hydrated");
+  assert.equal(allowed.access.basis, "access_grant_party");
+  assert.equal(allowed.access.identity_scope_authorizes_objects, false);
+  assert.equal(allowed.access_grant.viewer_role, "grantor");
+  assert.equal(allowed.access_grant.capability_disclosed, false);
+  const denied = await objectInspectScopedFromBody({
+    object_ref: "grant:demo-1",
+    principal_actor_id: STRANGER,
+    mailbox_capability: strangerCap
+  }, env());
+  assert.equal(denied.inspection_status, "link_only");
+  assert.equal(denied.access_grant, undefined);
+  assert.equal(JSON.stringify(denied).includes(RECIPIENT), false);
+  const automatic = await objectInspectFromBody({ object_ref: "grant:demo-1" }, env());
+  assert.equal(automatic.inspection_status, "link_only");
+  assert.equal(automatic.access_grant, undefined);
+});
+
+test("V7.7.11i.4c task run hydrates only for requester, assignee, or human commit", async () => {
+  const assigneeCap = await mint(RECIPIENT);
+  const strangerCap = await mint(STRANGER);
+  const task = {
+    task_run_id: "tr:demo-1",
+    status: "proposed",
+    requested_by: SENDER,
+    assignee_actor_id: RECIPIENT,
+    human_committed_by: null,
+    requested_intent: "ask-to-work",
+    created_at: "2026-10-01T05:00:00.000Z",
+    updated_at: "2026-10-01T05:00:00.000Z"
+  };
+  function env() {
+    return {
+      ...SECRET_ENV,
+      CAIRNSTONE_PUBLIC_BASE_URL: "https://example.test",
+      CAIRNSTONE_DB: {
+        prepare(sql) {
+          let bound = [];
+          return {
+            bind(...args) { bound = args; return this; },
+            async first() {
+              if (sql.includes("FROM task_runs WHERE task_run_id")) return bound[0] === task.task_run_id ? task : null;
+              return null;
+            },
+            async all() { return { results: [] }; }
+          };
+        }
+      }
+    };
+  }
+  const allowed = await objectInspectScopedFromBody({
+    object_ref: "tr:demo-1",
+    principal_actor_id: RECIPIENT,
+    mailbox_capability: assigneeCap
+  }, env());
+  assert.equal(allowed.access.basis, "task_run_party");
+  assert.equal(allowed.task_run.viewer_roles.includes("assignee"), true);
+  assert.equal(allowed.task_run.route_receipt_disclosed, false);
+  assert.equal(allowed.task_run.result_body_disclosed, false);
+  const denied = await objectInspectScopedFromBody({
+    object_ref: "tr:demo-1",
+    principal_actor_id: STRANGER,
+    mailbox_capability: strangerCap
+  }, env());
+  assert.equal(denied.inspection_status, "link_only");
+  assert.equal(JSON.stringify(denied).includes(SENDER), false);
+  const mailScope = await mint(RECIPIENT, ["mail.read:self"]);
+  const rejected = await objectInspectScopedFromBody({
+    object_ref: "tr:demo-1",
+    principal_actor_id: RECIPIENT,
+    mailbox_capability: mailScope
+  }, env());
+  assert.equal(rejected.ok, false);
+});

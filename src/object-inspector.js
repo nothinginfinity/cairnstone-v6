@@ -308,6 +308,7 @@ async function resolveInspectorViewer(body, env, options) {
       basis: "mailbox_capability",
       // Identity scope never authorizes an object family by itself.
       sender_projection: options.senderProjection === true,
+      family_acl: options.familyAcl === true,
       identity_scope_authorizes_objects: false
     }
   };
@@ -461,6 +462,118 @@ function bindingError(env) {
     : null;
 }
 
+
+function restrictedFamily(parsed, env, viewer, reason) {
+  return {
+    ok: true,
+    schema: OBJECT_INSPECTOR_SCHEMA,
+    object_ref: parsed.canonical_ref || parsed.object_ref,
+    kind: parsed.kind,
+    inspection_status: "link_only",
+    object_link: buildObjectLink(parsed, env),
+    hydration: { attempted: true, reason },
+    viewer: publicViewer(viewer),
+    policy: authorityPolicy(viewer)
+  };
+}
+
+async function inspectAccessGrant(db, parsed, viewer) {
+  try {
+    const row = await db.prepare(
+      `SELECT grant_id, object_ref, principal_actor_id, permission, grantor_actor_id,
+              created_at, expires_at, revoked_at, status
+         FROM access_grants WHERE grant_id = ?`
+    ).bind(parsed.grant_id).first();
+    if (!row) return { found: false };
+    const principal = viewer.principal_actor_id;
+    const isGrantor = row.grantor_actor_id === principal;
+    const isPrincipal = row.principal_actor_id === principal;
+    if (!isGrantor && !isPrincipal) return { found: true, authorized: false };
+    return {
+      found: true,
+      authorized: true,
+      projection: {
+        grant_id: row.grant_id,
+        object_ref: row.object_ref,
+        permission: row.permission,
+        status: row.status,
+        grantor_actor_id: row.grantor_actor_id,
+        principal_actor_id: row.principal_actor_id,
+        created_at: row.created_at || null,
+        expires_at: row.expires_at || null,
+        revoked_at: row.revoked_at || null,
+        viewer_role: isGrantor && isPrincipal ? "grantor_and_principal" : isGrantor ? "grantor" : "principal",
+        capability_disclosed: false,
+        notify_body_disclosed: false
+      }
+    };
+  } catch {
+    return { found: false, failed: true };
+  }
+}
+
+async function inspectTaskRun(db, parsed, viewer) {
+  try {
+    const row = await db.prepare(
+      `SELECT task_run_id, status, requested_by, assignee_actor_id, human_committed_by,
+              requested_intent, created_at, updated_at
+         FROM task_runs WHERE task_run_id = ?`
+    ).bind(parsed.task_run_id).first();
+    if (!row) return { found: false };
+    const principal = viewer.principal_actor_id;
+    const roles = [];
+    if (row.requested_by === principal) roles.push("requester");
+    if (row.assignee_actor_id === principal) roles.push("assignee");
+    if (row.human_committed_by === principal) roles.push("human_commit");
+    if (!roles.length) return { found: true, authorized: false };
+    return {
+      found: true,
+      authorized: true,
+      projection: {
+        task_run_id: row.task_run_id,
+        status: row.status,
+        requested_by: row.requested_by,
+        assignee_actor_id: row.assignee_actor_id || null,
+        human_committed_by: row.human_committed_by || null,
+        requested_intent: row.requested_intent || null,
+        created_at: row.created_at || null,
+        updated_at: row.updated_at || null,
+        viewer_roles: roles,
+        route_receipt_disclosed: false,
+        capability_disclosed: false,
+        result_body_disclosed: false
+      }
+    };
+  } catch {
+    return { found: false, failed: true };
+  }
+}
+
+function familyHydration(parsed, env, viewer, basis, projection, key) {
+  return {
+    ok: true,
+    schema: OBJECT_INSPECTOR_SCHEMA,
+    object_ref: parsed.canonical_ref || parsed.object_ref,
+    kind: parsed.kind,
+    inspection_status: "hydrated",
+    restricted: false,
+    access: {
+      basis,
+      principal_scoped: true,
+      identity_scope_authorizes_objects: false,
+      native_acl: true
+    },
+    [key]: projection,
+    object_link: buildObjectLink(parsed, env),
+    stone: null,
+    edges: null,
+    related: [],
+    graph: null,
+    viewer: publicViewer(viewer),
+    policy: authorityPolicy(viewer)
+  };
+}
+
 export async function objectInspectFromBody(body = {}, env = {}, options = {}) {
   const missingBinding = bindingError(env);
   if (missingBinding) return missingBinding;
@@ -523,6 +636,23 @@ export async function objectInspectFromBody(body = {}, env = {}, options = {}) {
         policy: authorityPolicy(viewer)
       };
     }
+  }
+
+  if (!hash && viewer?.family_acl === true && (parsed.kind === "access_grant" || parsed.kind === "task_run")) {
+    const inspected = parsed.kind === "access_grant"
+      ? await inspectAccessGrant(env.CAIRNSTONE_DB, parsed, viewer)
+      : await inspectTaskRun(env.CAIRNSTONE_DB, parsed, viewer);
+    if (inspected.authorized) {
+      return familyHydration(
+        parsed,
+        env,
+        viewer,
+        parsed.kind === "access_grant" ? "access_grant_party" : "task_run_party",
+        inspected.projection,
+        parsed.kind === "access_grant" ? "access_grant" : "task_run"
+      );
+    }
+    return restrictedFamily(parsed, env, viewer, inspected.failed ? "family_access_check_failed" : "object_family_not_visible_to_viewer");
   }
 
   if (!hash) {
@@ -892,7 +1022,8 @@ export function objectInspectScopedFromBody(body = {}, env = {}) {
   return objectInspectFromBody(body, env, {
     viewerAuth: true,
     requiredScope: OBJECT_INSPECT_SELF_SCOPE,
-    senderProjection: true
+    senderProjection: true,
+    familyAcl: true
   });
 }
 
