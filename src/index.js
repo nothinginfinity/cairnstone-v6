@@ -184,11 +184,13 @@ import {
 } from "./attachment-refs.js";
 import {
   objectInspectFromBody,
+  objectInspectScopedFromBody,
   objectInspectorHtmlResponse,
   objectInspectorAppResource,
   objectInspectorAppResourceRead,
   OBJECT_INSPECT_APP_RESOURCE_URI,
-  OBJECT_INSPECT_TOOL_DEFINITION
+  OBJECT_INSPECT_TOOL_DEFINITION,
+  OBJECT_INSPECT_SCOPED_TOOL_DEFINITION
 } from "./object-inspector.js";
 import {
   createAccessGrantFromBody,
@@ -1483,7 +1485,7 @@ export async function handleMcpRpc(rpc, env, options = {}) {
         content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
         isError: output && output.ok === false
       };
-      if (name === "cairnstone_object_inspect") toolResult.structuredContent = output;
+      if (name === "cairnstone_object_inspect" || name === "cairnstone_object_inspect_scoped") toolResult.structuredContent = output;
       return rpcResult(id, toolResult);
     }
 
@@ -1839,6 +1841,7 @@ async function callMcpTool(name, args, env, options = {}) {
   if (name === "cairnstone_conversation_session_append_turn") return appendConversationTurnFromBody(args, env);
   if (name === "cairnstone_attachment_ref_resolve") return resolveAttachmentRefsFromBody(args, env);
   if (name === "cairnstone_object_inspect") return objectInspectFromBody(args, env);
+  if (name === "cairnstone_object_inspect_scoped") return objectInspectScopedFromBody(args, env);
   if (name === "cairnstone_access_grant_create") {
     return createAccessGrantFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });
   }
@@ -2139,6 +2142,7 @@ function mcpTools() {
     ...CONVERSATION_SESSION_MCP_TOOL_DEFINITIONS,
     ...ATTACHMENT_REF_MCP_TOOL_DEFINITIONS,
     OBJECT_INSPECT_TOOL_DEFINITION,
+    OBJECT_INSPECT_SCOPED_TOOL_DEFINITION,
     ...ACCESS_GRANT_MCP_TOOL_DEFINITIONS,
     ...TASK_RUN_MCP_TOOL_DEFINITIONS,
     CONTEXT_RETENTION_PREVIEW_TOOL_DEFINITION,

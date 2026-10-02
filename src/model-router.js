@@ -44,7 +44,7 @@ import {
 import {
   ATTACHMENT_REF_RESOLVE_TOOL_DEFINITION
 } from "./attachment-refs.js";
-import { OBJECT_INSPECT_TOOL_DEFINITION } from "./object-inspector.js";
+import { OBJECT_INSPECT_TOOL_DEFINITION, OBJECT_INSPECT_SCOPED_TOOL_DEFINITION } from "./object-inspector.js";
 import {
   ACCESS_GRANT_CREATE_TOOL_DEFINITION,
   ACCESS_GRANT_GET_TOOL_DEFINITION,
@@ -1741,6 +1741,18 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     available: true,
     description: "V7.7.11i: read-only universal object links + safe Stone inspector; correspondence fails closed; relationships never grant visibility.",
     input_schema: OBJECT_INSPECT_TOOL_DEFINITION.inputSchema
+  }),
+  // V7.7.11i.4b scoped inspector. Identity scope object.inspect:self does not
+  // authorize object families; object ACLs stay on the inspector path.
+  Object.freeze({
+    tool_id: "cairnstone_object_inspect_scoped",
+    connector: "cairnstone",
+    handler: "cairnstone_object_inspect_scoped",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.11i.4b: authenticated object inspector. object.inspect:self is identity only; correspondence sender projection omits recipients, delivery state, and body.",
+    input_schema: OBJECT_INSPECT_SCOPED_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
     tool_id: "cairnstone_access_grant_create",

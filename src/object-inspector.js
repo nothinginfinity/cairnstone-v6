@@ -21,6 +21,8 @@ export const OBJECT_INSPECT_TOOL_ID = "cairnstone_object_inspect";
 export const OBJECT_INSPECT_APP_RESOURCE_URI = "ui://cairnstone/stone-inspector-v1.html";
 export const OBJECT_INSPECT_APP_MIME_TYPE = "text/html;profile=mcp-app";
 export const INSPECTOR_VIEWER_SCOPE = "mail.read:self";
+export const OBJECT_INSPECT_SELF_SCOPE = "object.inspect:self";
+export const OBJECT_INSPECT_SCOPED_TOOL_ID = "cairnstone_object_inspect_scoped";
 const ACTOR_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}:[a-z0-9][a-z0-9._-]{0,127}$/i;
 
 const DEFAULT_PUBLIC_BASE_URL = "https://cairnstone-v6.jaredtechfit.workers.dev";
@@ -157,12 +159,31 @@ async function principalIsCorrespondenceRecipient(db, hash, principal) {
   }
 }
 
+// Sender identity is object-specific (a delivery row whose sender_id is the
+// viewer). It never authorizes other objects and never exposes recipients.
+async function principalIsCorrespondenceSender(db, hash, principal) {
+  if (!principal) return false;
+  try {
+    const row = await db.prepare(
+      "SELECT stone_hash FROM correspondence_deliveries WHERE stone_hash = ? AND sender_id = ? LIMIT 1"
+    ).bind(hash, principal).first();
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
 async function visibilityForViewer(db, hash, viewer) {
   const restriction = await correspondenceRestriction(db, hash);
   if (!restriction.restricted) return { ...restriction, basis: "non_correspondence_stone" };
   if (restriction.reason === "correspondence_access_check_failed") return restriction;
   if (viewer?.authenticated && await principalIsCorrespondenceRecipient(db, hash, viewer.principal_actor_id)) {
     return { restricted: false, reason: null, basis: "correspondence_recipient" };
+  }
+  // Sender projection is opt-in on the scoped inspector only. object.inspect:self
+  // establishes who is viewing; it does not itself authorize the object.
+  if (viewer?.sender_projection === true && viewer?.authenticated && await principalIsCorrespondenceSender(db, hash, viewer.principal_actor_id)) {
+    return { restricted: false, reason: null, basis: "correspondence_sender" };
   }
   return restriction;
 }
@@ -194,7 +215,28 @@ async function correspondenceProjection(db, hash, principal) {
   }
 }
 
-async function resolveMessageForPrincipal(db, messageId, principal) {
+
+async function senderProjection(db, hash, principal) {
+  try {
+    const row = await db.prepare(
+      "SELECT message_id, thread_id, sender_id, created_at FROM correspondence_deliveries WHERE stone_hash = ? AND sender_id = ? ORDER BY created_at ASC LIMIT 1"
+    ).bind(hash, principal).first();
+    if (!row) return null;
+    return {
+      message_id: row.message_id || null,
+      thread_id: row.thread_id || null,
+      sender_id: row.sender_id || null,
+      created_at: row.created_at || null,
+      recipient_list_disclosed: false,
+      delivery_state_disclosed: false,
+      message_body_disclosed: false
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveMessageForPrincipal(db, messageId, principal, viewer = null) {
   try {
     const rows = await db.prepare(
       "SELECT DISTINCT stone_hash FROM correspondence_deliveries WHERE recipient_id = ? AND message_id = ? LIMIT 2"
@@ -202,6 +244,14 @@ async function resolveMessageForPrincipal(db, messageId, principal) {
     const hashes = (rows?.results || []).map(row => row.stone_hash).filter(Boolean);
     if (hashes.length === 1) return { status: "unique", stone_hash: hashes[0] };
     if (hashes.length > 1) return { status: "ambiguous" };
+    if (viewer?.sender_projection === true) {
+      const sent = await db.prepare(
+        "SELECT DISTINCT stone_hash FROM correspondence_deliveries WHERE sender_id = ? AND message_id = ? LIMIT 2"
+      ).bind(principal, messageId).all();
+      const sentHashes = (sent?.results || []).map(row => row.stone_hash).filter(Boolean);
+      if (sentHashes.length === 1) return { status: "unique", stone_hash: sentHashes[0], basis: "correspondence_sender" };
+      if (sentHashes.length > 1) return { status: "ambiguous" };
+    }
     return { status: "none" };
   } catch {
     return { status: "none" };
@@ -241,20 +291,24 @@ async function resolveInspectorViewer(body, env, options) {
   if (!ACTOR_ID_RE.test(principal)) return { ok: false, response: viewerFailure("invalid_principal_actor_id") };
   let verified;
   try {
-    verified = await verifyMailboxCapability(body.mailbox_capability.trim(), principal, [INSPECTOR_VIEWER_SCOPE], env);
+    verified = await verifyMailboxCapability(body.mailbox_capability.trim(), principal, [options.requiredScope || INSPECTOR_VIEWER_SCOPE], env);
   } catch {
     return { ok: false, response: viewerFailure("mailbox_capability_verification_failed") };
   }
   if (!verified?.ok) {
     return { ok: false, response: viewerFailure(String(verified?.error || "mailbox_capability_rejected").slice(0, 96)) };
   }
+  const scope = options.requiredScope || INSPECTOR_VIEWER_SCOPE;
   return {
     ok: true,
     viewer: {
       authenticated: true,
       principal_actor_id: verified.principal_actor_id,
-      scope: INSPECTOR_VIEWER_SCOPE,
-      basis: "mailbox_capability"
+      scope,
+      basis: "mailbox_capability",
+      // Identity scope never authorizes an object family by itself.
+      sender_projection: options.senderProjection === true,
+      identity_scope_authorizes_objects: false
     }
   };
 }
@@ -349,7 +403,15 @@ async function relatedCard(db, hash, viewer = null) {
     return { object_ref: `stone:${hash}`, hash, found: false, restricted: false };
   }
   const card = { ...compactStoneRow(row), found: true, restricted: false };
-  if (visibility.basis === "correspondence_recipient") card.access_basis = visibility.basis;
+  if (visibility.basis === "correspondence_sender") {
+    delete card.lod5;
+    card.access_basis = visibility.basis;
+    card.message_body_disclosed = false;
+    card.recipient_list_disclosed = false;
+    card.delivery_state_disclosed = false;
+  } else if (visibility.basis === "correspondence_recipient") {
+    card.access_basis = visibility.basis;
+  }
   return card;
 }
 
@@ -439,9 +501,12 @@ export async function objectInspectFromBody(body = {}, env = {}, options = {}) {
     if (await principalIsCorrespondenceRecipient(env.CAIRNSTONE_DB, parsed.stone_hash, viewer.principal_actor_id)) {
       hash = parsed.stone_hash;
       resolvedFrom = "ac1";
+    } else if (viewer.sender_projection === true && await principalIsCorrespondenceSender(env.CAIRNSTONE_DB, parsed.stone_hash, viewer.principal_actor_id)) {
+      hash = parsed.stone_hash;
+      resolvedFrom = "ac1";
     }
   } else if (parsed.kind === "msg" && viewer?.authenticated) {
-    const resolved = await resolveMessageForPrincipal(env.CAIRNSTONE_DB, parsed.message_id, viewer.principal_actor_id);
+    const resolved = await resolveMessageForPrincipal(env.CAIRNSTONE_DB, parsed.message_id, viewer.principal_actor_id, viewer);
     if (resolved.status === "unique") {
       hash = resolved.stone_hash;
       resolvedFrom = "msg";
@@ -514,7 +579,9 @@ export async function objectInspectFromBody(body = {}, env = {}, options = {}) {
     };
   }
 
+  const senderView = visibility.basis === "correspondence_sender";
   const stone = compactStoneRow(row);
+  if (senderView) delete stone.lod5;
   const [acceptedState, edges] = await Promise.all([
     acceptedStateForStone(env.CAIRNSTONE_DB, row),
     edgeNeighborhood(env.CAIRNSTONE_DB, hash, edgeLimit)
@@ -531,7 +598,9 @@ export async function objectInspectFromBody(body = {}, env = {}, options = {}) {
   const objectLink = buildObjectLink(parsed, env, { title: stone.title });
   const correspondence = visibility.basis === "correspondence_recipient"
     ? await correspondenceProjection(env.CAIRNSTONE_DB, hash, viewer.principal_actor_id)
-    : null;
+    : senderView
+      ? await senderProjection(env.CAIRNSTONE_DB, hash, viewer.principal_actor_id)
+      : null;
 
   return {
     ok: true,
@@ -541,7 +610,11 @@ export async function objectInspectFromBody(body = {}, env = {}, options = {}) {
     ...(resolvedFrom ? { resolved_object_ref: `stone:${hash}`, resolved_from: resolvedFrom } : {}),
     inspection_status: "hydrated",
     restricted: false,
-    access: { basis: visibility.basis, principal_scoped: visibility.basis === "correspondence_recipient" },
+    access: {
+      basis: visibility.basis,
+      principal_scoped: visibility.basis === "correspondence_recipient" || visibility.basis === "correspondence_sender",
+      identity_scope_authorizes_objects: false
+    },
     ...(correspondence ? { correspondence } : {}),
     object_link: objectLink,
     stone,
@@ -788,6 +861,42 @@ export function objectInspectorAppResourceRead() {
   };
 }
 
+export const OBJECT_INSPECT_SCOPED_TOOL_DEFINITION = Object.freeze({
+  name: OBJECT_INSPECT_SCOPED_TOOL_ID,
+  title: "Inspect CairnStone object (scoped)",
+  description: "V7.7.11i.4b: authenticated read-only inspector. object.inspect:self establishes viewer identity only and does not authorize object families. Correspondence recipients see their own delivery metadata; senders see a sent-object projection with no recipient list, delivery/read state, or body. Everyone else gets the anonymous restricted envelope. Relationships never grant visibility. Never advances delivery state or HEADs.",
+  inputSchema: {
+    type: "object",
+    required: ["object_ref", "principal_actor_id", "mailbox_capability"],
+    properties: {
+      object_ref: { type: "string", description: "Existing V7.7.10b typed object_ref." },
+      principal_actor_id: { type: "string", description: "Viewer actor id. Must match the mailbox capability principal." },
+      mailbox_capability: { type: "string", description: "Signed mailbox capability with scope object.inspect:self. Identity only." },
+      edge_limit: { type: "integer", minimum: 1, maximum: MAX_EDGE_LIMIT },
+      related_limit: { type: "integer", minimum: 1, maximum: MAX_RELATED_LIMIT }
+    },
+    additionalProperties: false
+  },
+  _meta: {
+    ui: {
+      resourceUri: OBJECT_INSPECT_APP_RESOURCE_URI,
+      visibility: ["model", "app"]
+    },
+    "openai/outputTemplate": OBJECT_INSPECT_APP_RESOURCE_URI,
+    authorization: "scoped_grant",
+    scope: OBJECT_INSPECT_SELF_SCOPE
+  }
+});
+
+export function objectInspectScopedFromBody(body = {}, env = {}) {
+  return objectInspectFromBody(body, env, {
+    viewerAuth: true,
+    requiredScope: OBJECT_INSPECT_SELF_SCOPE,
+    senderProjection: true
+  });
+}
+
 export const OBJECT_INSPECT_MCP_TOOL_DEFINITIONS = Object.freeze([
-  OBJECT_INSPECT_TOOL_DEFINITION
+  OBJECT_INSPECT_TOOL_DEFINITION,
+  OBJECT_INSPECT_SCOPED_TOOL_DEFINITION
 ]);

@@ -31,7 +31,8 @@ const MAILBOX_CAPABILITY_DEFAULT_TTL_SECONDS = 900;
 const MAILBOX_CAPABILITY_SCOPES = Object.freeze(new Set([
   "mail.read:self",
   "mail.reply:self",
-  "task.consume:self"
+  "task.consume:self",
+  "object.inspect:self"
 ]));
 
 function isObject(value) {
