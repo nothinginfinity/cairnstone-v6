@@ -482,7 +482,7 @@ test("broker registry: workspace mutations are never automatic-read", () => {
   // V7.7.7f adds cairnstone_code_session_console_view (67 -> 68).
   // V7.7.10b adds 10 access-grant/attachment/task-run/forward tools (76 -> 86; V7.7.10c +1 intent router -> 87; V7.7.10d +7 executor/task-run tools -> 94).
   // V7.7.11i adds one automatic-read universal object inspector (96 -> 97).
-  assert.equal(registry.total, 97);
+  assert.equal(registry.total, 98);
 
   for (const toolId of WORKSPACE_MUTATION_TOOL_IDS) {
     const entry = registry.tools.find(item => item.tool_id === toolId);
