@@ -114,8 +114,8 @@ test("V7.3.0 tool registry is normalized operational configuration with zero exe
   // V7.7.7e adds nine environment/sandbox/execution-receipt tools (58 -> 67).
   // V7.7.7f adds cairnstone_code_session_console_view (67 -> 68).
   // V7.7.10b adds 10 access-grant/attachment/task-run/forward tools (76 -> 86; V7.7.10c +1 intent router -> 87; V7.7.10d +7 executor/task-run tools -> 94).
-  // V7.7.11i adds the safe read-only universal object inspector (96 -> 97).
-  assert.equal(result.total, 97);
+  // V7.7.11i.4b adds the scoped object inspector (97 -> 98).
+  assert.equal(result.total, 98);
 
   const health = result.tools.find(item => item.tool_id === "cairnstone_health");
   assert.equal(health.risk_class, "read");
