@@ -946,6 +946,7 @@ Later family slices extend that surface safely:
 - `V7.7.11e` — Guided Mode / Conversational Cursor + Simple Stone workflows over stable semantic UI targets;
 - `V7.7.11f` — Simple Stone Library / portability;
 - `V7.7.11g` — **Safe Adaptive UI / Surface Composer**: bounded component/action catalog, declarative validated surface specs, deterministic-first composition, and optional V7.7.10h/Jev advisory selection among application-supplied UI candidates.
+- `V7.7.11j` — **Semantic Firewall / Stone-Addressed Social Layer**: public networks carry compact typed Stone/object addresses while CairnStone provides policy-bound semantic resolution, authenticated access, provenance, and permitted graph context. Hash opacity is explicitly not encryption; the first pilot is a Stone-only X feed, with publishing governed separately by V7.7.10k.
 
 11g is inspired by `vercel-labs/json-render` at immutable upstream commit `3ad381881194e7011ad3ccd6d668033495a06c29`, preserved under CairnStone reference chain `reference:vercel-labs/json-render`. CairnStone adapts the catalog/spec/renderer/validation/action-separation pattern; it does not make json-render or Jev a correctness dependency. The stable V7.7.9 shell and Human Commit / Authorize boundary remain outside adaptive model control.
 
@@ -953,7 +954,8 @@ Canonical detailed plans:
 
 - `docs/V7_7_11_MOBILE_HOME_SURFACE.md`
 - `docs/V7_7_11E_GUIDED_MODE_SIMPLE_STONES.md`
-- `docs/V7_7_11G_SAFE_ADAPTIVE_UI_SURFACE.md`.
+- `docs/V7_7_11G_SAFE_ADAPTIVE_UI_SURFACE.md`
+- `docs/V7_7_11J_SEMANTIC_FIREWALL_STONE_ADDRESSED_SOCIAL_LAYER.md`.
 
 ---
 
