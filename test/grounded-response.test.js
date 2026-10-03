@@ -542,7 +542,7 @@ test("V7.7.8 broker: grounded-response tools remain automatic reads; registry 96
   const registry = await toolRegistryFromBody({}, {});
   assert.equal(registry.ok, true);
   // V7.7.8a/b added create/get/expand; V7.7.10b adds 10 access-grant/attachment/task-run/forward tools (76 -> 86; V7.7.10c +1 intent router -> 87; V7.7.10d +7 executor/task-run tools -> 94).
-  assert.equal(registry.total, 96);
+  assert.equal(registry.total, 100); // V7.7.10j TurnSync +4
 
   for (const toolId of [
     "cairnstone_grounded_response",
