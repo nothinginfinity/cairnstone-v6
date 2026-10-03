@@ -573,7 +573,7 @@ test("access/task/forward/attachment tools are MCP+broker scoped and never autom
 
   const registry = toolRegistryFromBody({}, { registry: DEFAULT_TOOL_BROKER_REGISTRY });
   assert.equal(registry.ok, true);
-  assert.equal(registry.total, 96);
+  assert.equal(registry.total, 100); // V7.7.10j TurnSync +4
   const byId = new Map(registry.tools.map(tool => [tool.tool_id, tool]));
   for (const id of [...ACCESS_GRANT_MUTATION_TOOL_IDS, ...TASK_RUN_MUTATION_TOOL_IDS, ...Object.values(FORWARD_NOTE_BROKER_TOOL_IDS)]) {
     assert.equal(byId.get(id).risk_class, "mutation");

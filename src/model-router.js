@@ -42,6 +42,16 @@ import {
   CONVERSATION_SESSION_APPEND_TURN_TOOL_DEFINITION
 } from "./conversation-session.js";
 import {
+  UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION
+} from "./unified-conversations.js";
+import {
+  TURNSYNC_APPEND_MCP_TOOL_DEFINITION
+} from "./turnsync-ingest.js";
+import {
+  TURNSYNC_POLICY_GET_TOOL_DEFINITION,
+  TURNSYNC_POLICY_SET_TOOL_DEFINITION
+} from "./turnsync-policy.js";
+import {
   ATTACHMENT_REF_RESOLVE_TOOL_DEFINITION
 } from "./attachment-refs.js";
 import {
@@ -1695,6 +1705,46 @@ export const DEFAULT_TOOL_BROKER_REGISTRY = Object.freeze([
     available: true,
     description: "V7.7.10a: list Conversation Sessions visible to an actor; never moves HEADs.",
     input_schema: CONVERSATION_SESSION_LIST_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_unified_conversations",
+    connector: "cairnstone",
+    handler: "cairnstone_unified_conversations",
+    risk_class: "read",
+    authorization: "automatic",
+    available: true,
+    description: "V7.7.10j: authenticated account-scoped Unified Conversations aggregate; server-derived identities only; filters narrow only; legacy unauthenticated calls fail closed.",
+    input_schema: UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_turnsync_append",
+    connector: "cairnstone",
+    handler: "cairnstone_turnsync_append",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10j: authenticated replay-safe end-of-turn append bridge; connection-bound actor identity; enforces standing TurnSync policy before any new durable append.",
+    input_schema: TURNSYNC_APPEND_MCP_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_turnsync_policy_get",
+    connector: "cairnstone",
+    handler: "cairnstone_turnsync_policy_get",
+    risk_class: "read",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10j: authenticated account-owned TurnSync policy read with workspace/chain/account precedence; not automatic model-readable state.",
+    input_schema: TURNSYNC_POLICY_GET_TOOL_DEFINITION.inputSchema
+  }),
+  Object.freeze({
+    tool_id: "cairnstone_turnsync_policy_set",
+    connector: "cairnstone",
+    handler: "cairnstone_turnsync_policy_set",
+    risk_class: "mutation",
+    authorization: "scoped_grant",
+    available: true,
+    description: "V7.7.10j: human-confirmed CAS mutation of account-owned standing TurnSync policy; never accepted project authority.",
+    input_schema: TURNSYNC_POLICY_SET_TOOL_DEFINITION.inputSchema
   }),
   Object.freeze({
     tool_id: "cairnstone_conversation_session_update",

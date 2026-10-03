@@ -179,6 +179,20 @@ import {
   CONVERSATION_SESSION_MCP_TOOL_DEFINITIONS
 } from "./conversation-session.js";
 import {
+  unifiedConversationsFromBody,
+  UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION
+} from "./unified-conversations.js";
+import {
+  turnSyncAppendFromBody,
+  TURNSYNC_APPEND_MCP_TOOL_DEFINITION
+} from "./turnsync-ingest.js";
+import {
+  turnSyncPolicyGetFromBody,
+  turnSyncPolicySetFromBody,
+  TURNSYNC_POLICY_GET_TOOL_DEFINITION,
+  TURNSYNC_POLICY_SET_TOOL_DEFINITION
+} from "./turnsync-policy.js";
+import {
   resolveAttachmentRefsFromBody,
   ATTACHMENT_REF_MCP_TOOL_DEFINITIONS
 } from "./attachment-refs.js";
@@ -296,6 +310,18 @@ const CORE_TOOL_NAMES = Object.freeze(new Set([
   // the /mcp/core boot surface (portable regardless of client support); see
   // src/mcp-session.js for the session-state and eligibility rules.
   "cairnstone_load_tools"
+]));
+
+// V7.7.10j: authenticated Core adds only the account-bound conversation
+// surfaces that require CORE_AUTH_CONTEXT. Legacy /mcp/core stays at the
+// original bounded boot profile; these direct mutation/settings tools are not
+// added to generic native hydration or to unauthenticated Core.
+const AUTH_CORE_TOOL_NAMES = Object.freeze(new Set([
+  ...CORE_TOOL_NAMES,
+  "cairnstone_unified_conversations",
+  "cairnstone_turnsync_append",
+  "cairnstone_turnsync_policy_get",
+  "cairnstone_turnsync_policy_set"
 ]));
 
 export default {
@@ -1404,7 +1430,11 @@ export async function handleMcpRpc(rpc, env, options = {}) {
 
     if (method === "tools/list") {
       const hydrated = await getSessionHydratedToolIds(env, core, sessionId);
-      return rpcResult(id, { tools: mcpToolsForProfile(core, hydrated) });
+      const listed = mcpToolsForProfile(core, hydrated);
+      if (!core || !auth) return rpcResult(id, { tools: listed });
+      const listedNames = new Set(listed.map(tool => tool.name));
+      const authAdditions = mcpTools().filter(tool => AUTH_CORE_TOOL_NAMES.has(tool.name) && !listedNames.has(tool.name));
+      return rpcResult(id, { tools: [...listed, ...authAdditions] });
     }
 
     if (method === "tools/call") {
@@ -1426,7 +1456,8 @@ export async function handleMcpRpc(rpc, env, options = {}) {
       }
 
       const hydrated = await getSessionHydratedToolIds(env, core, sessionId);
-      if (core && !CORE_TOOL_NAMES.has(name) && !hydrated.has(name)) {
+      const nativeProfileNames = auth ? AUTH_CORE_TOOL_NAMES : CORE_TOOL_NAMES;
+      if (core && !nativeProfileNames.has(name) && !hydrated.has(name)) {
         // V7.6.2a/b bounded profile: policy-equivalent, honest denial rather
         // than a silent/ambiguous failure. The full catalog is still
         // reachable generically from this same core surface.
@@ -1434,7 +1465,9 @@ export async function handleMcpRpc(rpc, env, options = {}) {
           ok: false,
           error: "tool_not_in_core_profile",
           name,
-          hint: "Not in the /mcp/core boot surface or this session's hydrated set. Use cairnstone_tool_search + cairnstone_get_tool_contract + cairnstone_tool_policy_preview + cairnstone_tool_execute from /mcp/core to reach it generically, call cairnstone_load_tools to natively hydrate an eligible read+automatic tool for this session, or call the full /mcp surface directly."
+          hint: auth
+            ? "Not in the authenticated Core native profile or this session's hydrated set. Use the bounded Core discovery/broker path for other tools."
+            : "Not in the /mcp/core boot surface or this session's hydrated set. Use cairnstone_tool_search + cairnstone_get_tool_contract + cairnstone_tool_policy_preview + cairnstone_tool_execute from /mcp/core to reach it generically, call cairnstone_load_tools to natively hydrate an eligible read+automatic tool for this session, or call the full /mcp surface directly."
         };
         return rpcResult(id, {
           content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
@@ -1796,6 +1829,14 @@ async function callMcpTool(name, args, env, options = {}) {
   if (name === "cairnstone_conversation_session_create") return createConversationSessionFromBody(args, env);
   if (name === "cairnstone_conversation_session_get") return getConversationSessionFromBody(args, env);
   if (name === "cairnstone_conversation_session_list") return listConversationSessionsFromBody(args, env);
+  if (name === "cairnstone_unified_conversations") return unifiedConversationsFromBody(args, env, {
+    listThreads: (body, runtimeEnv) => listThreadsFromBody(body, runtimeEnv, {
+      createStone: stoneBody => createStoneFromBody(stoneBody, runtimeEnv)
+    })
+  });
+  if (name === "cairnstone_turnsync_append") return turnSyncAppendFromBody(args, env);
+  if (name === "cairnstone_turnsync_policy_get") return turnSyncPolicyGetFromBody(args, env);
+  if (name === "cairnstone_turnsync_policy_set") return turnSyncPolicySetFromBody(args, env);
   if (name === "cairnstone_conversation_session_update") return updateConversationSessionFromBody(args, env);
   if (name === "cairnstone_conversation_session_append_turn") return appendConversationTurnFromBody(args, env);
   if (name === "cairnstone_attachment_ref_resolve") return resolveAttachmentRefsFromBody(args, env);
@@ -2097,6 +2138,10 @@ function mcpTools() {
     ...CODE_SESSION_CONSOLE_MCP_TOOL_DEFINITIONS,
     ...GROUNDED_RESPONSE_MCP_TOOL_DEFINITIONS,
     ...CONVERSATION_SESSION_MCP_TOOL_DEFINITIONS,
+    UNIFIED_CONVERSATIONS_MCP_TOOL_DEFINITION,
+    TURNSYNC_APPEND_MCP_TOOL_DEFINITION,
+    TURNSYNC_POLICY_GET_TOOL_DEFINITION,
+    TURNSYNC_POLICY_SET_TOOL_DEFINITION,
     ...ATTACHMENT_REF_MCP_TOOL_DEFINITIONS,
     ...ACCESS_GRANT_MCP_TOOL_DEFINITIONS,
     ...TASK_RUN_MCP_TOOL_DEFINITIONS,
