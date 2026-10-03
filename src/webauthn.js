@@ -185,12 +185,70 @@ export async function importEs256PublicKey(jwk) {
   );
 }
 
+const ES256_COMPONENT_BYTES = 32;
+
+function readDerLength(bytes, offset) {
+  if (offset >= bytes.length) throw new Error("signature_der_length_invalid");
+  const first = bytes[offset];
+  if ((first & 0x80) === 0) return { length: first, next: offset + 1 };
+  const count = first & 0x7f;
+  if (count !== 1 || offset + 1 >= bytes.length) throw new Error("signature_der_length_invalid");
+  return { length: bytes[offset + 1], next: offset + 2 };
+}
+
+function readDerInteger(bytes, offset) {
+  if (offset >= bytes.length || bytes[offset] !== 0x02) throw new Error("signature_der_integer_invalid");
+  const length = readDerLength(bytes, offset + 1);
+  if (length.length === 0) throw new Error("signature_der_integer_invalid");
+  const start = length.next;
+  const end = start + length.length;
+  if (end > bytes.length) throw new Error("signature_der_integer_invalid");
+  let value = bytes.subarray(start, end);
+  if (value[0] === 0x00) {
+    if (value.length < 2 || (value[1] & 0x80) === 0) throw new Error("signature_der_integer_invalid");
+    value = value.subarray(1);
+  } else if ((value[0] & 0x80) !== 0) {
+    throw new Error("signature_der_integer_invalid");
+  }
+  if (value.length === 0 || value.length > ES256_COMPONENT_BYTES) throw new Error("signature_der_integer_oversize");
+  if (value.every(byte => byte === 0)) throw new Error("signature_der_integer_invalid");
+  const padded = new Uint8Array(ES256_COMPONENT_BYTES);
+  padded.set(value, ES256_COMPONENT_BYTES - value.length);
+  return { bytes: padded, next: end };
+}
+
+// WebAuthn ES256 assertion signatures are ASN.1 DER Ecdsa-Sig-Value.
+// WebCrypto ECDSA verification expects IEEE P1363 r||s. A 64-byte input is
+// already that raw form (used by crypto.subtle.sign); every other form must
+// be strict DER or it fails closed.
+export function es256SignatureToP1363(signature) {
+  if (!(signature instanceof Uint8Array) || signature.length === 0) {
+    throw new Error("signature_form_unsupported");
+  }
+  if (signature.length === ES256_COMPONENT_BYTES * 2) return signature;
+  if (signature[0] !== 0x30) throw new Error("signature_form_unsupported");
+  const sequence = readDerLength(signature, 1);
+  if (sequence.next + sequence.length !== signature.length) throw new Error("signature_der_length_invalid");
+  const r = readDerInteger(signature, sequence.next);
+  const s = readDerInteger(signature, r.next);
+  if (s.next !== signature.length) throw new Error("signature_der_trailing");
+  const raw = new Uint8Array(ES256_COMPONENT_BYTES * 2);
+  raw.set(r.bytes, 0);
+  raw.set(s.bytes, ES256_COMPONENT_BYTES);
+  return raw;
+}
+
 export async function verifyEs256Signature(publicKey, signature, data) {
-  // WebAuthn signatures are IEEE P1363 (r||s). Web Crypto ECDSA expects that form.
+  let raw;
+  try {
+    raw = es256SignatureToP1363(signature);
+  } catch {
+    return false;
+  }
   return crypto.subtle.verify(
     { name: "ECDSA", hash: "SHA-256" },
     publicKey,
-    signature,
+    raw,
     data
   );
 }
