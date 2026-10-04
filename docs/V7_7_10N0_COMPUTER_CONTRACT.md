@@ -37,6 +37,8 @@ From `running`:
 
 `runtime_destroyed` destroys the active runtime only. The logical computer remains and restores from `last_successful_generation`.
 
+An explicitly selected home generation must be a known positive generation and must not be later than `last_successful_generation`. Selecting a prior generation is allowed only when that generation is known and strictly earlier. Future or invalid generations fail closed as `restore_failed`.
+
 `restore_failed` leaves the computer stopped against the last known-good generation. An empty home must never be mounted as success.
 
 ## Class H durability

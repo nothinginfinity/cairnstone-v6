@@ -17,8 +17,8 @@
       "required": ["status", "generation", "last_successful_generation"],
       "properties": {
         "status": { "enum": ["clean", "dirty", "checkpointing", "checkpoint_failed"] },
-        "generation": { "type": "integer", "minimum": 0 },
-        "last_successful_generation": { "type": "integer", "minimum": 0 }
+        "generation": { "type": "integer", "minimum": 1 },
+        "last_successful_generation": { "type": "integer", "minimum": 1 }
       }
     }
   }

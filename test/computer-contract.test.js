@@ -28,6 +28,19 @@ test("computer_id is provider-neutral and not a runtime alias", () => {
   assert.equal(alias.ok, false);
 });
 
+test("computer_id owner segment must match owner_account_id", () => {
+  const ok = assertContractEnvelope(base);
+  assert.equal(ok.ok, true);
+
+  const mismatched = assertContractEnvelope({
+    ...base,
+    computer_id: "pc:other_owner:abc123def4567890",
+    owner_account_id: "acct_owner1",
+  });
+  assert.equal(mismatched.ok, false);
+  assert.ok(mismatched.errors.includes("owner_mismatch"));
+});
+
 test("accepted_state_authority must stay false", () => {
   const result = assertContractEnvelope({ ...base, accepted_state_authority: true });
   assert.equal(result.ok, false);
@@ -60,6 +73,46 @@ test("restore never mounts an empty home", () => {
   });
   assert.equal(result.ok, false);
   assert.equal(result.reason, "empty_home_forbidden");
+});
+
+test("restore rejects future and invalid explicit generations", () => {
+  const future = restoreHome({
+    lastSuccessfulGeneration: 4,
+    requestedGeneration: 5,
+  });
+  assert.equal(future.ok, false);
+  assert.equal(future.reason, "future_generation");
+  assert.equal(future.lifecycle, "restore_failed");
+
+  const invalidZero = restoreHome({
+    lastSuccessfulGeneration: 4,
+    requestedGeneration: 0,
+  });
+  assert.equal(invalidZero.ok, false);
+  assert.equal(invalidZero.reason, "invalid_generation");
+
+  const invalidFloat = restoreHome({
+    lastSuccessfulGeneration: 4,
+    requestedGeneration: 2.5,
+  });
+  assert.equal(invalidFloat.ok, false);
+  assert.equal(invalidFloat.reason, "invalid_generation");
+
+  const earlier = restoreHome({
+    lastSuccessfulGeneration: 4,
+    requestedGeneration: 2,
+  });
+  assert.equal(earlier.ok, true);
+  assert.equal(earlier.generation, 2);
+  assert.equal(earlier.explicit_earlier, true);
+
+  const current = restoreHome({
+    lastSuccessfulGeneration: 4,
+    requestedGeneration: 4,
+  });
+  assert.equal(current.ok, true);
+  assert.equal(current.generation, 4);
+  assert.equal(current.explicit_earlier, false);
 });
 
 test("agent session does not inherit human vault or browser profile", () => {

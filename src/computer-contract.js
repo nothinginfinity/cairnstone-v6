@@ -40,11 +40,26 @@ export function isProviderNeutralComputerId(computerId) {
   return !banned.some((part) => computerId.toLowerCase().includes(part));
 }
 
+export function ownerSegmentFromComputerId(computerId) {
+  if (typeof computerId !== "string") return null;
+  const parts = computerId.split(":");
+  if (parts.length !== 3 || parts[0] !== "pc" || !parts[1] || !parts[2]) return null;
+  return parts[1];
+}
+
 export function assertContractEnvelope(doc) {
   const errors = [];
   if (!doc || doc.schema !== CONTRACT_ID) errors.push("schema");
   if (!isProviderNeutralComputerId(doc?.computer_id)) errors.push("computer_id");
   if (!doc?.owner_account_id || doc.owner_account_id === doc?.computer_id) errors.push("owner");
+  const encodedOwner = ownerSegmentFromComputerId(doc?.computer_id);
+  if (
+    doc?.owner_account_id &&
+    encodedOwner !== null &&
+    encodedOwner !== doc.owner_account_id
+  ) {
+    errors.push("owner_mismatch");
+  }
   if (!BACKEND_CLASSES.includes(doc?.backend_class)) errors.push("backend_class");
   if (!LIFECYCLE.includes(doc?.lifecycle)) errors.push("lifecycle");
   if (doc?.accepted_state_authority !== false) errors.push("accepted_state_authority");
@@ -67,14 +82,28 @@ export function canCompleteControlledTransition({ action, home }) {
   return { ok: true, report_complete: true, next: action === "sleep" ? "sleeping" : "runtime_destroyed" };
 }
 
+function isKnownGeneration(value) {
+  return Number.isInteger(value) && value >= 1;
+}
+
 export function restoreHome({ lastSuccessfulGeneration, requestedGeneration, emptyHomeOffered }) {
   if (emptyHomeOffered) return { ok: false, reason: "empty_home_forbidden" };
-  const target = requestedGeneration ?? lastSuccessfulGeneration;
-  if (!target || !lastSuccessfulGeneration) return { ok: false, reason: "no_known_good_generation", lifecycle: "restore_failed" };
-  if (requestedGeneration && requestedGeneration !== lastSuccessfulGeneration) {
-    return { ok: true, generation: requestedGeneration, explicit_earlier: true };
+  if (!isKnownGeneration(lastSuccessfulGeneration)) {
+    return { ok: false, reason: "no_known_good_generation", lifecycle: "restore_failed" };
   }
-  return { ok: true, generation: lastSuccessfulGeneration, explicit_earlier: false };
+  if (requestedGeneration === undefined || requestedGeneration === null) {
+    return { ok: true, generation: lastSuccessfulGeneration, explicit_earlier: false };
+  }
+  if (!isKnownGeneration(requestedGeneration)) {
+    return { ok: false, reason: "invalid_generation", lifecycle: "restore_failed" };
+  }
+  if (requestedGeneration > lastSuccessfulGeneration) {
+    return { ok: false, reason: "future_generation", lifecycle: "restore_failed" };
+  }
+  if (requestedGeneration === lastSuccessfulGeneration) {
+    return { ok: true, generation: lastSuccessfulGeneration, explicit_earlier: false };
+  }
+  return { ok: true, generation: requestedGeneration, explicit_earlier: true };
 }
 
 export function agentMayCrossBoundary(grant, boundary) {
