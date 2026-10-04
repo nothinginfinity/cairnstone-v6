@@ -117,7 +117,12 @@ export function networkAllows(policy, request) {
   if (request.kind === "inbound_public") return { ok: false, reason: "no_public_inbound" };
   if (request.kind === "preview") {
     if (!request.capability_id || !request.expires_at) return { ok: false, reason: "preview_capability_required" };
-    if (Date.parse(request.expires_at) <= Date.parse(request.now || "1970-01-01T00:00:00Z")) {
+    const expiresAtMs = Date.parse(request.expires_at);
+    const nowMs = Date.parse(request.now || "1970-01-01T00:00:00Z");
+    if (!Number.isFinite(expiresAtMs) || !Number.isFinite(nowMs)) {
+      return { ok: false, reason: "invalid_preview_time" };
+    }
+    if (expiresAtMs <= nowMs) {
       return { ok: false, reason: "preview_expired" };
     }
     return { ok: true, grants_deploy: false, grants_accepted_state: false };

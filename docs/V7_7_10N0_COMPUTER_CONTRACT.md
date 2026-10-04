@@ -39,6 +39,8 @@ From `running`:
 
 An explicitly selected home generation must be a known positive generation and must not be later than `last_successful_generation`. Selecting a prior generation is allowed only when that generation is known and strictly earlier. Future or invalid generations fail closed as `restore_failed`.
 
+In this 10n.0 pure fixture, "known generation" means an integer in the inclusive range `1 .. last_successful_generation`. There is no persisted-generation catalog yet; existence/catalog enforcement belongs to the later registry/home adapter.
+
 `restore_failed` leaves the computer stopped against the last known-good generation. An empty home must never be mounted as success.
 
 ## Class H durability

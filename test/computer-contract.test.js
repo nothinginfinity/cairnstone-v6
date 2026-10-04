@@ -136,3 +136,24 @@ test("network default denies public inbound and expired preview", () => {
   assert.equal(preview.ok, false);
   assert.equal(preview.reason, "preview_expired");
 });
+
+test("network preview denies malformed expires_at or now", () => {
+  const policy = { default_inbound_public: false, egress_allowlist: ["github.com"] };
+  const badExpires = networkAllows(policy, {
+    kind: "preview",
+    capability_id: "cap_1",
+    expires_at: "not-a-date",
+    now: "2026-10-04T00:00:00Z",
+  });
+  assert.equal(badExpires.ok, false);
+  assert.equal(badExpires.reason, "invalid_preview_time");
+
+  const badNow = networkAllows(policy, {
+    kind: "preview",
+    capability_id: "cap_1",
+    expires_at: "2026-10-05T00:00:00Z",
+    now: "also-not-a-date",
+  });
+  assert.equal(badNow.ok, false);
+  assert.equal(badNow.reason, "invalid_preview_time");
+});
