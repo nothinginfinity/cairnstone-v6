@@ -63,7 +63,10 @@ export const LIFECYCLE_TRANSITIONS = Object.freeze({
   registered: ["stopped"],
   stopped: ["starting", "restore_failed"],
   starting: ["running", "stopped"],
-  running: ["checkpointing", "runtime_destroyed"],
+  // Controlled sleep/destroy must enter checkpointing first. Unexpected
+  // runtime loss is modeled separately (unexpectedRuntimeLossRestore), not
+  // via a direct running -> runtime_destroyed transition.
+  running: ["checkpointing"],
   checkpointing: ["running", "sleeping", "destroy_pending", "runtime_destroyed"],
   sleeping: ["starting", "stopped"],
   destroy_pending: ["runtime_destroyed", "running"],
@@ -191,6 +194,10 @@ export function assertContractEnvelope(doc) {
   if (doc?.home !== undefined) {
     const home = assertHomeState(doc.home);
     if (!home.ok) errors.push(...home.errors);
+  }
+  if (doc?.network_policy !== undefined) {
+    const policy = assertNetworkPolicy(doc.network_policy);
+    if (!policy.ok) errors.push(...policy.errors.map((e) => `network_policy_${e}`));
   }
   return { ok: errors.length === 0, errors };
 }
@@ -361,6 +368,10 @@ export function revokeAgentGrant(grant) {
   };
 }
 
+function isNonNegativeFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 export function childWithinParentCeilings(child, parent) {
   if (!isPlainObject(child) || !isPlainObject(parent)) {
     return { ok: false, reason: "invalid_ceiling_inputs" };
@@ -372,18 +383,41 @@ export function childWithinParentCeilings(child, parent) {
   if (child.boundaries.some((b) => !parent.boundaries.includes(b))) {
     return { ok: false, reason: "boundary_ceiling_exceeded" };
   }
-  if (
-    parent.parent_task_run_id &&
-    child.parent_task_run_id &&
-    child.parent_task_run_id !== parent.parent_task_run_id
-  ) {
-    return { ok: false, reason: "task_run_ceiling_exceeded" };
+
+  // If the parent establishes a task-run ceiling, the child must carry the
+  // same parent_task_run_id. Omission or mismatch fails closed.
+  if (parent.parent_task_run_id !== undefined && parent.parent_task_run_id !== null) {
+    if (typeof parent.parent_task_run_id !== "string" || !parent.parent_task_run_id) {
+      return { ok: false, reason: "invalid_parent_task_run_id" };
+    }
+    if (child.parent_task_run_id === undefined || child.parent_task_run_id === null) {
+      return { ok: false, reason: "task_run_linkage_required" };
+    }
+    if (child.parent_task_run_id !== parent.parent_task_run_id) {
+      return { ok: false, reason: "task_run_ceiling_exceeded" };
+    }
   }
-  const parentBudget = parent.budget_ceiling;
-  const childUsed = child.budget_used ?? 0;
-  if (Number.isFinite(parentBudget) && childUsed > parentBudget) {
-    return { ok: false, reason: "budget_ceiling_exceeded" };
+
+  // Omitted parent budget_ceiling means no numeric ceiling in this fixture.
+  // Present-but-malformed is fail-closed and is not treated like omission.
+  if (parent.budget_ceiling !== undefined && parent.budget_ceiling !== null) {
+    if (!isNonNegativeFiniteNumber(parent.budget_ceiling)) {
+      return { ok: false, reason: "invalid_budget_ceiling" };
+    }
+    if (child.budget_used !== undefined && child.budget_used !== null) {
+      if (!isNonNegativeFiniteNumber(child.budget_used)) {
+        return { ok: false, reason: "invalid_budget_used" };
+      }
+      if (child.budget_used > parent.budget_ceiling) {
+        return { ok: false, reason: "budget_ceiling_exceeded" };
+      }
+    }
+  } else if (child.budget_used !== undefined && child.budget_used !== null) {
+    if (!isNonNegativeFiniteNumber(child.budget_used)) {
+      return { ok: false, reason: "invalid_budget_used" };
+    }
   }
+
   return { ok: true };
 }
 

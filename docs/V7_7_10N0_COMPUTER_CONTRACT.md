@@ -82,6 +82,9 @@ From `running`:
 - enter `checkpointing` for explicit checkpoint, controlled sleep, or controlled destroy
 - success returns to `running`, or advances to `sleeping` / `runtime_destroyed` (via `destroy_pending` when destroy is staged)
 - failure stays incomplete and must not report sleep/destroy success
+- the controlled-transition table does **not** authorize a direct `running -> runtime_destroyed` jump; that would bypass durable-home checkpointing
+
+Unexpected provider/runtime loss is a separate failure path (`unexpectedRuntimeLossRestore`), not a normal controlled destroy.
 
 `runtime_destroyed` destroys the active runtime only. The logical computer remains.
 
@@ -156,8 +159,13 @@ Rules:
 - revocation sets `revoked=true`, terminates that actor's processes/sessions, and does **not** delete the logical computer
 - terminal pane/access does not grant deploy, accepted-state, credential, spend, or unrestricted network authority
 - child agents must stay inside parent task-run, grant (`boundaries ⊆ parent_boundaries`), and budget ceilings
+- if the parent establishes a `parent_task_run_id` ceiling, the child must carry the **same** `parent_task_run_id`; omission or mismatch fails closed
+- if `budget_ceiling` is present it must be a finite non-negative number and `budget_used` (when present) must be a finite non-negative number with `budget_used <= budget_ceiling`
+- omitted parent `budget_ceiling` means **no numeric budget ceiling** in this 10n.0 fixture; that is distinct from a malformed ceiling, which fails closed
 
 ## Network policy + expiring preview capability
+
+`network_policy` is optional on the computer envelope. When present, both JSON Schema and `assertContractEnvelope` validate it and fail closed on invalid shapes.
 
 Network policy shape:
 

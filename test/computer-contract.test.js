@@ -96,10 +96,15 @@ test("invalid home generation/state combinations fail closed", () => {
   assert.ok(envelope.errors.includes("clean_requires_committed_generation"));
 });
 
-test("lifecycle transitions reject illegal jumps", () => {
+test("lifecycle transitions reject illegal jumps and require checkpoint before destroy", () => {
   assert.equal(assertLifecycleTransition("registered", "stopped").ok, true);
   assert.equal(assertLifecycleTransition("running", "sleeping").ok, false);
   assert.equal(assertLifecycleTransition("running", "checkpointing").ok, true);
+  assert.equal(assertLifecycleTransition("running", "runtime_destroyed").ok, false);
+  assert.equal(assertLifecycleTransition("running", "runtime_destroyed").reason, "illegal_transition");
+  assert.equal(assertLifecycleTransition("checkpointing", "destroy_pending").ok, true);
+  assert.equal(assertLifecycleTransition("destroy_pending", "runtime_destroyed").ok, true);
+  assert.equal(assertLifecycleTransition("checkpointing", "runtime_destroyed").ok, true);
   assert.equal(assertLifecycleTransition("restore_failed", "running").ok, false);
 });
 
@@ -340,11 +345,97 @@ test("child agents cannot exceed parent grant or budget ceilings", () => {
   );
   assert.equal(
     childWithinParentCeilings(
+      { revoked: false, boundaries: ["workspace_read"], budget_used: 1 },
+      parent,
+    ).reason,
+    "task_run_linkage_required",
+  );
+  assert.equal(
+    childWithinParentCeilings(
+      { revoked: false, boundaries: ["workspace_read"], parent_task_run_id: "tr_other", budget_used: 1 },
+      parent,
+    ).reason,
+    "task_run_ceiling_exceeded",
+  );
+  assert.equal(
+    childWithinParentCeilings(
       { revoked: false, boundaries: ["workspace_read"], parent_task_run_id: "tr_1", budget_used: 11 },
       parent,
     ).reason,
     "budget_ceiling_exceeded",
   );
+  assert.equal(
+    childWithinParentCeilings(
+      { revoked: false, boundaries: ["workspace_read"], parent_task_run_id: "tr_1", budget_used: Number.NaN },
+      parent,
+    ).reason,
+    "invalid_budget_used",
+  );
+  assert.equal(
+    childWithinParentCeilings(
+      { revoked: false, boundaries: ["workspace_read"], parent_task_run_id: "tr_1", budget_used: -1 },
+      parent,
+    ).reason,
+    "invalid_budget_used",
+  );
+  assert.equal(
+    childWithinParentCeilings(
+      { revoked: false, boundaries: ["workspace_read"], parent_task_run_id: "tr_1", budget_used: 1 },
+      { ...parent, budget_ceiling: Number.POSITIVE_INFINITY },
+    ).reason,
+    "invalid_budget_ceiling",
+  );
+  assert.equal(
+    childWithinParentCeilings(
+      { revoked: false, boundaries: ["workspace_read"], parent_task_run_id: "tr_1", budget_used: 1 },
+      { ...parent, budget_ceiling: -5 },
+    ).reason,
+    "invalid_budget_ceiling",
+  );
+
+  // Omitted parent budget_ceiling means no numeric ceiling (distinct from malformed).
+  const noBudgetParent = {
+    session_plane: "agent",
+    revoked: false,
+    boundaries: ["workspace_read"],
+    parent_task_run_id: "tr_1",
+  };
+  assert.equal(
+    childWithinParentCeilings(
+      { revoked: false, boundaries: ["workspace_read"], parent_task_run_id: "tr_1", budget_used: 999 },
+      noBudgetParent,
+    ).ok,
+    true,
+  );
+});
+
+test("envelope validates optional network_policy when present", () => {
+  const withValid = assertContractEnvelope({
+    ...base,
+    network_policy: { default_inbound_public: false, egress_allowlist: ["github.com"] },
+  });
+  assert.equal(withValid.ok, true);
+
+  const defaultPublic = assertContractEnvelope({
+    ...base,
+    network_policy: { default_inbound_public: true, egress_allowlist: ["github.com"] },
+  });
+  assert.equal(defaultPublic.ok, false);
+  assert.ok(defaultPublic.errors.includes("network_policy_default_inbound_public"));
+
+  const malformedAllowlist = assertContractEnvelope({
+    ...base,
+    network_policy: { default_inbound_public: false, egress_allowlist: [""] },
+  });
+  assert.equal(malformedAllowlist.ok, false);
+  assert.ok(malformedAllowlist.errors.includes("network_policy_egress_allowlist"));
+
+  const invalidPolicy = assertContractEnvelope({
+    ...base,
+    network_policy: "not-an-object",
+  });
+  assert.equal(invalidPolicy.ok, false);
+  assert.ok(invalidPolicy.errors.includes("network_policy_policy"));
 });
 
 test("terminal access does not grant privileged authorities", () => {
