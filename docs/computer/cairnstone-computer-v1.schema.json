@@ -1,0 +1,25 @@
+{
+  "$id": "cairnstone-computer-v1",
+  "title": "CairnStone Computer contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "computer_id", "owner_account_id", "backend_class", "lifecycle", "accepted_state_authority"],
+  "properties": {
+    "schema": { "const": "cairnstone-computer-v1" },
+    "computer_id": { "type": "string", "pattern": "^pc:[a-z0-9][a-z0-9_-]{2,63}:[a-z0-9]{16,64}$" },
+    "owner_account_id": { "type": "string" },
+    "backend_class": { "enum": ["S", "H", "V", "C"] },
+    "lifecycle": { "enum": ["registered", "stopped", "starting", "running", "checkpointing", "sleeping", "destroy_pending", "runtime_destroyed", "restore_failed"] },
+    "accepted_state_authority": { "const": false },
+    "provider_runtime_id": { "type": ["string", "null"] },
+    "home": {
+      "type": "object",
+      "required": ["status", "generation", "last_successful_generation"],
+      "properties": {
+        "status": { "enum": ["clean", "dirty", "checkpointing", "checkpoint_failed"] },
+        "generation": { "type": "integer", "minimum": 0 },
+        "last_successful_generation": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
