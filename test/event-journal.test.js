@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   EVENT_JOURNAL_SCHEMA,
   EVENT_JOURNAL_MAX_DETAIL_BYTES,
@@ -68,6 +72,31 @@ test("cursor round trip is opaque and exclusive-ready", () => {
   assert.equal(cursor.includes(FIXED_NOW), false);
   const decoded = decodeEventCursor(cursor);
   assert.deepEqual(decoded, { ok: true, occurred_at: FIXED_NOW, event_id: "evt:xyz" });
+});
+
+test("migration enforces append-only rows and rejects accepted authority", () => {
+  const dir = mkdtempSync(join(tmpdir(), "event-journal-"));
+  const dbPath = join(dir, "journal.sqlite");
+  const migration = readFileSync(new URL("../migrations/0025_v7710f1_event_journal.sql", import.meta.url), "utf8");
+
+  try {
+    execFileSync("sqlite3", [dbPath], { input: migration });
+    execFileSync("sqlite3", [dbPath, `INSERT INTO event_journal (event_id, schema, event_type, occurred_at, accepted_state_authority) VALUES ('evt:test', '${EVENT_JOURNAL_SCHEMA}', 'stone.created', '${FIXED_NOW}', 0);`]);
+
+    assert.throws(() => {
+      execFileSync("sqlite3", [dbPath, "UPDATE event_journal SET event_type='stone.updated' WHERE event_id='evt:test';"], { stdio: "pipe" });
+    }, /event_journal_append_only/);
+
+    assert.throws(() => {
+      execFileSync("sqlite3", [dbPath, "DELETE FROM event_journal WHERE event_id='evt:test';"], { stdio: "pipe" });
+    }, /event_journal_append_only/);
+
+    assert.throws(() => {
+      execFileSync("sqlite3", [dbPath, `INSERT INTO event_journal (event_id, schema, event_type, occurred_at, accepted_state_authority) VALUES ('evt:authority', '${EVENT_JOURNAL_SCHEMA}', 'stone.created', '${FIXED_NOW}', 1);`], { stdio: "pipe" });
+    }, /CHECK constraint failed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("append binds event row with accepted authority hard-closed in SQL", async () => {
