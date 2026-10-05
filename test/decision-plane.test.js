@@ -63,6 +63,7 @@ test("valid selected_id binds digest and does not execute", async () => {
     candidates: CANDIDATES,
     selected_id: "cairnstone_find_v2",
     scorer_source: "jev",
+    scorer_transport: "binding",
     confidence: 0.81,
     candidate_set_digest: digest
   });
@@ -71,6 +72,7 @@ test("valid selected_id binds digest and does not execute", async () => {
   assert.equal(result.selected.id, "cairnstone_find_v2");
   assert.equal(result.receipt.candidate_set_digest, digest);
   assert.equal(result.receipt.scorer_source, "jev");
+  assert.equal(result.receipt.scorer_transport, "binding");
   assert.equal(result.execution_authority, false);
 });
 
