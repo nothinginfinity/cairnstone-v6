@@ -74,9 +74,9 @@ test("critical writes emit authority-closed semantic events with exact HEAD tran
     insertStone(dbPath, STONE_2, RAW_2, "grok:cairnstone-v6");
 
     sql(dbPath, `INSERT INTO chain_heads (chain,head_hash,updated_at) VALUES ('chain:test','${STONE_1}','2026-10-05T00:00:01.000Z');`);
-    sql(dbPath, `UPDATE chain_heads SET head_hash='${STONE_2}', updated_at='2026-10-05T00:00:02.000Z' WHERE chain='chain:test';`);
+    sql(dbPath, `INSERT INTO chain_heads (chain,head_hash,updated_at) VALUES ('chain:test','${STONE_2}','2026-10-05T00:00:02.000Z') ON CONFLICT(chain) DO UPDATE SET head_hash=excluded.head_hash, updated_at=excluded.updated_at;`);
     sql(dbPath, `INSERT INTO path_heads (chain,path,head_hash,updated_at) VALUES ('chain:test','docs/example.md','${STONE_1}','2026-10-05T00:00:03.000Z');`);
-    sql(dbPath, `UPDATE path_heads SET head_hash='${STONE_2}', updated_at='2026-10-05T00:00:04.000Z' WHERE chain='chain:test' AND path='docs/example.md';`);
+    sql(dbPath, `INSERT INTO path_heads (chain,path,head_hash,updated_at) VALUES ('chain:test','docs/example.md','${STONE_2}','2026-10-05T00:00:04.000Z') ON CONFLICT(chain,path) DO UPDATE SET head_hash=excluded.head_hash, updated_at=excluded.updated_at;`);
     sql(dbPath, `INSERT INTO stone_edges (id,from_hash,to_hash,edge_type,note,created_at) VALUES ('edge:1','${STONE_2}','${STONE_1}','supersedes',NULL,'2026-10-05T00:00:05.000Z');`);
 
     assert.equal(sql(dbPath, "SELECT COUNT(*) FROM event_journal WHERE accepted_state_authority <> 0;"), "0");
@@ -114,10 +114,10 @@ test("journal insert failure aborts Stone, chain HEAD, path HEAD, and edge mutat
     assert.throws(() => insertStone(dbPath, STONE_3, RAW_3), /forced_event_journal_failure/);
     assert.equal(sql(dbPath, `SELECT COUNT(*) FROM stones WHERE hash='${STONE_3}';`), "0");
 
-    assert.throws(() => sql(dbPath, `UPDATE chain_heads SET head_hash='${STONE_2}', updated_at='2026-10-05T00:00:03.000Z' WHERE chain='chain:test';`), /forced_event_journal_failure/);
+    assert.throws(() => sql(dbPath, `INSERT INTO chain_heads (chain,head_hash,updated_at) VALUES ('chain:test','${STONE_2}','2026-10-05T00:00:03.000Z') ON CONFLICT(chain) DO UPDATE SET head_hash=excluded.head_hash, updated_at=excluded.updated_at;`), /forced_event_journal_failure/);
     assert.equal(sql(dbPath, "SELECT head_hash FROM chain_heads WHERE chain='chain:test';"), STONE_1);
 
-    assert.throws(() => sql(dbPath, `UPDATE path_heads SET head_hash='${STONE_2}', updated_at='2026-10-05T00:00:04.000Z' WHERE chain='chain:test' AND path='docs/example.md';`), /forced_event_journal_failure/);
+    assert.throws(() => sql(dbPath, `INSERT INTO path_heads (chain,path,head_hash,updated_at) VALUES ('chain:test','docs/example.md','${STONE_2}','2026-10-05T00:00:04.000Z') ON CONFLICT(chain,path) DO UPDATE SET head_hash=excluded.head_hash, updated_at=excluded.updated_at;`), /forced_event_journal_failure/);
     assert.equal(sql(dbPath, "SELECT head_hash FROM path_heads WHERE chain='chain:test' AND path='docs/example.md';"), STONE_1);
 
     assert.throws(() => sql(dbPath, `INSERT INTO stone_edges (id,from_hash,to_hash,edge_type,note,created_at) VALUES ('edge:blocked','${STONE_2}','${STONE_1}','references',NULL,'2026-10-05T00:00:05.000Z');`), /forced_event_journal_failure/);
