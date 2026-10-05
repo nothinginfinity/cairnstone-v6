@@ -153,21 +153,26 @@ async function callLod(db, { actorId = null, claimedActorId = null } = {}) {
   }, { CAIRNSTONE_DB: db }, actorId ? { authContext: { principal_id: actorId } } : {});
 }
 
-test("MCP LOD read uses trusted auth actor and ignores caller actor spoof", async () => {
+test("MCP LOD read records only trusted auth actor identity", async () => {
   const trusted = makeLodAuditDb();
-  const rpc = await callLod(trusted.db, {
-    actorId: "grok:cairnstone-v6",
-    claimedActorId: "spoofed:actor"
-  });
+  const rpc = await callLod(trusted.db, { actorId: "grok:cairnstone-v6" });
   assert.equal(rpc.result.isError, false);
   const payload = JSON.parse(rpc.result.content[0].text);
   assert.equal(payload.value, "TOP SECRET LOD PAYLOAD");
   assert.equal(trusted.writes.length, 1);
   assert.equal(trusted.writes[0][6], "grok:cairnstone-v6");
 
+  const spoofed = makeLodAuditDb();
+  const spoofRpc = await callLod(spoofed.db, {
+    actorId: "grok:cairnstone-v6",
+    claimedActorId: "spoofed:actor"
+  });
+  assert.equal(spoofRpc.result.isError, true);
+  assert.equal(spoofed.writes.length, 0);
+
   const unauthenticated = makeLodAuditDb();
-  const rpc2 = await callLod(unauthenticated.db, { claimedActorId: "spoofed:actor" });
-  assert.equal(rpc2.result.isError, false);
+  const legacyRpc = await callLod(unauthenticated.db, { claimedActorId: "spoofed:actor" });
+  assert.equal(legacyRpc.result.isError, false);
   assert.equal(unauthenticated.writes.length, 1);
   assert.equal(unauthenticated.writes[0][6], null);
 });
