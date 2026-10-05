@@ -1611,6 +1611,13 @@ function guardedAuthorizationDeps(env) {
   };
 }
 
+function trustedAuditActorId(options = {}) {
+  const principalId = typeof options?.authContext?.principal_id === "string"
+    ? options.authContext.principal_id.trim()
+    : "";
+  return principalId || null;
+}
+
 async function callMcpTool(name, args, env, options = {}) {
   const authContext = options.authContext || null;
   if (authContext) {
@@ -1687,7 +1694,7 @@ async function callMcpTool(name, args, env, options = {}) {
   if (name === "cairnstone_query_and_expand") return queryAndExpandFromBody(args, env);
   if (name === "cairnstone_expand") return expandRefFromBody(args, env);
   if (name === "cairnstone_get_stone") return getStone(env, requiredString(args.hash, "hash"));
-  if (name === "cairnstone_get_lod") return getLod(env, requiredString(args.hash, "hash"), requiredString(args.level, "level"), args.actor_id || null);
+  if (name === "cairnstone_get_lod") return getLod(env, requiredString(args.hash, "hash"), requiredString(args.level, "level"), trustedAuditActorId(options));
   if (name === "cairnstone_lint_stone") return lintStoneFromBody(args, env);
   if (name === "cairnstone_link_stones") return linkStonesFromBody(args, env);
   if (name === "cairnstone_set_head") return setHeadFromBody(args, env);
@@ -1702,7 +1709,7 @@ async function callMcpTool(name, args, env, options = {}) {
   });
   if (name === "cairnstone_find_v2") return findV2FromBody(args, env);
   if (name === "cairnstone_commit_v2") return commitV2FromBody(args, env);
-  if (name === "cairnstone_stone_v2") return stoneV2FromBody(args, env);
+  if (name === "cairnstone_stone_v2") return stoneV2FromBody(args, env, trustedAuditActorId(options));
   if (name === "cairnstone_agent_bootstrap") return agentBootstrapFromBody(args, env, {
     resumeChainFromBody,
     getInboxFromBody: (body, e) => getInboxFromBody(body, e, { createStone: b => createStoneFromBody(b, e) }),
@@ -4352,14 +4359,14 @@ async function commitV2FromBody(body, env) {
   return out;
 }
 
-async function stoneV2FromBody(body, env) {
+async function stoneV2FromBody(body, env, actorId = null) {
   requireBindings(env);
   const resolved = await resolveStoneHash(env, body.hash);
   if (!resolved.ok) return resolved;
   const level = typeof body.level === "string" && body.level ? body.level : null;
   if (level) {
     if (!/^lod[1-5]$/.test(level)) return { ok: false, error: "invalid_level", allowed: ["lod1", "lod2", "lod3", "lod4", "lod5"] };
-    return getLod(env, resolved.hash, level, body.actor_id || null);
+    return getLod(env, resolved.hash, level, actorId);
   }
   const result = await getStone(env, resolved.hash);
   if (!result.ok) return result;

@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { recordLodRead } from "../src/event-journal.js";
+import { handleMcpRpc } from "../src/index.js";
 
 const STONE = "d".repeat(64);
 const CONTENT = "e".repeat(64);
@@ -103,4 +104,81 @@ test("LOD read audit records identity only and rejects payload detail", async ()
   assert.equal(rejected.ok, false);
   assert.equal(rejected.error, "lod_payload_rejected");
   assert.equal(writes.length, 1);
+});
+
+
+function makeLodAuditDb({ failAudit = false } = {}) {
+  const writes = [];
+  const stone = {
+    border: { chain: "chain:test", path: "docs/a.md" },
+    layers: { lod1: "TOP SECRET LOD PAYLOAD" }
+  };
+  return {
+    writes,
+    db: {
+      prepare(sqlText) {
+        return {
+          bind(...args) {
+            return {
+              async first() {
+                if (/FROM stones WHERE hash = \?/.test(sqlText)) {
+                  return { stone_json: JSON.stringify(stone) };
+                }
+                throw new Error(`unexpected first SQL: ${sqlText}`);
+              },
+              async run() {
+                if (/INSERT INTO event_journal/.test(sqlText)) {
+                  if (failAudit) throw new Error("forced_event_journal_failure");
+                  writes.push(args);
+                  return { success: true };
+                }
+                throw new Error(`unexpected run SQL: ${sqlText}`);
+              }
+            };
+          }
+        };
+      }
+    }
+  };
+}
+
+async function callLod(db, { actorId = null, claimedActorId = null } = {}) {
+  const args = { hash: STONE, level: "lod1" };
+  if (claimedActorId) args.actor_id = claimedActorId;
+  return handleMcpRpc({
+    jsonrpc: "2.0",
+    id: 101,
+    method: "tools/call",
+    params: { name: "cairnstone_get_lod", arguments: args }
+  }, { CAIRNSTONE_DB: db }, actorId ? { authContext: { principal_id: actorId } } : {});
+}
+
+test("MCP LOD read uses trusted auth actor and ignores caller actor spoof", async () => {
+  const trusted = makeLodAuditDb();
+  const rpc = await callLod(trusted.db, {
+    actorId: "grok:cairnstone-v6",
+    claimedActorId: "spoofed:actor"
+  });
+  assert.equal(rpc.result.isError, false);
+  const payload = JSON.parse(rpc.result.content[0].text);
+  assert.equal(payload.value, "TOP SECRET LOD PAYLOAD");
+  assert.equal(trusted.writes.length, 1);
+  assert.equal(trusted.writes[0][6], "grok:cairnstone-v6");
+
+  const unauthenticated = makeLodAuditDb();
+  const rpc2 = await callLod(unauthenticated.db, { claimedActorId: "spoofed:actor" });
+  assert.equal(rpc2.result.isError, false);
+  assert.equal(unauthenticated.writes.length, 1);
+  assert.equal(unauthenticated.writes[0][6], null);
+});
+
+test("MCP LOD read fails closed and returns no payload when audit write fails", async () => {
+  const failing = makeLodAuditDb({ failAudit: true });
+  const rpc = await callLod(failing.db, { actorId: "grok:cairnstone-v6" });
+  assert.equal(rpc.result.isError, true);
+  const payload = JSON.parse(rpc.result.content[0].text);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error, "lod_read_audit_failed");
+  assert.equal(Object.prototype.hasOwnProperty.call(payload, "value"), false);
+  assert.equal(JSON.stringify(payload).includes("TOP SECRET LOD PAYLOAD"), false);
 });
