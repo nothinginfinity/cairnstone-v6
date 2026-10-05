@@ -150,7 +150,7 @@ async function callLod(db, { actorId = null, claimedActorId = null } = {}) {
     id: 101,
     method: "tools/call",
     params: { name: "cairnstone_get_lod", arguments: args }
-  }, { CAIRNSTONE_DB: db }, actorId ? { authContext: { principal_id: actorId } } : {});
+  }, { CAIRNSTONE_DB: db, CAIRNSTONE_RAW: {} }, actorId ? { authContext: { principal_id: actorId } } : {});
 }
 
 test("MCP LOD read records only trusted auth actor identity", async () => {
