@@ -4,6 +4,7 @@ import {
   fetchGitHubRepoTree
 } from "./repo-stones-runtime.js";
 import { importV5BundleFromBody } from "./v5-import.js";
+import { recordLodRead } from "./event-journal.js";
 import {
   dispatchHandoffFromBody,
   getInboxFromBody,
@@ -1686,7 +1687,7 @@ async function callMcpTool(name, args, env, options = {}) {
   if (name === "cairnstone_query_and_expand") return queryAndExpandFromBody(args, env);
   if (name === "cairnstone_expand") return expandRefFromBody(args, env);
   if (name === "cairnstone_get_stone") return getStone(env, requiredString(args.hash, "hash"));
-  if (name === "cairnstone_get_lod") return getLod(env, requiredString(args.hash, "hash"), requiredString(args.level, "level"));
+  if (name === "cairnstone_get_lod") return getLod(env, requiredString(args.hash, "hash"), requiredString(args.level, "level"), args.actor_id || null);
   if (name === "cairnstone_lint_stone") return lintStoneFromBody(args, env);
   if (name === "cairnstone_link_stones") return linkStonesFromBody(args, env);
   if (name === "cairnstone_set_head") return setHeadFromBody(args, env);
@@ -2854,11 +2855,22 @@ async function getStone(env, hash) {
   return { ok: true, stone: JSON.parse(row.stone_json) };
 }
 
-async function getLod(env, hash, level) {
+async function getLod(env, hash, level, actorId = null) {
   const result = await getStone(env, hash);
   if (!result.ok) return result;
   const value = result.stone.layers[level];
   if (value === undefined) return { ok: false, error: "lod_not_found", hash, level };
+  const border = result.stone.border || {};
+  const audit = await recordLodRead(env.CAIRNSTONE_DB, {
+    actor_id: actorId,
+    stone_hash: hash,
+    chain: border.chain || null,
+    path: border.path || null,
+    lod_level: level
+  });
+  if (!audit.ok) {
+    return { ok: false, error: "lod_read_audit_failed", hash, level, detail: audit.error, accepted_state_authority: false };
+  }
   return { ok: true, hash, level, value };
 }
 
@@ -4347,7 +4359,7 @@ async function stoneV2FromBody(body, env) {
   const level = typeof body.level === "string" && body.level ? body.level : null;
   if (level) {
     if (!/^lod[1-5]$/.test(level)) return { ok: false, error: "invalid_level", allowed: ["lod1", "lod2", "lod3", "lod4", "lod5"] };
-    return getLod(env, resolved.hash, level);
+    return getLod(env, resolved.hash, level, body.actor_id || null);
   }
   const result = await getStone(env, resolved.hash);
   if (!result.ok) return result;
