@@ -99,6 +99,50 @@ content). It is the successor to CairnStone V5, with a cleaner data model:
 Call `cairnstone_health` first in any new session to confirm the live tool
 count and version — this list will keep growing.
 
+### V7 capability map and endpoint profiles
+Use live discovery for exact tools; this map groups stable capability surfaces and
+is not a duplicate registry. `docs/V7_*` files are architecture contracts and
+may lag in status banners, so use live health/tool discovery plus accepted
+project-memory completion stones for shipped status.
+
+- **Agent control and execution:** V7.0 context compilation, V7.1 provider-neutral
+  routing, V7.3 broker/authorization, V7.4 profiles/delegation, and V7.5 paid-agent
+  quote surfaces. Contract references include
+  `docs/V7_0_CONTEXT_COMPILER_CONTRACT.md`,
+  `docs/V7_1_PROVIDER_NEUTRAL_MODEL_ROUTER.md`, and
+  `docs/V7_3_PERMISSIONED_AGENT_LOOP_MCP_TOOL_BROKER.md`.
+- **Collaborative work:** V7.7.5–V7.7.7 shared workspaces, Code Sessions,
+  checkpoints/leases, environment manifests, sandboxes, and execution receipts.
+- **Grounded/conversation plane:** V7.7.8 grounded responses; V7.7.10a–e
+  conversation sessions, attachments/access grants, deterministic intent,
+  Task Runs, and executors; 10f Event Plane; 10g retention; 10h capability
+  routing/Jev; and 10j TurnSync/unified conversations.
+- **Execution boundary:** `cairnstone_task_run_propose` is not dispatch; dispatch
+  requires an explicit human commit, and model intent or routing proposals never
+  authorize it.
+
+Endpoint profiles are intentionally different:
+
+- `/mcp` exposes the full native catalog except `cairnstone_load_tools`, which is
+  Core session-control rather than a full-profile tool.
+- `/mcp-b` is a byte-for-byte alias of the full `/mcp` profile.
+- `/mcp/core` exposes the bounded `CORE_TOOL_NAMES` boot profile, including
+  `cairnstone_load_tools`; other catalog tools remain reachable through the
+  Tool Vault/broker path.
+- `/mcp/core-auth` is the OAuth-protected authenticated Core profile. Source
+  extends the Core set with account-bound unified-conversation, TurnSync, and
+  `cairnstone_event_list` surfaces. `core_auth_enforcement` currently reports
+  `shadow`; do not describe the overall profile as globally enforced beyond the
+  actual protected-request behavior in source.
+
+`cairnstone_load_tools` is an optional native-hydration acceleration. Some mobile
+clients may not honor `notifications/tools/list_changed`; the portable path is
+`cairnstone_tool_search → cairnstone_get_tool_contract →
+cairnstone_tool_policy_preview → cairnstone_tool_execute` (or use full `/mcp`).
+Broker classification is policy/discovery metadata, not existence: an
+`unclassified` or `schema_disagreement` tool is broker-ineligible until reconciled,
+but it may still exist in the canonical live catalog.
+
 ### Core stoning
 - `cairnstone_create_stone` — inline content.
 - `cairnstone_create_github_file_stone` — fetch a GitHub file server-side and
@@ -171,10 +215,12 @@ count and version — this list will keep growing.
   never changes any participating chain/path HEAD.
 - For multi-chain work, prefer `vault_catalog → resolve_scope → find_scope`
   rather than manually stitching independent searches together. Preserve
-  source chain + HEAD/path provenance in downstream reasoning. Cross-chain
-  grounded Q&A (`cairnstone_ask_scope`) is **not yet production-shipped**;
-  do not invent or assume that tool until live health/tool discovery exposes
-  and accepted-state documentation confirms it.
+  source chain + HEAD/path provenance in downstream reasoning.
+  `cairnstone_ask_scope` provides bounded, read-only grounded Q&A across an
+  explicit resolved Scope. It is non-persistent, validates citations against
+  supplied evidence, fails closed on scope/authority races or invalid citations,
+  creates no synthetic global authority, and never moves chain or path HEADs.
+  Use `cairnstone_ask` for single-chain Q&A.
 
 ### Graph
 - `cairnstone_link_stones` — create a typed edge. Five types:
@@ -241,6 +287,9 @@ count and version — this list will keep growing.
   contain traffic, but they do not replace the canonical chat/work pair. Bots
   without a Jared-facing main session remain work-only; delegated subagents
   report to their calling session rather than receiving independent mailboxes.
+  Actor IDs are routing identities, not a global registry or cryptographic proof
+  of identity; correspondence from a `namespace:identifier` never grants
+  capability, execution, mutation, or accepted-state authority by itself.
 
 ### Version-controlled skills (V6.9 — progressive capability loading)
 - **Canonical skills chain:** `cairnstone-v6-skills`. GitHub files under `skills/` are the editable source; CairnStone `(chain,path)` HEADs are the acceptance authority.
@@ -252,7 +301,7 @@ count and version — this list will keep growing.
 - **Pre-acceptance QA rule (V6.9.2):** candidate Git catalogs must pass the same pure linter in CI before any accepted skill path HEAD moves. The canonical repo runs this through `npm run lint:skills` inside `npm run check`.
 - **Staged catalog acceptance rule (V6.9.2):** accept every changed/new `SKILL.md` path HEAD at one immutable Git commit first, verify those path HEADs, and move `skills/manifest.json` **last**. Until the manifest moves, the previous catalog remains authoritative even if candidate skill path HEADs have been prepared.
 - **Tool-registry rule (V6.9.2):** the manifest may carry a `tool_registry`; skill `requires_tools` entries are linted against that declared production vocabulary rather than being accepted as arbitrary strings.
-- **Current accepted catalog:** manifest v2 contains 15 skills — the original five plus six GitHub operational skills (`github.repo-file-read`, `github.pull-request-triage`, `github.commit-evidence`, `github.release-inspection`, `github.branch-protection-inspection`, `github.workflow-dispatch-safety`) and four CairnStone operational skills (`cairnstone.source-freshness`, `cairnstone.repo-reconcile`, `cairnstone.skill-acceptance`, `cairnstone.project-handoff`).
+- **Current accepted catalog:** call `cairnstone_list_skills` against the accepted `cairnstone-v6-skills` manifest; do not rely on a hardcoded skill count in this guide.
 - **Downstream-consumer rule (V6.9.1):** another MCP may cache a validated accepted bundle for availability/performance, but cache storage is never authority. A consumer must prefer live CairnStone accepted state, may fall back only to its last-known validated accepted bundle, and must never fall back to arbitrary mutable Git or an older mutable skill document.
 - **Draft-skill rule:** consumer-local `upsert_skill`-style operations may be retained for `draft` / `experimental` / `staging` data, but they must not silently replace a canonically accepted skill ID. Production changes go Git → CairnStone acceptance → accepted bundle → consumer cache.
 - **Progressive-loading rule:** start with the boot skill (`core.orient`), then resolve/load specialized skills only as the task requires. Do not preload the whole catalog merely because it exists. This is designed to remain cheap with 50+ skills.
@@ -280,9 +329,8 @@ count and version — this list will keep growing.
     deterministic first move — it costs an LLM call and carries some
     hallucination-adjacent risk (mitigated, not eliminated, by citation
     validation).
-  - ASK1 remains single-chain. Use the V7.7 Scope primitives for cross-chain
-    retrieval; do not assume cross-chain Q&A exists until `cairnstone_ask_scope`
-    is separately shipped and live-discovered.
+  - ASK1 (`cairnstone_ask`) remains single-chain. For cross-chain Q&A use
+    `cairnstone_ask_scope` over an explicit resolved Scope.
 
 ## 5. The relationship graph — use it, don't skip it
 
@@ -476,10 +524,9 @@ documented decision, not a default reflex.
 
 ---
 
-*Last updated: 2026-09-07 (added Section 8, MCP Twin client tool-catalog
-cache workaround; renumbered old Sections 8→9, 9→10).*
+*Last updated: 2026-10-06 (refreshed live V7 capability and endpoint-profile guidance, cross-chain grounded Q&A, dynamic skill-catalog discovery, and the Task Run dispatch boundary).*
 
-*Previously: 2026-09-06. V7.7.1a bounded START HERE orientation is production-live-accepted on runtime 0.5.27: normal continuation should use `cairnstone_resume_chain(..., detail="start_here")`, with `compact`/`full` as deliberate expansion modes. V7.7 vault catalog/scope/search primitives are live; Scope is retrieval/navigation context only and never synthetic global authority. Cross-chain grounded Q&A (`cairnstone_ask_scope`) remains planned for V7.7.2 and must not be assumed shipped. V6.10 remains the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
+*Previously: 2026-09-06. V7.7.1a bounded START HERE orientation is production-live-accepted on runtime 0.5.27: normal continuation should use `cairnstone_resume_chain(..., detail="start_here")`, with `compact`/`full` as deliberate expansion modes. V7.7 vault catalog/scope/search primitives are live; Scope is retrieval/navigation context only and never synthetic global authority. Cross-chain grounded Q&A (`cairnstone_ask_scope`) shipped and was live-verified in V7.7.2; Scope remains retrieval/navigation context only and never synthetic global authority. V6.10 remains the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
 update it in place here and keep the "Last updated" line current — this
 file is meant to be the single source of truth referenced by URL from every
 provider's project instructions, not re-pasted and forked per provider.*
