@@ -1500,3 +1500,56 @@ test("10i.1c1a worker /oauth/register surfaces Retry-After on rate limit", async
   assert.equal(body.error, "slow_down");
   assert.ok(Number(second.headers.get("Retry-After")) >= 1);
 });
+
+test("10f.1d DCR accepts authorization_code plus refresh_token and enters authorize", async () => {
+  const db = new FakeAuthD1();
+  const env = envFor(db, { CORE_AUTH_DCR_ENABLED: "true" });
+  const registered = await handleOauthRegisterRequest({
+    client_name: "Grok core-auth",
+    redirect_uris: ["https://client.example/cb"],
+    grant_types: ["authorization_code", "refresh_token"],
+    token_endpoint_auth_method: "none"
+  }, env, { clientIp: "203.0.113.91" });
+  assert.equal(registered.ok, true);
+  assert.match(registered.client_id, /^dcr_/);
+  assert.equal(Object.prototype.hasOwnProperty.call(registered, "client_secret"), false);
+  assert.equal(env.CORE_AUTH_DCR_INITIAL_ACCESS_TOKEN, undefined);
+
+  const verifier = "cs-dcr-proof-verifier-0123456789";
+  const challenge = await pkceChallengeS256(verifier);
+  const authorize = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: registered.client_id,
+    redirect_uri: "https://client.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: "https://cairnstone.test/mcp/core-auth",
+    scope: "mcp:core"
+  }, env, urlFor());
+  assert.notEqual(authorize.error, "invalid_client");
+  assert.notEqual(authorize.detail, "unknown_client");
+  assert.equal(authorize.ok, true);
+
+  const unknown = await handleOauthAuthorizeRequest({
+    response_type: "code",
+    client_id: "not-a-registered-client",
+    redirect_uri: "https://client.example/cb",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource: "https://cairnstone.test/mcp/core-auth",
+    scope: "mcp:core"
+  }, env, urlFor());
+  assert.equal(unknown.ok, false);
+  assert.equal(unknown.error, "invalid_client");
+});
+
+test("10f.1d DCR rejects unsupported grant types", async () => {
+  const env = envFor(new FakeAuthD1(), { CORE_AUTH_DCR_ENABLED: "true" });
+  const rejected = await handleOauthRegisterRequest({
+    redirect_uris: ["https://client.example/cb"],
+    grant_types: ["authorization_code", "client_credentials"]
+  }, env, { clientIp: "203.0.113.92" });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error, "invalid_client_metadata");
+  assert.equal(rejected.detail, "grant_types_unsupported");
+});

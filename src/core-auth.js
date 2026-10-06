@@ -2380,8 +2380,9 @@ export async function handleOauthRegisterRequest(body, env, ctx = {}) {
 
   const grantTypesRaw = Array.isArray(body?.grant_types) ? body.grant_types : ["authorization_code"];
   const grantTypes = [...new Set(grantTypesRaw.map((g) => String(g)))];
-  if (grantTypes.length !== 1 || grantTypes[0] !== "authorization_code") {
-    return { ok: false, error: "invalid_client_metadata", status: 400, detail: "grant_types_must_be_authorization_code" };
+  const supportedGrantTypes = new Set(["authorization_code", "refresh_token"]);
+  if (!grantTypes.includes("authorization_code") || grantTypes.some((grant) => !supportedGrantTypes.has(grant))) {
+    return { ok: false, error: "invalid_client_metadata", status: 400, detail: "grant_types_unsupported" };
   }
 
   const responseTypesRaw = Array.isArray(body?.response_types) ? body.response_types : ["code"];
