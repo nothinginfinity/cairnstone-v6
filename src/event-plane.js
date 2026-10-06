@@ -6,8 +6,10 @@ import {
 
 export const EVENT_SCHEMA = "cairnstone-event-v1";
 export const TREE_SCHEMA = "cairnstone-agent-tree-v1";
+export const JOURNAL_QUERY_SCHEMA = "cairnstone-journal-query-v1";
 const MAX_LIST = 100;
 const DEFAULT_LIST = 20;
+const JOURNAL_SOURCES = Object.freeze(["journal", "task_run"]);
 
 export const EVENT_TYPES = Object.freeze({
   proposed: "task_run.proposed",
@@ -170,6 +172,10 @@ function envDb(env = {}) {
 export async function listEventPlaneFromBody(body = {}, env = {}) {
   const bindings = envDb(env);
   if (!bindings.ok) return bindings;
+  if (body.source === "journal") return queryJournalFromBody(body, bindings.db);
+  if (body.source != null && body.source !== "task_run") {
+    return { ok: false, error: "invalid_source", detail: "source must be task_run or journal", ...authorityClosedFields() };
+  }
 
   let taskRuns = [];
   if (body.task_run_id) {
@@ -254,17 +260,218 @@ export async function agentTreeFromBody(body = {}, env = {}) {
   return projectAgentTree(listed.task_runs || []);
 }
 
+
+function clampLimit(limit) {
+  return Number.isInteger(limit) ? Math.max(1, Math.min(MAX_LIST, limit)) : DEFAULT_LIST;
+}
+
+function toBase64Url(value) {
+  const bytes = unescape(encodeURIComponent(value));
+  return btoa(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function fromBase64Url(value) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
+  return decodeURIComponent(escape(atob(padded)));
+}
+
+function decodeJournalCursor(cursor) {
+  if (cursor == null || cursor === "") return { ok: true, cursor: null };
+  if (typeof cursor !== "string") return { ok: false, error: "invalid_cursor" };
+  try {
+    const parsed = JSON.parse(fromBase64Url(cursor));
+    if (!parsed || typeof parsed.occurred_at !== "string" || typeof parsed.event_id !== "string") {
+      return { ok: false, error: "invalid_cursor" };
+    }
+    return { ok: true, cursor: { occurred_at: parsed.occurred_at, event_id: parsed.event_id } };
+  } catch {
+    return { ok: false, error: "invalid_cursor" };
+  }
+}
+
+export function encodeJournalCursor(event) {
+  return toBase64Url(JSON.stringify({
+    occurred_at: event.occurred_at,
+    event_id: event.event_id
+  }));
+}
+
+export function journalDetail(row) {
+  if (!row || row.detail_json == null || row.detail_json === "") return {};
+  if (typeof row.detail_json === "object") return row.detail_json;
+  try {
+    const parsed = JSON.parse(row.detail_json);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function journalRowVisible(row, { actor_id, include_chain_telemetry = false, chain_name = null } = {}) {
+  if (!row || !actor_id) return false;
+  if (Number(row.accepted_state_authority) !== 0) return false;
+  if (row.actor_id === actor_id) return true;
+  const detail = journalDetail(row);
+  if (detail.sender_id === actor_id || detail.recipient_id === actor_id) return true;
+  if (include_chain_telemetry && chain_name && row.actor_id == null && row.chain_name === chain_name) return true;
+  return false;
+}
+
+export function projectJournalEvent(row) {
+  return {
+    schema: row.schema || null,
+    event_id: row.event_id,
+    event_type: row.event_type || null,
+    event_class: row.event_class || null,
+    source: row.source || "journal",
+    occurred_at: row.occurred_at || null,
+    actor_id: row.actor_id || null,
+    object_ref: row.object_ref || null,
+    subject_ref: row.subject_ref || null,
+    chain_name: row.chain_name || null,
+    path: row.path || null,
+    stone_hash: row.stone_hash || null,
+    from_state: row.from_state || null,
+    to_state: row.to_state || null,
+    lod_level: row.lod_level || null,
+    observed_commit_sha: row.observed_commit_sha || null,
+    content_sha256: row.content_sha256 || null,
+    accepted_state_authority: false,
+    chain_heads_mutated: false,
+    path_heads_mutated: false
+  };
+}
+
+export function queryJournalEvents(rows = [], filters = {}) {
+  const actorId = typeof filters.actor_id === "string" ? filters.actor_id.trim() : "";
+  if (!actorId) return { ok: false, error: "actor_required", ...authorityClosedFields() };
+  const cursor = decodeJournalCursor(filters.after_cursor);
+  if (!cursor.ok) return { ...cursor, ...authorityClosedFields() };
+  const source = filters.journal_source == null || filters.journal_source === "" ? null : String(filters.journal_source);
+  if (source && !JOURNAL_SOURCES.includes(source) && source !== "journal") {
+    return { ok: false, error: "invalid_source", ...authorityClosedFields() };
+  }
+  const eventClass = filters.event_class ? String(filters.event_class) : null;
+  const eventType = filters.event_type ? String(filters.event_type) : null;
+  const chainName = filters.chain_name ? String(filters.chain_name) : null;
+  const since = filters.since ? String(filters.since) : null;
+  const includeChain = filters.include_chain_telemetry === true;
+  const lim = clampLimit(filters.limit);
+  const matched = (rows || []).filter((row) => {
+    if (!journalRowVisible(row, { actor_id: actorId, include_chain_telemetry: includeChain, chain_name: chainName })) return false;
+    if (source && row.source !== source) return false;
+    if (eventClass && row.event_class !== eventClass) return false;
+    if (eventType && row.event_type !== eventType) return false;
+    if (chainName && row.chain_name !== chainName) return false;
+    if (since && !(row.occurred_at > since)) return false;
+    if (cursor.cursor) {
+      const older = row.occurred_at < cursor.cursor.occurred_at
+        || (row.occurred_at === cursor.cursor.occurred_at && row.event_id < cursor.cursor.event_id);
+      if (!older) return false;
+    }
+    return true;
+  }).sort((a, b) => {
+    if (a.occurred_at !== b.occurred_at) return a.occurred_at < b.occurred_at ? 1 : -1;
+    return a.event_id < b.event_id ? 1 : -1;
+  });
+  const page = matched.slice(0, lim).map(projectJournalEvent);
+  const last = page[page.length - 1];
+  return {
+    ok: true,
+    schema: JOURNAL_QUERY_SCHEMA,
+    source: "journal",
+    events: page,
+    total: page.length,
+    next_cursor: matched.length > lim && last ? encodeJournalCursor(last) : null,
+    visibility: includeChain ? "participant_or_chain_telemetry" : "participant",
+    ...authorityClosedFields()
+  };
+}
+
+export async function queryJournalFromBody(body = {}, db) {
+  const actorId = typeof body.actor_id === "string" ? body.actor_id.trim() : "";
+  if (!actorId) return { ok: false, error: "actor_required", ...authorityClosedFields() };
+  const cursor = decodeJournalCursor(body.after_cursor);
+  if (!cursor.ok) return { ...cursor, ...authorityClosedFields() };
+  const eventClass = body.event_class ? String(body.event_class) : null;
+  const eventType = body.event_type ? String(body.event_type) : null;
+  const chainName = body.chain_name ? String(body.chain_name) : null;
+  const since = body.since ? String(body.since) : null;
+  const includeChain = body.include_chain_telemetry === true;
+  if (includeChain && !chainName) {
+    return { ok: false, error: "chain_name_required", detail: "include_chain_telemetry requires chain_name", ...authorityClosedFields() };
+  }
+  const lim = clampLimit(body.limit);
+  const sql = `
+    SELECT event_id, schema, event_type, event_class, source, occurred_at, actor_id,
+           object_ref, subject_ref, chain_name, path, stone_hash, from_state, to_state,
+           lod_level, observed_commit_sha, content_sha256, detail_json, accepted_state_authority
+    FROM event_journal
+    WHERE accepted_state_authority = 0
+      AND (
+        actor_id = ?
+        OR json_extract(detail_json, '$.sender_id') = ?
+        OR json_extract(detail_json, '$.recipient_id') = ?
+        OR (? = 1 AND actor_id IS NULL AND chain_name = ?)
+      )
+      AND (? IS NULL OR event_class = ?)
+      AND (? IS NULL OR event_type = ?)
+      AND (? IS NULL OR chain_name = ?)
+      AND (? IS NULL OR occurred_at > ?)
+      AND (
+        ? IS NULL
+        OR occurred_at < ?
+        OR (occurred_at = ? AND event_id < ?)
+      )
+    ORDER BY occurred_at DESC, event_id DESC
+    LIMIT ?
+  `;
+  const bound = [
+    actorId, actorId, actorId,
+    includeChain ? 1 : 0, chainName,
+    eventClass, eventClass,
+    eventType, eventType,
+    chainName, chainName,
+    since, since,
+    cursor.cursor ? cursor.cursor.occurred_at : null,
+    cursor.cursor ? cursor.cursor.occurred_at : null,
+    cursor.cursor ? cursor.cursor.occurred_at : null,
+    cursor.cursor ? cursor.cursor.event_id : null,
+    lim + 1
+  ];
+  const result = await db.prepare(sql).bind(...bound).all();
+  const rows = result?.results || [];
+  const page = rows.slice(0, lim).map(projectJournalEvent);
+  const last = page[page.length - 1];
+  return {
+    ok: true,
+    schema: JOURNAL_QUERY_SCHEMA,
+    source: "journal",
+    events: page,
+    total: page.length,
+    next_cursor: rows.length > lim && last ? encodeJournalCursor(last) : null,
+    visibility: includeChain ? "participant_or_chain_telemetry" : "participant",
+    ...authorityClosedFields()
+  };
+}
+
 export const EVENT_PLANE_LIST_TOOL_DEFINITION = Object.freeze({
   name: EVENT_PLANE_BROKER_TOOL_IDS.event_list,
-  description: "V7.7.10f first slice: read-only operational event projection over Task Runs. Poll/list only; no DO/WS upgrades in this slice.",
+  description: "V7.7.10f read-only event surface. Default source is the Task Run projection. source=journal queries the persistent semantic journal with participant visibility. Poll/list only; no DO/WS upgrades. Journal rows are telemetry, never accepted-state authority.",
   inputSchema: {
     type: "object",
     required: ["actor_id"],
     properties: {
       actor_id: { type: "string" },
+      source: { type: "string", enum: ["task_run", "journal"], description: "task_run (default) projects Task Runs. journal queries persistent event_journal." },
       task_run_id: { type: "string" },
       status: { type: "string" },
+      event_type: { type: "string" },
+      event_class: { type: "string", description: "Journal event_class filter. Ignored for task_run source." },
+      chain_name: { type: "string" },
+      include_chain_telemetry: { type: "boolean", description: "Journal only. When true with chain_name, also returns null-actor rows for that chain. Default false." },
       since: { type: "string", description: "Exclusive lower bound on occurred_at (ISO-8601 UTC string)." },
+      after_cursor: { type: "string", description: "Journal only. Exclusive opaque cursor from next_cursor." },
       limit: { type: "number", minimum: 1, maximum: MAX_LIST }
     },
     additionalProperties: false
