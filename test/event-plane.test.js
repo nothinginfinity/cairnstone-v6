@@ -17,7 +17,7 @@ import {
   encodeJournalCursor,
   listEventPlaneFromBody
 } from "../src/event-plane.js";
-import { handleMcpRpc, mcpToolsForProfile } from "../src/index.js";
+import worker, { handleMcpRpc, mcpToolsForProfile } from "../src/index.js";
 
 test("proposed run maps to task_run.proposed with authority closed flags", () => {
   const event = eventFromTaskRun({
@@ -462,4 +462,108 @@ test("MCP journal query uses trusted principal and denies legacy spoofing", asyn
   const taskRun = await call({ actor_id: "grok:cairnstone-v6" });
   assert.equal(taskRun.result.isError, false);
   assert.equal(rpcText(taskRun).schema, "cairnstone-event-v1");
+});
+
+
+function namesFromList(rpc) {
+  return rpc.result.tools.map(tool => tool.name);
+}
+
+test("authenticated Core advertises event list; unauthenticated Core does not", async () => {
+  const authList = await handleMcpRpc({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/list"
+  }, {}, { core: true, auth: true, authContext: { principal_id: "grok:cairnstone-v6" } });
+  assert.equal(namesFromList(authList).includes("cairnstone_event_list"), true);
+
+  const coreList = await handleMcpRpc({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/list"
+  }, {}, { core: true });
+  assert.equal(namesFromList(coreList).includes("cairnstone_event_list"), false);
+
+  const coreHttp = await worker.fetch(new Request("https://cairnstone.test/mcp/core", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" })
+  }), {});
+  const coreBody = await coreHttp.json();
+  assert.equal(coreBody.result.tools.some(tool => tool.name === "cairnstone_event_list"), false);
+});
+
+test("authenticated Core journal call uses principal and legacy journal stays denied", async () => {
+  const rows = [
+    journalRow({ event_id: "evt:own", occurred_at: "2026-10-06T00:02:00.000Z" }),
+    journalRow({
+      event_id: "evt:other",
+      occurred_at: "2026-10-06T00:03:00.000Z",
+      actor_id: "claude:cairnstone-v6",
+      detail: { recipient_id: "claude:cairnstone-v6", sender_id: "chatgpt:cairnstone-v6", body: "hidden body" }
+    })
+  ];
+  const db = {
+    prepare(sql) {
+      const args = [];
+      return {
+        bind(...bound) {
+          args.push(...bound);
+          return this;
+        },
+        async all() {
+          if (!sql.includes("FROM event_journal")) return { results: [] };
+          const actorId = args[0];
+          return { results: rows.filter((row) => row.actor_id === actorId || JSON.parse(row.detail_json).sender_id === actorId || JSON.parse(row.detail_json).recipient_id === actorId) };
+        },
+        async first() { return null; }
+      };
+    }
+  };
+  const allowed = await handleMcpRpc({
+    jsonrpc: "2.0",
+    id: 4,
+    method: "tools/call",
+    params: { name: "cairnstone_event_list", arguments: { source: "journal" } }
+  }, { CAIRNSTONE_DB: db }, { core: true, auth: true, authContext: { principal_id: "grok:cairnstone-v6" } });
+  assert.equal(allowed.result.isError, false);
+  const payload = rpcText(allowed);
+  assert.deepEqual(payload.events.map(event => event.event_id), ["evt:own"]);
+  assert.equal(JSON.stringify(payload).includes("hidden body"), false);
+
+  const spoofed = await handleMcpRpc({
+    jsonrpc: "2.0",
+    id: 5,
+    method: "tools/call",
+    params: { name: "cairnstone_event_list", arguments: { source: "journal", actor_id: "claude:cairnstone-v6" } }
+  }, { CAIRNSTONE_DB: db }, { core: true, auth: true, authContext: { principal_id: "grok:cairnstone-v6" } });
+  assert.equal(spoofed.result.isError, true);
+  assert.equal(rpcText(spoofed).error, "caller_assertion_forbidden");
+
+  const legacy = await worker.fetch(new Request("https://cairnstone.test/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "tools/call",
+      params: { name: "cairnstone_event_list", arguments: { source: "journal", actor_id: "grok:cairnstone-v6" } }
+    })
+  }), { CAIRNSTONE_DB: db });
+  const legacyBody = await legacy.json();
+  assert.equal(JSON.parse(legacyBody.result.content[0].text).error, "journal_auth_required");
+
+  const taskRun = await worker.fetch(new Request("https://cairnstone.test/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: { name: "cairnstone_event_list", arguments: { actor_id: "grok:cairnstone-v6" } }
+    })
+  }), { CAIRNSTONE_DB: db });
+  const taskBody = JSON.parse((await taskRun.json()).result.content[0].text);
+  assert.equal(taskBody.schema, "cairnstone-event-v1");
+  assert.equal(taskBody.ok, true);
 });
