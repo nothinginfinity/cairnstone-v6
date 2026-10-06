@@ -322,7 +322,11 @@ const AUTH_CORE_TOOL_NAMES = Object.freeze(new Set([
   "cairnstone_unified_conversations",
   "cairnstone_turnsync_append",
   "cairnstone_turnsync_policy_get",
-  "cairnstone_turnsync_policy_set"
+  "cairnstone_turnsync_policy_set",
+  // V7.7.10f.1d: journal query needs a trusted principal. Advertise the
+  // existing event list only on authenticated Core, not unauthenticated
+  // /mcp/core and not the generic broker.
+  "cairnstone_event_list"
 ]));
 
 export default {

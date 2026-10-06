@@ -36,5 +36,6 @@ Journal query is read-only telemetry:
 - Null-actor chain telemetry (for example freshness checks) is returned only when `include_chain_telemetry=true` and `chain_name` matches.
 - Filters are bounded: `event_class`, `event_type`, `chain_name`, `object_ref`, `stone_hash`, exclusive `since`, exclusive `after_cursor`, and `limit` 1–100.
 - `source=journal` requires `CORE_AUTH_CONTEXT.principal_id`. The participant boundary is that principal, not a caller-supplied `actor_id`. A mismatched `actor_id` is rejected. Legacy unauthenticated `/mcp` is denied for journal source and unchanged for the Task Run projection.
+- Authenticated `/mcp/core-auth` includes `cairnstone_event_list` in the native profile so the journal path is reachable. Unauthenticated `/mcp/core` does not. The tool stays unclassified for the generic broker.
 - `include_chain_telemetry` still requires `chain_name` and cannot substitute for the authenticated principal.
 - No new migration. No DO/WS upgrade.
