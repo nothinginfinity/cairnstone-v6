@@ -4,13 +4,20 @@ import {
   EVENT_SCHEMA,
   TREE_SCHEMA,
   EVENT_TYPES,
+  JOURNAL_QUERY_SCHEMA,
   eventFromTaskRun,
   projectAgentTree,
   listEventsFromTaskRuns,
   subscribeHonesty,
-  agentTreeFromBody
+  agentTreeFromBody,
+  journalRowVisible,
+  projectJournalEvent,
+  queryJournalEvents,
+  queryJournalFromBody,
+  encodeJournalCursor,
+  listEventPlaneFromBody
 } from "../src/event-plane.js";
-import { mcpToolsForProfile } from "../src/index.js";
+import { handleMcpRpc, mcpToolsForProfile } from "../src/index.js";
 
 test("proposed run maps to task_run.proposed with authority closed flags", () => {
   const event = eventFromTaskRun({
@@ -216,4 +223,243 @@ test("event plane MCP tools are exposed on mcpTools()", () => {
   const names = new Set(mcpToolsForProfile(false).map(t => t.name));
   assert.equal(names.has("cairnstone_event_list"), true);
   assert.equal(names.has("cairnstone_agent_tree"), true);
+});
+
+function journalRow(overrides = {}) {
+  return {
+    event_id: overrides.event_id,
+    schema: "cairnstone-semantic-event-v1",
+    event_type: overrides.event_type || "ac1.delivery.transitioned",
+    event_class: overrides.event_class || "semantic",
+    source: overrides.source || "journal",
+    occurred_at: overrides.occurred_at,
+    actor_id: Object.prototype.hasOwnProperty.call(overrides, "actor_id") ? overrides.actor_id : "grok:cairnstone-v6",
+    object_ref: overrides.object_ref || "delivery:1",
+    subject_ref: "stone:abc",
+    chain_name: overrides.chain_name || null,
+    path: overrides.path || null,
+    stone_hash: overrides.stone_hash || "abc",
+    from_state: overrides.from_state || null,
+    to_state: overrides.to_state || "delivered",
+    lod_level: null,
+    observed_commit_sha: null,
+    content_sha256: null,
+    detail_json: JSON.stringify(overrides.detail || { recipient_id: "grok:cairnstone-v6", message_id: "msg:1", sender_id: "chatgpt:cairnstone-v6" }),
+    accepted_state_authority: overrides.accepted_state_authority ?? 0,
+    body: "secret message body must not leak"
+  };
+}
+
+test("journal query is participant-scoped and does not project payload fields", () => {
+  const own = journalRow({ event_id: "evt:own", occurred_at: "2026-10-06T00:01:00.000Z" });
+  const other = journalRow({
+    event_id: "evt:other",
+    occurred_at: "2026-10-06T00:02:00.000Z",
+    actor_id: "claude:cairnstone-v6",
+    detail: { recipient_id: "claude:cairnstone-v6", sender_id: "chatgpt:cairnstone-v6", message_id: "msg:other", body: "hidden" }
+  });
+  const senderVisible = journalRow({
+    event_id: "evt:sender",
+    occurred_at: "2026-10-06T00:03:00.000Z",
+    actor_id: "claude:cairnstone-v6",
+    detail: { recipient_id: "claude:cairnstone-v6", sender_id: "grok:cairnstone-v6", message_id: "msg:sent" }
+  });
+  const listed = queryJournalEvents([own, other, senderVisible], { actor_id: "grok:cairnstone-v6" });
+  assert.equal(listed.ok, true);
+  assert.equal(listed.schema, JOURNAL_QUERY_SCHEMA);
+  assert.equal(listed.accepted_state_authority, false);
+  assert.equal(listed.chain_heads_mutated, false);
+  assert.equal(listed.path_heads_mutated, false);
+  assert.deepEqual(listed.events.map(event => event.event_id), ["evt:sender", "evt:own"]);
+  for (const event of listed.events) {
+    assert.equal(event.accepted_state_authority, false);
+    assert.equal("detail_json" in event, false);
+    assert.equal("body" in event, false);
+    assert.equal(JSON.stringify(event).includes("secret message body"), false);
+    assert.equal(JSON.stringify(event).includes("hidden"), false);
+  }
+  assert.equal(journalRowVisible(other, { actor_id: "grok:cairnstone-v6" }), false);
+});
+
+test("journal query applies event class, source, exclusive cursor, and limit", () => {
+  const rows = [
+    journalRow({ event_id: "evt:c", occurred_at: "2026-10-06T00:03:00.000Z", event_class: "semantic" }),
+    journalRow({ event_id: "evt:b", occurred_at: "2026-10-06T00:02:00.000Z", event_class: "semantic" }),
+    journalRow({ event_id: "evt:a", occurred_at: "2026-10-06T00:01:00.000Z", event_class: "operational" })
+  ];
+  const first = queryJournalEvents(rows, { actor_id: "grok:cairnstone-v6", event_class: "semantic", limit: 1 });
+  assert.equal(first.events[0].event_id, "evt:c");
+  assert.ok(first.next_cursor);
+  const second = queryJournalEvents(rows, {
+    actor_id: "grok:cairnstone-v6",
+    event_class: "semantic",
+    after_cursor: first.next_cursor,
+    limit: 10
+  });
+  assert.deepEqual(second.events.map(event => event.event_id), ["evt:b"]);
+  assert.equal(second.next_cursor, null);
+  const encoded = encodeJournalCursor(first.events[0]);
+  assert.equal(encoded, first.next_cursor);
+});
+
+test("null-actor chain telemetry stays hidden unless chain scope is explicit", () => {
+  const freshness = journalRow({
+    event_id: "evt:fresh",
+    occurred_at: "2026-10-06T00:04:00.000Z",
+    event_type: "freshness.checked",
+    actor_id: null,
+    chain_name: "cairnstone-v6-project-memory",
+    path: "src/event-plane.js",
+    detail: { outcome: "in_sync" }
+  });
+  const hidden = queryJournalEvents([freshness], { actor_id: "grok:cairnstone-v6" });
+  assert.deepEqual(hidden.events, []);
+  const shown = queryJournalEvents([freshness], {
+    actor_id: "grok:cairnstone-v6",
+    chain_name: "cairnstone-v6-project-memory",
+    include_chain_telemetry: true
+  });
+  assert.equal(shown.events[0].event_id, "evt:fresh");
+  assert.equal(shown.events[0].content_sha256, null);
+  assert.equal(projectJournalEvent(freshness).accepted_state_authority, false);
+});
+
+test("journal D1 query enforces visibility and omits other actors", async () => {
+  const rows = [
+    journalRow({ event_id: "evt:own", occurred_at: "2026-10-06T00:02:00.000Z" }),
+    journalRow({
+      event_id: "evt:other",
+      occurred_at: "2026-10-06T00:03:00.000Z",
+      actor_id: "claude:cairnstone-v6",
+      detail: { recipient_id: "claude:cairnstone-v6", sender_id: "chatgpt:cairnstone-v6" }
+    })
+  ];
+  const db = {
+    prepare(sql) {
+      assert.match(sql, /FROM event_journal/);
+      assert.match(sql, /accepted_state_authority = 0/);
+      const args = [];
+      return {
+        bind(...bound) {
+          args.push(...bound);
+          return this;
+        },
+        async all() {
+          const actorId = args[0];
+          const includeChain = args[3] === 1;
+          const chainName = args[4];
+          const eventClass = args[5];
+          const eventType = args[7];
+          const filterChain = args[9];
+          const objectRef = args[11];
+          const stoneHash = args[13];
+          const since = args[15];
+          const cursorAt = args[17];
+          const cursorId = args[20];
+          const limit = args[21];
+          const visible = rows.filter((row) => {
+            const detail = JSON.parse(row.detail_json);
+            const participant = row.actor_id === actorId || detail.sender_id === actorId || detail.recipient_id === actorId;
+            const chainTelemetry = includeChain && row.actor_id == null && row.chain_name === chainName;
+            if (!participant && !chainTelemetry) return false;
+            if (eventClass && row.event_class !== eventClass) return false;
+            if (eventType && row.event_type !== eventType) return false;
+            if (filterChain && row.chain_name !== filterChain) return false;
+            if (objectRef && row.object_ref !== objectRef) return false;
+            if (stoneHash && row.stone_hash !== stoneHash) return false;
+            if (since && !(row.occurred_at > since)) return false;
+            if (cursorAt && !(row.occurred_at < cursorAt || (row.occurred_at === cursorAt && row.event_id < cursorId))) return false;
+            return true;
+          }).sort((a, b) => a.occurred_at < b.occurred_at ? 1 : -1);
+          return { results: visible.slice(0, limit) };
+        }
+      };
+    }
+  };
+  const authEnv = { CORE_AUTH_CONTEXT: { principal_id: "grok:cairnstone-v6" } };
+  const listed = await queryJournalFromBody({ actor_id: "grok:cairnstone-v6", source: "journal" }, db, authEnv);
+  assert.equal(listed.ok, true);
+  assert.deepEqual(listed.events.map(event => event.event_id), ["evt:own"]);
+  assert.equal(listed.events[0].accepted_state_authority, false);
+  const missing = await listEventPlaneFromBody({ source: "journal" }, { CAIRNSTONE_DB: db });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.error, "journal_auth_required");
+  const spoofed = await queryJournalFromBody({ actor_id: "claude:cairnstone-v6", source: "journal" }, db, authEnv);
+  assert.equal(spoofed.ok, false);
+  assert.equal(spoofed.error, "actor_mismatch");
+  const bad = await listEventPlaneFromBody({ actor_id: "grok:cairnstone-v6", source: "other" }, { CAIRNSTONE_DB: db });
+  assert.equal(bad.error, "invalid_source");
+});
+
+function rpcText(rpc) {
+  return JSON.parse(rpc.result.content[0].text);
+}
+
+test("MCP journal query uses trusted principal and denies legacy spoofing", async () => {
+  const rows = [
+    journalRow({ event_id: "evt:own", occurred_at: "2026-10-06T00:02:00.000Z", object_ref: "delivery:own", stone_hash: "hashown" }),
+    journalRow({
+      event_id: "evt:other",
+      occurred_at: "2026-10-06T00:03:00.000Z",
+      actor_id: "claude:cairnstone-v6",
+      object_ref: "delivery:other",
+      detail: { recipient_id: "claude:cairnstone-v6", sender_id: "chatgpt:cairnstone-v6", body: "hidden body" }
+    })
+  ];
+  const db = {
+    prepare(sql) {
+      const args = [];
+      return {
+        bind(...bound) {
+          args.push(...bound);
+          return this;
+        },
+        async all() {
+          if (!sql.includes("FROM event_journal")) return { results: [] };
+          const actorId = args[0];
+          const objectRef = args[11];
+          const stoneHash = args[13];
+          const visible = rows.filter((row) => {
+            const detail = JSON.parse(row.detail_json);
+            const participant = row.actor_id === actorId || detail.sender_id === actorId || detail.recipient_id === actorId;
+            if (!participant) return false;
+            if (objectRef && row.object_ref !== objectRef) return false;
+            if (stoneHash && row.stone_hash !== stoneHash) return false;
+            return true;
+          });
+          return { results: visible };
+        },
+        async first() { return null; }
+      };
+    }
+  };
+  const env = { CAIRNSTONE_DB: db };
+  const call = (args, authContext) => handleMcpRpc({
+    jsonrpc: "2.0",
+    id: 7,
+    method: "tools/call",
+    params: { name: "cairnstone_event_list", arguments: args }
+  }, env, authContext ? { authContext } : {});
+
+  const allowed = await call({ source: "journal", actor_id: "grok:cairnstone-v6" }, { principal_id: "grok:cairnstone-v6" });
+  assert.equal(allowed.result.isError, false);
+  const payload = rpcText(allowed);
+  assert.deepEqual(payload.events.map(event => event.event_id), ["evt:own"]);
+  assert.equal(JSON.stringify(payload).includes("hidden body"), false);
+  assert.equal(payload.accepted_state_authority, false);
+
+  const filtered = await call({ source: "journal", object_ref: "delivery:own", stone_hash: "hashown" }, { principal_id: "grok:cairnstone-v6" });
+  assert.equal(rpcText(filtered).events[0].event_id, "evt:own");
+
+  const spoofed = await call({ source: "journal", actor_id: "claude:cairnstone-v6", include_chain_telemetry: true, chain_name: "cairnstone-v6-project-memory" }, { principal_id: "grok:cairnstone-v6" });
+  assert.equal(spoofed.result.isError, true);
+  assert.equal(rpcText(spoofed).error, "caller_assertion_forbidden");
+
+  const legacy = await call({ source: "journal", actor_id: "grok:cairnstone-v6" });
+  assert.equal(legacy.result.isError, true);
+  assert.equal(rpcText(legacy).error, "journal_auth_required");
+
+  const taskRun = await call({ actor_id: "grok:cairnstone-v6" });
+  assert.equal(taskRun.result.isError, false);
+  assert.equal(rpcText(taskRun).schema, "cairnstone-event-v1");
 });
