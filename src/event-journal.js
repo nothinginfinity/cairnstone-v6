@@ -255,6 +255,29 @@ function publicEvent(row = {}) {
   };
 }
 
+
+const LOD_PAYLOAD_KEY_RE = /^(payload|content|raw|value|text|body|preview|layers)$/i;
+
+export async function recordLodRead(db, input = {}) {
+  const detail = input.detail && typeof input.detail === "object" ? input.detail : {};
+  for (const key of Object.keys(detail)) {
+    if (LOD_PAYLOAD_KEY_RE.test(key)) {
+      return fail("lod_payload_rejected", "stone.lod.read detail must contain actor/object/lod identity only");
+    }
+  }
+  return appendEventJournal(db, {
+    event_type: "stone.lod.read",
+    actor_id: input.actor_id,
+    object_ref: input.stone_hash ? `stone:${input.stone_hash}` : input.object_ref,
+    subject_ref: input.subject_ref,
+    chain: input.chain,
+    path: input.path,
+    stone_hash: input.stone_hash,
+    lod_level: input.lod_level,
+    detail: { lod_level: input.lod_level || null }
+  });
+}
+
 export async function listEventJournal(db, filters = {}) {
   if (!db?.prepare) return fail("missing_d1_binding", "CAIRNSTONE_DB required");
   const rawLimit = Number.isInteger(filters.limit) ? filters.limit : EVENT_JOURNAL_DEFAULT_LIST;
