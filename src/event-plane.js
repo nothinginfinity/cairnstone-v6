@@ -172,7 +172,7 @@ function envDb(env = {}) {
 export async function listEventPlaneFromBody(body = {}, env = {}) {
   const bindings = envDb(env);
   if (!bindings.ok) return bindings;
-  if (body.source === "journal") return queryJournalFromBody(body, bindings.db);
+  if (body.source === "journal") return queryJournalFromBody(body, bindings.db, env);
   if (body.source != null && body.source !== "task_run") {
     return { ok: false, error: "invalid_source", detail: "source must be task_run or journal", ...authorityClosedFields() };
   }
@@ -354,6 +354,8 @@ export function queryJournalEvents(rows = [], filters = {}) {
   const eventClass = filters.event_class ? String(filters.event_class) : null;
   const eventType = filters.event_type ? String(filters.event_type) : null;
   const chainName = filters.chain_name ? String(filters.chain_name) : null;
+  const objectRef = filters.object_ref ? String(filters.object_ref) : null;
+  const stoneHash = filters.stone_hash ? String(filters.stone_hash) : null;
   const since = filters.since ? String(filters.since) : null;
   const includeChain = filters.include_chain_telemetry === true;
   const lim = clampLimit(filters.limit);
@@ -363,6 +365,8 @@ export function queryJournalEvents(rows = [], filters = {}) {
     if (eventClass && row.event_class !== eventClass) return false;
     if (eventType && row.event_type !== eventType) return false;
     if (chainName && row.chain_name !== chainName) return false;
+    if (objectRef && row.object_ref !== objectRef) return false;
+    if (stoneHash && row.stone_hash !== stoneHash) return false;
     if (since && !(row.occurred_at > since)) return false;
     if (cursor.cursor) {
       const older = row.occurred_at < cursor.cursor.occurred_at
@@ -388,14 +392,38 @@ export function queryJournalEvents(rows = [], filters = {}) {
   };
 }
 
-export async function queryJournalFromBody(body = {}, db) {
-  const actorId = typeof body.actor_id === "string" ? body.actor_id.trim() : "";
-  if (!actorId) return { ok: false, error: "actor_required", ...authorityClosedFields() };
+export function trustedJournalPrincipal(env = {}) {
+  const principal = env?.CORE_AUTH_CONTEXT?.principal_id;
+  return typeof principal === "string" && principal.trim() ? principal.trim() : null;
+}
+
+export async function queryJournalFromBody(body = {}, db, env = {}) {
+  const principal = trustedJournalPrincipal(env);
+  if (!principal) {
+    return {
+      ok: false,
+      error: "journal_auth_required",
+      detail: "source=journal requires an authenticated principal. Legacy unauthenticated /mcp cannot query the journal.",
+      ...authorityClosedFields()
+    };
+  }
+  const asserted = typeof body.actor_id === "string" ? body.actor_id.trim() : "";
+  if (asserted && asserted !== principal) {
+    return {
+      ok: false,
+      error: "actor_mismatch",
+      detail: "asserted actor_id does not match the authenticated principal",
+      ...authorityClosedFields()
+    };
+  }
+  const actorId = principal;
   const cursor = decodeJournalCursor(body.after_cursor);
   if (!cursor.ok) return { ...cursor, ...authorityClosedFields() };
   const eventClass = body.event_class ? String(body.event_class) : null;
   const eventType = body.event_type ? String(body.event_type) : null;
   const chainName = body.chain_name ? String(body.chain_name) : null;
+  const objectRef = body.object_ref ? String(body.object_ref) : null;
+  const stoneHash = body.stone_hash ? String(body.stone_hash) : null;
   const since = body.since ? String(body.since) : null;
   const includeChain = body.include_chain_telemetry === true;
   if (includeChain && !chainName) {
@@ -417,6 +445,8 @@ export async function queryJournalFromBody(body = {}, db) {
       AND (? IS NULL OR event_class = ?)
       AND (? IS NULL OR event_type = ?)
       AND (? IS NULL OR chain_name = ?)
+      AND (? IS NULL OR object_ref = ?)
+      AND (? IS NULL OR stone_hash = ?)
       AND (? IS NULL OR occurred_at > ?)
       AND (
         ? IS NULL
@@ -432,6 +462,8 @@ export async function queryJournalFromBody(body = {}, db) {
     eventClass, eventClass,
     eventType, eventType,
     chainName, chainName,
+    objectRef, objectRef,
+    stoneHash, stoneHash,
     since, since,
     cursor.cursor ? cursor.cursor.occurred_at : null,
     cursor.cursor ? cursor.cursor.occurred_at : null,
@@ -469,7 +501,9 @@ export const EVENT_PLANE_LIST_TOOL_DEFINITION = Object.freeze({
       event_type: { type: "string" },
       event_class: { type: "string", description: "Journal event_class filter. Ignored for task_run source." },
       chain_name: { type: "string" },
-      include_chain_telemetry: { type: "boolean", description: "Journal only. When true with chain_name, also returns null-actor rows for that chain. Default false." },
+      object_ref: { type: "string", description: "Journal only. Exact object_ref filter." },
+      stone_hash: { type: "string", description: "Journal only. Exact stone_hash filter." },
+      include_chain_telemetry: { type: "boolean", description: "Journal only. When true with chain_name, also returns null-actor rows for that chain. Does not bypass the authenticated principal. Default false." },
       since: { type: "string", description: "Exclusive lower bound on occurred_at (ISO-8601 UTC string)." },
       after_cursor: { type: "string", description: "Journal only. Exclusive opaque cursor from next_cursor." },
       limit: { type: "number", minimum: 1, maximum: MAX_LIST }
