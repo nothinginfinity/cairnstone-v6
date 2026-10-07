@@ -238,6 +238,20 @@
       "dependencies": ["core.orient", "core.verify-live-state"],
       "estimated_tokens": 560,
       "enabled": true
+    },
+    {
+      "id": "cairnstone.hop-card",
+      "title": "Cross-app hop card",
+      "version": "1.0.0",
+      "status": "stable",
+      "description": "Emit a compact copyable CairnStone pointer plus tappable HTTPS links for continuing work in another mobile app.",
+      "path": "skills/cairnstone/hop-card/SKILL.md",
+      "tags": ["cairnstone", "handoff", "mobile", "cross-app", "ac1", "pointer", "deep-link"],
+      "triggers": ["hop card", "continue this in another app", "handoff to another app", "open this in claude", "open this in grok", "open this in perplexity"],
+      "requires_tools": [],
+      "dependencies": [],
+      "estimated_tokens": 650,
+      "enabled": true
     }
   ]
 }
