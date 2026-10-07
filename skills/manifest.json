@@ -2,9 +2,7 @@
   "version": 2,
   "schema": "cairnstone-skill-manifest-v1",
   "chain": "cairnstone-v6-skills",
-  "boot": [
-    "core.orient"
-  ],
+  "boot": ["core.orient"],
   "policy": {
     "source_of_truth": "github",
     "acceptance_authority": "cairnstone_path_head",
@@ -38,25 +36,9 @@
       "status": "stable",
       "description": "Establish bounded exact accepted project state before specialized work, with START HERE expansion and multi-chain Scope rules.",
       "path": "skills/core/orient/SKILL.md",
-      "tags": [
-        "orientation",
-        "resume",
-        "start-here",
-        "scope",
-        "head",
-        "project-memory",
-        "correspondence"
-      ],
-      "triggers": [
-        "catch me up",
-        "get oriented",
-        "continue work",
-        "resume project"
-      ],
-      "requires_tools": [
-        "cairnstone_health",
-        "cairnstone_resume_chain"
-      ],
+      "tags": ["orientation", "resume", "start-here", "scope", "head", "project-memory", "correspondence"],
+      "triggers": ["catch me up", "get oriented", "continue work", "resume project"],
+      "requires_tools": ["cairnstone_health", "cairnstone_resume_chain"],
       "dependencies": [],
       "estimated_tokens": 700,
       "enabled": true
@@ -68,24 +50,10 @@
       "status": "stable",
       "description": "Choose the narrowest trustworthy read or mutation tool and verify capabilities instead of guessing.",
       "path": "skills/core/choose-tools/SKILL.md",
-      "tags": [
-        "tools",
-        "mcp",
-        "capabilities",
-        "mutation",
-        "read-only",
-        "deterministic"
-      ],
-      "triggers": [
-        "which tool",
-        "use the tools",
-        "fix this",
-        "debug this"
-      ],
+      "tags": ["tools", "mcp", "capabilities", "mutation", "read-only", "deterministic"],
+      "triggers": ["which tool", "use the tools", "fix this", "debug this"],
       "requires_tools": [],
-      "dependencies": [
-        "core.orient"
-      ],
+      "dependencies": ["core.orient"],
       "estimated_tokens": 550,
       "enabled": true
     },
@@ -96,24 +64,10 @@
       "status": "stable",
       "description": "Distinguish successful tooling from verified behavior and accepted state.",
       "path": "skills/core/verify-live-state/SKILL.md",
-      "tags": [
-        "verify",
-        "live",
-        "deploy",
-        "acceptance",
-        "freshness",
-        "regression"
-      ],
-      "triggers": [
-        "verify",
-        "did it work",
-        "deploy succeeded",
-        "acceptance"
-      ],
+      "tags": ["verify", "live", "deploy", "acceptance", "freshness", "regression"],
+      "triggers": ["verify", "did it work", "deploy succeeded", "acceptance"],
       "requires_tools": [],
-      "dependencies": [
-        "core.orient"
-      ],
+      "dependencies": ["core.orient"],
       "estimated_tokens": 600,
       "enabled": true
     },
@@ -124,28 +78,10 @@
       "status": "stable",
       "description": "Diagnose CI and deploy failures from workflow runs, jobs, and step conclusions before reaching for unrelated repo surfaces.",
       "path": "skills/github/actions-triage/SKILL.md",
-      "tags": [
-        "github",
-        "actions",
-        "ci",
-        "workflow",
-        "deploy",
-        "failure"
-      ],
-      "triggers": [
-        "ci failed",
-        "workflow failed",
-        "deploy failed",
-        "github actions",
-        "why did the deploy fail"
-      ],
-      "requires_tools": [
-        "AFO GitHub API MCP.list_workflow_runs",
-        "AFO GitHub API MCP.list_workflow_run_jobs"
-      ],
-      "dependencies": [
-        "core.verify-live-state"
-      ],
+      "tags": ["github", "actions", "ci", "workflow", "deploy", "failure"],
+      "triggers": ["ci failed", "workflow failed", "deploy failed", "github actions", "why did the deploy fail"],
+      "requires_tools": ["AFO GitHub API MCP.list_workflow_runs", "AFO GitHub API MCP.list_workflow_run_jobs"],
+      "dependencies": ["core.verify-live-state"],
       "estimated_tokens": 500,
       "enabled": true
     },
@@ -156,27 +92,10 @@
       "status": "stable",
       "description": "Use job IDs, not run IDs, for raw GitHub Actions logs and treat the logs endpoint redirect as success.",
       "path": "skills/github/actions-job-logs/SKILL.md",
-      "tags": [
-        "github",
-        "actions",
-        "logs",
-        "job_id",
-        "run_id",
-        "302",
-        "failure"
-      ],
-      "triggers": [
-        "job logs",
-        "raw logs",
-        "actions logs",
-        "download logs"
-      ],
-      "requires_tools": [
-        "AFO GitHub API MCP.list_workflow_run_jobs"
-      ],
-      "dependencies": [
-        "github.actions-triage"
-      ],
+      "tags": ["github", "actions", "logs", "job_id", "run_id", "302", "failure"],
+      "triggers": ["job logs", "raw logs", "actions logs", "download logs"],
+      "requires_tools": ["AFO GitHub API MCP.list_workflow_run_jobs"],
+      "dependencies": ["github.actions-triage"],
       "estimated_tokens": 400,
       "enabled": true
     },
@@ -187,26 +106,10 @@
       "status": "stable",
       "description": "Read repository files through the Contents API with explicit repo, path, and ref evidence.",
       "path": "skills/github/repo-file-read/SKILL.md",
-      "tags": [
-        "github",
-        "repository",
-        "contents",
-        "file",
-        "source",
-        "read-only"
-      ],
-      "triggers": [
-        "read repository file",
-        "inspect source file",
-        "show github file"
-      ],
-      "requires_tools": [
-        "AFO GitHub API MCP.search",
-        "AFO GitHub API MCP.call"
-      ],
-      "dependencies": [
-        "core.choose-tools"
-      ],
+      "tags": ["github", "repository", "contents", "file", "source", "read-only"],
+      "triggers": ["read repository file", "inspect source file", "show github file"],
+      "requires_tools": ["AFO GitHub API MCP.search", "AFO GitHub API MCP.call"],
+      "dependencies": ["core.choose-tools"],
       "estimated_tokens": 420,
       "enabled": true
     },
@@ -217,26 +120,10 @@
       "status": "stable",
       "description": "Inspect pull requests, changed files, commits, and check evidence before recommending merge or repair work.",
       "path": "skills/github/pull-request-triage/SKILL.md",
-      "tags": [
-        "github",
-        "pull-request",
-        "checks",
-        "files",
-        "review",
-        "merge"
-      ],
-      "triggers": [
-        "review pull request",
-        "pr status",
-        "why is this pr blocked"
-      ],
-      "requires_tools": [
-        "AFO GitHub API MCP.search",
-        "AFO GitHub API MCP.call"
-      ],
-      "dependencies": [
-        "core.verify-live-state"
-      ],
+      "tags": ["github", "pull-request", "checks", "files", "review", "merge"],
+      "triggers": ["review pull request", "pr status", "why is this pr blocked"],
+      "requires_tools": ["AFO GitHub API MCP.search", "AFO GitHub API MCP.call"],
+      "dependencies": ["core.verify-live-state"],
       "estimated_tokens": 520,
       "enabled": true
     },
@@ -247,26 +134,10 @@
       "status": "stable",
       "description": "Resolve repository state to concrete commit SHA evidence before making freshness, deployment, or acceptance claims.",
       "path": "skills/github/commit-evidence/SKILL.md",
-      "tags": [
-        "github",
-        "commit",
-        "sha",
-        "provenance",
-        "branch",
-        "evidence"
-      ],
-      "triggers": [
-        "which commit is live",
-        "resolve commit sha",
-        "commit evidence"
-      ],
-      "requires_tools": [
-        "AFO GitHub API MCP.search",
-        "AFO GitHub API MCP.call"
-      ],
-      "dependencies": [
-        "core.verify-live-state"
-      ],
+      "tags": ["github", "commit", "sha", "provenance", "branch", "evidence"],
+      "triggers": ["which commit is live", "resolve commit sha", "commit evidence"],
+      "requires_tools": ["AFO GitHub API MCP.search", "AFO GitHub API MCP.call"],
+      "dependencies": ["core.verify-live-state"],
       "estimated_tokens": 420,
       "enabled": true
     },
@@ -277,25 +148,10 @@
       "status": "stable",
       "description": "Inspect releases and tags as release evidence without confusing them with CI or deployment state.",
       "path": "skills/github/release-inspection/SKILL.md",
-      "tags": [
-        "github",
-        "release",
-        "tag",
-        "version",
-        "artifact"
-      ],
-      "triggers": [
-        "latest github release",
-        "inspect release",
-        "release tag"
-      ],
-      "requires_tools": [
-        "AFO GitHub API MCP.search",
-        "AFO GitHub API MCP.call"
-      ],
-      "dependencies": [
-        "core.choose-tools"
-      ],
+      "tags": ["github", "release", "tag", "version", "artifact"],
+      "triggers": ["latest github release", "inspect release", "release tag"],
+      "requires_tools": ["AFO GitHub API MCP.search", "AFO GitHub API MCP.call"],
+      "dependencies": ["core.choose-tools"],
       "estimated_tokens": 400,
       "enabled": true
     },
@@ -306,26 +162,10 @@
       "status": "stable",
       "description": "Read branch protection and required-check rules before diagnosing blocked pushes or merges.",
       "path": "skills/github/branch-protection-inspection/SKILL.md",
-      "tags": [
-        "github",
-        "branch",
-        "protection",
-        "required-checks",
-        "merge",
-        "policy"
-      ],
-      "triggers": [
-        "branch protection",
-        "required checks on branch",
-        "why is merge protected"
-      ],
-      "requires_tools": [
-        "AFO GitHub API MCP.search",
-        "AFO GitHub API MCP.call"
-      ],
-      "dependencies": [
-        "core.choose-tools"
-      ],
+      "tags": ["github", "branch", "protection", "required-checks", "merge", "policy"],
+      "triggers": ["branch protection", "required checks on branch", "why is merge protected"],
+      "requires_tools": ["AFO GitHub API MCP.search", "AFO GitHub API MCP.call"],
+      "dependencies": ["core.choose-tools"],
       "estimated_tokens": 430,
       "enabled": true
     },
@@ -336,28 +176,10 @@
       "status": "stable",
       "description": "Confirm workflow_dispatch support, inputs, target ref, and mutation authority before triggering a workflow.",
       "path": "skills/github/workflow-dispatch-safety/SKILL.md",
-      "tags": [
-        "github",
-        "actions",
-        "workflow-dispatch",
-        "mutation",
-        "safety",
-        "inputs"
-      ],
-      "triggers": [
-        "trigger github workflow",
-        "dispatch workflow",
-        "run workflow manually"
-      ],
-      "requires_tools": [
-        "AFO GitHub API MCP.search",
-        "AFO GitHub API MCP.call",
-        "AFO GitHub API MCP.trigger_workflow_dispatch"
-      ],
-      "dependencies": [
-        "core.choose-tools",
-        "github.repo-file-read"
-      ],
+      "tags": ["github", "actions", "workflow-dispatch", "mutation", "safety", "inputs"],
+      "triggers": ["trigger github workflow", "dispatch workflow", "run workflow manually"],
+      "requires_tools": ["AFO GitHub API MCP.search", "AFO GitHub API MCP.call", "AFO GitHub API MCP.trigger_workflow_dispatch"],
+      "dependencies": ["core.choose-tools", "github.repo-file-read"],
       "estimated_tokens": 520,
       "enabled": true
     },
@@ -368,27 +190,10 @@
       "status": "stable",
       "description": "Compare accepted per-path state to observed GitHub content without auto-accepting drift.",
       "path": "skills/cairnstone/source-freshness/SKILL.md",
-      "tags": [
-        "cairnstone",
-        "freshness",
-        "drift",
-        "path-head",
-        "github",
-        "read-only"
-      ],
-      "triggers": [
-        "check source freshness",
-        "is this path stale",
-        "source drift"
-      ],
-      "requires_tools": [
-        "cairnstone_check_source_freshness",
-        "cairnstone_get_source_freshness",
-        "cairnstone_freshness_status"
-      ],
-      "dependencies": [
-        "core.verify-live-state"
-      ],
+      "tags": ["cairnstone", "freshness", "drift", "path-head", "github", "read-only"],
+      "triggers": ["check source freshness", "is this path stale", "source drift"],
+      "requires_tools": ["cairnstone_check_source_freshness", "cairnstone_get_source_freshness", "cairnstone_freshness_status"],
+      "dependencies": ["core.verify-live-state"],
       "estimated_tokens": 480,
       "enabled": true
     },
@@ -399,25 +204,10 @@
       "status": "stable",
       "description": "Walk one immutable Git tree and classify added, changed, removed, and in-sync paths against accepted CairnStone state.",
       "path": "skills/cairnstone/repo-reconcile/SKILL.md",
-      "tags": [
-        "cairnstone",
-        "repository",
-        "reconcile",
-        "drift",
-        "git-tree",
-        "read-only"
-      ],
-      "triggers": [
-        "reconcile repository",
-        "compare repo to cairnstone",
-        "repo drift report"
-      ],
-      "requires_tools": [
-        "cairnstone_reconcile_repo"
-      ],
-      "dependencies": [
-        "cairnstone.source-freshness"
-      ],
+      "tags": ["cairnstone", "repository", "reconcile", "drift", "git-tree", "read-only"],
+      "triggers": ["reconcile repository", "compare repo to cairnstone", "repo drift report"],
+      "requires_tools": ["cairnstone_reconcile_repo"],
+      "dependencies": ["cairnstone.source-freshness"],
       "estimated_tokens": 480,
       "enabled": true
     },
@@ -428,28 +218,10 @@
       "status": "stable",
       "description": "Accept Git-versioned skills safely: immutable source, individual skill path HEADs first, manifest path HEAD last.",
       "path": "skills/cairnstone/skill-acceptance/SKILL.md",
-      "tags": [
-        "cairnstone",
-        "skills",
-        "acceptance",
-        "path-head",
-        "manifest",
-        "immutable"
-      ],
-      "triggers": [
-        "accept skill catalog",
-        "publish cairnstone skills",
-        "move skill path heads"
-      ],
-      "requires_tools": [
-        "cairnstone_lint_skills",
-        "cairnstone_commit_v2",
-        "cairnstone_set_path_head"
-      ],
-      "dependencies": [
-        "core.verify-live-state",
-        "github.commit-evidence"
-      ],
+      "tags": ["cairnstone", "skills", "acceptance", "path-head", "manifest", "immutable"],
+      "triggers": ["accept skill catalog", "publish cairnstone skills", "move skill path heads"],
+      "requires_tools": ["cairnstone_lint_skills", "cairnstone_commit_v2", "cairnstone_set_path_head"],
+      "dependencies": ["core.verify-live-state", "github.commit-evidence"],
       "estimated_tokens": 620,
       "enabled": true
     },
@@ -460,28 +232,10 @@
       "status": "stable",
       "description": "Create a compact canonical continuation point and send AC1 correspondence after materially changing shared state.",
       "path": "skills/cairnstone/project-handoff/SKILL.md",
-      "tags": [
-        "cairnstone",
-        "handoff",
-        "project-memory",
-        "ac1",
-        "continuation",
-        "head"
-      ],
-      "triggers": [
-        "create stone handoff",
-        "handoff to another agent",
-        "close project slice"
-      ],
-      "requires_tools": [
-        "cairnstone_resume_chain",
-        "cairnstone_commit_v2",
-        "cairnstone_send_message"
-      ],
-      "dependencies": [
-        "core.orient",
-        "core.verify-live-state"
-      ],
+      "tags": ["cairnstone", "handoff", "project-memory", "ac1", "continuation", "head"],
+      "triggers": ["create stone handoff", "handoff to another agent", "close project slice"],
+      "requires_tools": ["cairnstone_resume_chain", "cairnstone_commit_v2", "cairnstone_send_message"],
+      "dependencies": ["core.orient", "core.verify-live-state"],
       "estimated_tokens": 560,
       "enabled": true
     },
@@ -492,23 +246,8 @@
       "status": "stable",
       "description": "Emit a compact copyable CairnStone pointer plus tappable HTTPS links for continuing work in another mobile app.",
       "path": "skills/cairnstone/hop-card/SKILL.md",
-      "tags": [
-        "cairnstone",
-        "handoff",
-        "mobile",
-        "cross-app",
-        "ac1",
-        "pointer",
-        "deep-link"
-      ],
-      "triggers": [
-        "hop card",
-        "continue this in another app",
-        "handoff to another app",
-        "open this in claude",
-        "open this in grok",
-        "open this in perplexity"
-      ],
+      "tags": ["cairnstone", "handoff", "mobile", "cross-app", "ac1", "pointer", "deep-link"],
+      "triggers": ["hop card", "continue this in another app", "handoff to another app", "open this in claude", "open this in grok", "open this in perplexity"],
       "requires_tools": [],
       "dependencies": [],
       "estimated_tokens": 650,
