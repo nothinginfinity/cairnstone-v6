@@ -370,6 +370,51 @@ more accepted path-head/edge detail.
   to re-derive context from scratch, and never collides silently with a
   concurrent one.
 
+### Cross-provider Hop Registry bootstrap — experimental mass test (2026-10-07)
+
+The version-controlled operating guide may also act as a **bootstrap distribution
+surface for bounded, non-secret navigation metadata** while the full CairnStone
+Hop Registry is still under design. Every provider project that already points
+at this guide may use the following operator-captured destination:
+
+- **hop alias:** `cairnstone-unified`
+- **provider:** `chatgpt`
+- **project name:** `CairnStone Unified`
+- **captured project URL:** `https://chatgpt.com/g/g-p-6a8b448f3d508191916887236146edd0-cairnstone-unified/project`
+- **captured project ref:** `g-p-6a8b448f3d508191916887236146edd0-cairnstone-unified`
+- **canonical work-plane actor:** `chatgpt:cairnstone-v6`
+- **provenance:** `captured` — operator supplied from the authenticated ChatGPT
+  Project on 2026-10-07
+- **cross-client precision outcome:** `untested` until each mobile/provider
+  surface is owner-tested independently
+
+Bootstrap rules:
+
+1. This destination is **navigation metadata only**. It is not a credential,
+   share/invite capability, execution grant, mutation grant, or accepted-state
+   authority.
+2. Do not replace it with a public share/invite link and do not invent a
+   provider-private URL constructor.
+3. Do not append prompt/prefill/query parameters to the captured Project URL
+   unless that exact behavior is independently owner-tested.
+4. For a mass test, carry the work separately as a compact CairnStone pointer
+   using the accepted `cairnstone.hop-card` contract. A good first pointer is
+   `thread:hop-bar-20261006`.
+5. Record each client/device result independently as
+   `exact | app-home | browser | failed`, with provider/client/device/date.
+   Success in one client never promotes another client's status.
+6. If the destination opens but cannot carry the pointer, classify it as
+   **open + paste**, not precision/prefill.
+7. This guide is only the **bootstrap broadcast plane**. Once the global Hop
+   Registry is implemented and accepted, the guide should point to that
+   registry rather than accumulate a growing list of provider/project/chat
+   destinations.
+
+This bootstrap lets ChatGPT, Claude, Grok, and other projects that share these
+version-controlled instructions participate in the same precision-hop
+experiment without manually pasting the Project URL into every project's
+instructions.
+
 ## 8. MCP Twin — client tool-catalog cache workaround (Grok, Claude, ChatGPT)
 
 Across Grok, Claude, and ChatGPT sessions we've repeatedly hit the same failure
@@ -476,7 +521,7 @@ documented decision, not a default reflex.
 
 ---
 
-*Last updated: 2026-09-07 (added Section 8, MCP Twin client tool-catalog
+*Last updated: 2026-10-07 (added experimental cross-provider Hop Registry bootstrap for version-controlled precision-hop mass testing).*\n\n*Previously: 2026-09-07 (added Section 8, MCP Twin client tool-catalog
 cache workaround; renumbered old Sections 8→9, 9→10).*
 
 *Previously: 2026-09-06. V7.7.1a bounded START HERE orientation is production-live-accepted on runtime 0.5.27: normal continuation should use `cairnstone_resume_chain(..., detail="start_here")`, with `compact`/`full` as deliberate expansion modes. V7.7 vault catalog/scope/search primitives are live; Scope is retrieval/navigation context only and never synthetic global authority. Cross-chain grounded Q&A (`cairnstone_ask_scope`) remains planned for V7.7.2 and must not be assumed shipped. V6.10 remains the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
