@@ -1,0 +1,44 @@
+name: S1-3 isolated private Worker deploy (manual, NEVER prod)
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_stage_only:
+        description: "Type DEPLOY_ISOLATED_S1_3_STAGE"
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  deploy:
+    if: ${{ github.event.inputs.confirm_stage_only == 'DEPLOY_ISOLATED_S1_3_STAGE' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: s1-3-staging
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Enforce pinned isolation and branch
+        run: |
+          test "${GITHUB_REF_NAME}" = "chatgpt/s1-3-private-staging" || { echo "::error::Wrong branch"; exit 1; }
+          grep -q '^name = "cairnstone-private-staging"$' wrangler.private-staging.toml
+          grep -q '^workers_dev = false$' wrangler.private-staging.toml
+          grep -q '^preview_urls = false$' wrangler.private-staging.toml
+          grep -q '26d4e786-2da7-47a4-a159-1ba206712b13' wrangler.private-staging.toml
+          grep -q '^bucket_name = "cairnstone-private-staging"$' wrangler.private-staging.toml
+          ! grep -q '7c4ae99e-4ab0-44c3-afa3-3f1a2d64d319\|fcd0437e-0b48-4f70-ac59-9d8f6a475aa2' wrangler.private-staging.toml
+      - name: Full source test before isolated deploy
+        run: npm run check
+      - name: Build Cloudflare staging Worker
+        run: npx wrangler deploy --dry-run --outdir /tmp/s1-3-worker-bundle --config wrangler.private-staging.toml
+      - name: Deploy ONLY staging private Worker
+        run: npx wrangler deploy --config wrangler.private-staging.toml
+      - name: Deployment receipt
+        run: echo "DEPLOYED staging Worker only at Git commit $GITHUB_SHA. No gateway, no public route, no private endpoint activation."
