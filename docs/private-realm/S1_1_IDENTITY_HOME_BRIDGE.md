@@ -8,6 +8,8 @@
 
 `authContext.client_family` is the Core-auth source field; `provider_label` is merely sanitized metadata, never a Home identifier. The underlying S0b store remains sole authority for Home association, account/tenant/principal conflicts, connection revocation, roles, inbox grants, and last-admin protection.
 
+A second independent, server-injected `admitAdminRecovery(context)` hook defaults to deny. When it explicitly authorizes recovery, the bridge may request `home_role: admin` from S0b, which permits a new connection to become admin only if the Home has **no** active admin. This never grants the new admin access to connection-private content or old Home inbox grants; SQL enforces the role decision under concurrent attachments. The owner controls both bootstrap and recovery admission independently.
+
 The bridge has two server-only methods:
 
 - `onboard(accessToken)` requires a **server-injected**, explicitly affirmative `admitOnboarding(context)` callback, default-deny. It calls `ensureDefaultHome` and uses the returned Home ID. Not a public route or automatic first-use path.

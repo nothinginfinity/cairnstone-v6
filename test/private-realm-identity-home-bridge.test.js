@@ -30,7 +30,7 @@ function ctx(scope, overrides = {}) {
 }
 for (const [key, scope] of [["csat_alice", a], ["csat_grok", g], ["csat_alice2", a2], ["csat_bobby", b], ["csat_bobby2", b2]]) token.set(key, ctx(scope));
 
-function fixture({ sqlite = false, admitted = true, verifier } = {}) {
+function fixture({ sqlite = false, admitted = true, verifier, recovery = false } = {}) {
   const db = sqlite ? createSqliteD1() : null;
   const store = sqlite
     ? createD1HomeStore({ db, now: createClock(), mintId: createMint() })
@@ -38,7 +38,8 @@ function fixture({ sqlite = false, admitted = true, verifier } = {}) {
   const bridge = createIdentityHomeBridge({
     validateToken: verifier || (async key => ({ ok: token.has(key), context: token.get(key) })),
     store, expectedResource: RESOURCE, inboxDerivationKey: KEY,
-    admitOnboarding: async () => admitted
+    admitOnboarding: async () => admitted,
+    admitAdminRecovery: async () => recovery
   });
   return { bridge, db, store };
 }
@@ -193,6 +194,31 @@ test("the last admin remains protected; admin role cannot magically grant connec
   await denies(bridge.onboard("csat_alice"), "scope_not_authorized");
   assert.equal((await bridge.onboard("csat_grok")).role, "admin");
   assert.equal(grok.home_id, alice.home_id);
+});
+
+
+test("admin recovery requires separate trusted owner admission; existing admins cannot be overridden", { skip: !SQLITE_AVAILABLE }, async () => {
+  const { bridge, db, store } = fixture({ sqlite: true, recovery: true });
+  const first = await bridge.onboard("csat_alice");
+  const sibling = await bridge.onboard("csat_grok");
+  assert.equal(sibling.role, "member", "server recovery consent is not a promotion while an admin exists");
+  db.exec("UPDATE priv_home_connections SET role = 'member'");
+  const recovered = await bridge.onboard("csat_alice2");
+  assert.equal(recovered.home_id, first.home_id);
+  assert.equal(recovered.role, "admin", "new connection recovers admin only when none active");
+  assert.equal(db.count("priv_home_connections", "role = 'admin'"), 1);
+  assert.equal(await store.can(a2, first.inboxes.chat.connection.inbox_id, "read"), false);
+  assert.deepEqual(recovered.inboxes.work.home.capabilities, { read: false, send: false, ack: false });
+});
+
+test("no owner admin-recovery admission means new connection stays member when all admins are absent", { skip: !SQLITE_AVAILABLE }, async () => {
+  const { bridge, db } = fixture({ sqlite: true, recovery: false });
+  const first = await bridge.onboard("csat_alice");
+  db.exec("UPDATE priv_home_connections SET role = 'member'");
+  const newConn = await bridge.onboard("csat_alice2");
+  assert.equal(newConn.home_id, first.home_id);
+  assert.equal(newConn.role, "member");
+  assert.equal(db.count("priv_home_connections", "role = 'admin'"), 0);
 });
 
 test("an explicit Home grant is needed before a second provider may see shared messages", async () => {

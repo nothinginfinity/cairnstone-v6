@@ -50,10 +50,12 @@ function rejectForeignKeys(request) {
 }
 
 export function createIdentityHomeBridge({
-  validateToken, store, expectedResource, admitOnboarding = async () => false, inboxDerivationKey
+  validateToken, store, expectedResource, admitOnboarding = async () => false,
+  admitAdminRecovery = async () => false, inboxDerivationKey
 } = {}) {
   assertResource(expectedResource);
-  if (typeof validateToken !== "function" || typeof admitOnboarding !== "function") {
+  if (typeof validateToken !== "function" || typeof admitOnboarding !== "function" ||
+      typeof admitAdminRecovery !== "function") {
     throw new PrivateRealmError("trusted_gateway_dependencies_required");
   }
   for (const method of ["ensureDefaultHome", "listInboxes", "createInbox", "grantInbox", "can"]) {
@@ -119,30 +121,35 @@ export function createIdentityHomeBridge({
     rejectForeignKeys(request);
     const { scope, context } = await verifiedScope(accessToken);
     if (await admitOnboarding(context) !== true) throw new PrivateRealmError("onboarding_not_admitted");
+    // Admin recovery needs separate, server-held owner consent. A new connection never
+    // becomes an admin by presenting an actor string, a token scope, or a request role.
+    const recoverAdmin = await admitAdminRecovery(context) === true;
     // Re-verify immediately before the first store write; the S0b store also rechecks its own
     // connection/tenant/admin/grant state at write boundaries. Cross-DB atomicity is not claimed.
     const fresh = await verifiedScope(accessToken);
     if (fresh.scope.account_id !== scope.account_id || fresh.scope.tenant_id !== scope.tenant_id ||
         fresh.scope.principal_id !== scope.principal_id || fresh.scope.connection_id !== scope.connection_id) throw denied();
-    const home = await store.ensureDefaultHome(fresh.scope);
-    const map = await addresses(fresh.scope, home.home_id);
+    const attachScope = recoverAdmin
+      ? assertHomeScope({ ...fresh.scope, home_role: "admin" }) : fresh.scope;
+    const home = await store.ensureDefaultHome(attachScope);
+    const map = await addresses(attachScope, home.home_id);
     // If the first operation failed halfway through, a retry may create missing inbox rows.
     // Crucially, an existing inbox NEVER gets grants silently reissued after revocation.
     for (const plane of PLANES) {
       if (home.role === "admin") {
         const target = map[plane].home.inbox_id;
-        const created = await store.createInbox(fresh.scope, { scope: "home", plane, inboxId: target, label: plane }, { homeId: home.home_id });
+        const created = await store.createInbox(attachScope, { scope: "home", plane, inboxId: target, label: plane }, { homeId: home.home_id });
         if (created.created) {
-          await store.grantInbox(fresh.scope, { inboxId: target, targetConnectionId: fresh.scope.connection_id, caps: FULL }, { homeId: home.home_id });
+          await store.grantInbox(attachScope, { inboxId: target, targetConnectionId: attachScope.connection_id, caps: FULL }, { homeId: home.home_id });
         }
       }
-      await store.createInbox(fresh.scope, {
+      await store.createInbox(attachScope, {
         scope: "connection", plane, inboxId: map[plane].connection.inbox_id, label: plane
       }, { homeId: home.home_id });
     }
     return Object.freeze({
       home_id: home.home_id, created: home.created, connection_attached: home.connection_attached,
-      role: home.role, inboxes: await visible(fresh.scope, home.home_id, map)
+      role: home.role, inboxes: await visible(attachScope, home.home_id, map)
     });
   }
 
@@ -166,10 +173,10 @@ export function createIdentityHomeBridge({
 
 // Production wiring seam (DORMANT). The caller supplies the private-store client and
 // explicit admission policy; the only source of verified identity is Core-auth D1.
-export function createCoreAuthIdentityHomeBridge({ env, store, resource, admitOnboarding, inboxDerivationKey }) {
+export function createCoreAuthIdentityHomeBridge({ env, store, resource, admitOnboarding, admitAdminRecovery, inboxDerivationKey }) {
   assertResource(resource);
   return createIdentityHomeBridge({
-    store, expectedResource: resource, admitOnboarding, inboxDerivationKey,
+    store, expectedResource: resource, admitOnboarding, admitAdminRecovery, inboxDerivationKey,
     validateToken: (token, expectedResource) => validateAccessToken(env, token, { expectedResource })
   });
 }
