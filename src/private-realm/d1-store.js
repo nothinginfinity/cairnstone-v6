@@ -88,6 +88,27 @@ export function createD1HomeStore({ db, now = () => new Date().toISOString(), mi
     return row ? row.n : 0;
   }
 
+
+  async function requireCapability(ctx, inboxId, capability, action) {
+    if (typeof inboxId !== "string" || !ID_PATTERNS.ibx.test(inboxId)) {
+      return denyCapability(ctx.home_id, ctx.scope, action, "invalid_inbox_id");
+    }
+    const inbox = await db.prepare(
+      `SELECT * FROM priv_inboxes WHERE home_id = ? AND inbox_id = ? AND status = 'active'`
+    ).bind(ctx.home_id, inboxId).first();
+    if (!inbox) return denyCapability(ctx.home_id, ctx.scope, action, "inbox_unavailable");
+    if (inbox.scope === "connection" && inbox.owner_connection_id !== ctx.conn.connection_id) {
+      return denyCapability(ctx.home_id, ctx.scope, action, "connection_private_sibling_denied");
+    }
+    const grant = await db.prepare(
+      `SELECT * FROM priv_inbox_grants WHERE home_id = ? AND inbox_id = ? AND connection_id = ? AND revoked_at IS NULL`
+    ).bind(ctx.home_id, inboxId, ctx.conn.connection_id).first();
+    if (!grant || grant[`can_${capability}`] !== 1) {
+      return denyCapability(ctx.home_id, ctx.scope, action, grant ? "capability_not_granted" : "no_grant");
+    }
+    return inbox;
+  }
+
   const store = {
     async ensureDefaultHome(scopeIn) {
       const scope = assertHomeScope(scopeIn);
@@ -304,6 +325,8 @@ export function createD1HomeStore({ db, now = () => new Date().toISOString(), mi
 
     async send(scopeIn, opts = {}, selector) {
       const ctx = await authorize(scopeIn, selector, "send");
+      await requireCapability(ctx, opts.senderInboxId, "send", "send");
+      for (const tid of (opts.targets||[])) await requireCapability(ctx, tid, "send", "send");
       const { senderInboxId, targets = [], messageId, threadId, body } = opts || {};
       if (typeof body !== "string" || body.length > MAX_BODY_CHARS) throw new PrivateRealmError("invalid_body");
       if (!Array.isArray(targets) || targets.length === 0 || targets.length > MAX_TARGETS) throw new PrivateRealmError("invalid_targets");
@@ -333,6 +356,7 @@ export function createD1HomeStore({ db, now = () => new Date().toISOString(), mi
 
     async listInbox(scopeIn, opts = {}, selector) {
       const ctx = await authorize(scopeIn, selector, "list_inbox");
+      await requireCapability(ctx, opts.inboxId, "read", "list_inbox");
       const { inboxId, limit = 50 } = opts || {};
       const rows = await db.prepare(
         `SELECT m.message_id, m.thread_id, m.sender_inbox_id, m.body_sha256, d.delivered_at, d.read_at, d.acked_at
@@ -347,6 +371,7 @@ export function createD1HomeStore({ db, now = () => new Date().toISOString(), mi
 
     async readInbox(scopeIn, opts = {}, selector) {
       const ctx = await authorize(scopeIn, selector, "read_inbox");
+      await requireCapability(ctx, opts.inboxId, "read", "read_inbox");
       const { inboxId, limit = 50 } = opts || {};
       const stamp = now();
       await db.prepare(
@@ -365,6 +390,7 @@ export function createD1HomeStore({ db, now = () => new Date().toISOString(), mi
 
     async ack(scopeIn, opts = {}, selector) {
       const ctx = await authorize(scopeIn, selector, "ack");
+      await requireCapability(ctx, opts.inboxId, "ack", "ack");
       const { inboxId, messageId } = opts || {};
       const delivery = await db.prepare(
         `SELECT * FROM priv_deliveries WHERE home_id = ? AND message_id = ? AND inbox_id = ?`
