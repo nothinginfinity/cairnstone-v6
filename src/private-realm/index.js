@@ -13,3 +13,4 @@ export {
 export { STORE_METHODS, createInMemoryHomeStore, resolveHomeStore } from "./store.js";
 export { HOME_STORE_BOUNDARY } from "./boundary.js";
 export { createIdentityHomeBridge, createCoreAuthIdentityHomeBridge } from "./identity-home-bridge.js";
+export { PRIVATE_INBOX_TOOL_DEFINITIONS, PRIVATE_INBOX_TOOL_NAMES, createPrivateInboxTools } from "./private-inbox-tools.js";
