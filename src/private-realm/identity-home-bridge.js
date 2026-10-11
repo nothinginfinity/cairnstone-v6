@@ -59,6 +59,7 @@ export function createIdentityHomeBridge({
   for (const method of ["ensureDefaultHome", "listInboxes", "createInbox", "grantInbox", "can"]) {
     if (typeof store?.[method] !== "function") throw new PrivateRealmError("private_home_store_required");
   }
+  if (typeof inboxDerivationKey !== "string" || inboxDerivationKey.length < 32) throw new PrivateRealmError("inbox_derivation_key_required");
   const keyPromise = keyFor(inboxDerivationKey);
   const deriveId = async (kind, homeId, connectionId, plane) => {
     if (!ID_PATTERNS.home.test(homeId) || (connectionId && !ID_PATTERNS.conn.test(connectionId)) ||
@@ -131,7 +132,7 @@ export function createIdentityHomeBridge({
       if (home.role === "admin") {
         const target = map[plane].home.inbox_id;
         const created = await store.createInbox(fresh.scope, { scope: "home", plane, inboxId: target, label: plane }, { homeId: home.home_id });
-        if (created.created && home.created) {
+        if (created.created) {
           await store.grantInbox(fresh.scope, { inboxId: target, targetConnectionId: fresh.scope.connection_id, caps: FULL }, { homeId: home.home_id });
         }
       }

@@ -12,3 +12,4 @@ export {
 } from "./scope.js";
 export { STORE_METHODS, createInMemoryHomeStore, resolveHomeStore } from "./store.js";
 export { HOME_STORE_BOUNDARY } from "./boundary.js";
+export { createIdentityHomeBridge, createCoreAuthIdentityHomeBridge } from "./identity-home-bridge.js";
