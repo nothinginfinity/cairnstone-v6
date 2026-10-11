@@ -183,6 +183,9 @@ export function createD1HomeStore({ db, now = () => new Date().toISOString(), mi
         `SELECT * FROM priv_home_connections WHERE home_id = ? AND connection_id = ?`
       ).bind(ctx.home_id, targetId).first();
       if (!target) return denyCapability(ctx.home_id, ctx.scope, "revoke_connection", "target_not_in_home");
+      if (target.role === "admin" && await activeAdminCount(ctx.home_id) <= 1) {
+        return denyCapability(ctx.home_id, ctx.scope, "revoke_connection", "last_admin_protected");
+      }
       if (target.status === "revoked") {
         await audit(ctx.home_id, ctx.scope, "revoke_connection", "allow", "already_revoked");
         return deepFreeze({ connection_id: targetId, revoked: true, changed: false });
@@ -335,8 +338,11 @@ export function createD1HomeStore({ db, now = () => new Date().toISOString(), mi
       const stamp = now();
       const mid = messageId || mintId("msg", 12);
       // Idempotent check
-      const existing = await db.prepare(`SELECT message_id FROM priv_messages WHERE home_id = ? AND message_id = ?`).bind(ctx.home_id, mid).first();
+      const existing = await db.prepare(`SELECT * FROM priv_messages WHERE home_id = ? AND message_id = ?`).bind(ctx.home_id, mid).first();
       if (existing) {
+        if (existing.body_sha256 !== body_sha256 || existing.sender_connection_id !== ctx.conn.connection_id) {
+          return denyCapability(ctx.home_id, ctx.scope, "send", "idempotency_conflict");
+        }
         await audit(ctx.home_id, ctx.scope, "send", "allow", "idempotent");
         return deepFreeze({ message_id: mid, created: false });
       }
