@@ -371,9 +371,21 @@ export function createInMemoryHomeStore({ now = () => new Date().toISOString(), 
 
     // Deliver one immutable message to one or more inboxes in the caller's Home. The caller needs
     // `send` on its sender inbox AND on every target inbox. Idempotent per message_id.
-    async send(scopeIn, opts = {}, selector) {
-      const ctx = authorize(scopeIn, selector, "send");
+    //
+    // Atomicity: the digests are the only asynchronous work, and they are pure (they read and write
+    // no store state). Every authoritative decision (authorization, capabilities, the idempotency
+    // lookup) and every write (message, deliveries, audit) happens in ONE synchronous section after
+    // the digests, so no concurrent send, grant change or revocation can interleave with it. A
+    // revocation or grant change that lands while the digests are pending is therefore honoured, and
+    // two same-id sends can never both pass the idempotency lookup. The early check below only
+    // avoids hashing for callers who are already unauthorized; it is never the authority.
+    async send(scopeIn, opts = {}, selectorIn) {
+      // Freeze identity and request once, so a caller mutating its objects mid-flight cannot change
+      // what is committed relative to what was authorized.
+      const scope = assertHomeScope(scopeIn);
+      const selector = assertSelector(selectorIn);
       const { fromInboxId, toInboxIds, messageId, threadId, body } = opts || {};
+      const early = authorize(scope, selector, "send");
       if (typeof messageId !== "string" || !ID_PATTERNS.message.test(messageId)) throw new PrivateRealmError("invalid_message_id");
       const thread = threadId === undefined ? messageId : threadId;
       if (typeof thread !== "string" || !ID_PATTERNS.thread.test(thread)) throw new PrivateRealmError("invalid_thread_id");
@@ -382,9 +394,17 @@ export function createInMemoryHomeStore({ now = () => new Date().toISOString(), 
         throw new PrivateRealmError("invalid_recipients");
       }
       const targets = [...new Set(toInboxIds)].sort();
+      checkCapability(early, fromInboxId, "send", "send");
+      for (const target of targets) checkCapability(early, target, "send", "send");
+
+      // Pure work only: nothing below reads or writes store state.
+      const fingerprint = await sha256Hex(JSON.stringify([fromInboxId, targets, thread, body]));
+      const body_sha256 = await sha256Hex(body);
+
+      // COMMIT-SECTION-BEGIN
+      const ctx = authorize(scope, selector, "send");
       checkCapability(ctx, fromInboxId, "send", "send");
       for (const target of targets) checkCapability(ctx, target, "send", "send");
-      const fingerprint = await sha256Hex(JSON.stringify([fromInboxId, targets, thread, body]));
       const existing = ctx.home.messages.get(messageId);
       if (existing) {
         if (existing.sender_connection_id === ctx.conn.connection_id && existing.fingerprint === fingerprint) {
@@ -399,7 +419,7 @@ export function createInMemoryHomeStore({ now = () => new Date().toISOString(), 
         thread_id: thread,
         sender_inbox_id: fromInboxId,
         sender_connection_id: ctx.conn.connection_id,
-        body_sha256: await sha256Hex(body),
+        body_sha256,
         body_text: body,
         fingerprint,
         created_at
@@ -409,6 +429,7 @@ export function createInMemoryHomeStore({ now = () => new Date().toISOString(), 
       }
       audit(ctx.home.home_id, ctx.scope, "send", "allow", "delivered");
       return deepFreeze({ message_id: messageId, created: true, delivered_to: targets.length });
+      // COMMIT-SECTION-END
     },
 
     // Metadata only. Requires `read`; never returns bodies and never changes delivery state.

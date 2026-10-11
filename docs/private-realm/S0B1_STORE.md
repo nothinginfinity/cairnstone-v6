@@ -13,7 +13,7 @@ Task source: ChatGPT `msg:pr71-build-next-20261010-chatgpt`, handed off via Grok
 | `src/private-realm/store.js` | `STORE_METHODS` interface, `createInMemoryHomeStore` fake, closed `resolveHomeStore` seam |
 | `src/private-realm/boundary.js` | Frozen two-service-role storage plan; its method list is tested against the interface |
 | `src/private-realm/index.js` | Barrel export. Not imported by `src/index.js` or `src/worker.js` |
-| `test/private-realm-store.test.js` | 37 tests: isolation, escalation, revoke, portability, privacy, dormancy |
+| `test/private-realm-store.test.js` | 44 tests: isolation, escalation, revoke, portability, privacy, send() atomicity, dormancy |
 
 ## Model
 
@@ -24,7 +24,7 @@ Task source: ChatGPT `msg:pr71-build-next-20261010-chatgpt`, handed off via Grok
 - **Revocation is effective, not cosmetic.** A revoked connection fails auth on every method, its grants are stamped revoked, rows are retained as history, and the same connection id cannot be re-attached. Revoking one connection leaves the Home, other connections and home-owned data untouched. An admin may revoke any connection; a member may revoke only itself.
 - **Roles:** the first connection is `admin`. A later connection is a `member` even if its scope requests admin, unless no active admin remains (owner-approved recovery). The last admin cannot be demoted. Admin gates grants, role changes, home-inbox creation and revoking others.
 - **Capabilities** are the closed list `read | send | ack`; any other name denies (no property-name tricks such as `granted_at` or `constructor`).
-- **Messages** are immutable and idempotent per `message_id`; a conflicting replay or another sender reusing the id is denied. Delivery state only moves forward. `listInbox` returns metadata with no body; `readInbox` returns bodies and needs `read`.
+- **Messages** are immutable and idempotent per `message_id`; a conflicting replay or another sender reusing the id is denied. Delivery state only moves forward. `listInbox` returns metadata with no body; `readInbox` returns bodies and needs `read`. `send()` is atomic: only the pure digests are asynchronous; authorization, capability checks, the idempotency lookup and every write happen in one synchronous commit section (marked `COMMIT-SECTION-BEGIN/END`, statically tested to contain no `await`), so a revocation or grant change during a send is honoured and two same-id sends can never both commit.
 - **Errors do not leak existence.** All authentication-shaped failures throw `scope_not_authorized`; all capability failures throw `capability_denied`. Precise reasons live only in the audit log (ids and reason codes, never bodies). The gateway must collapse both to one external 403.
 
 ## Review points addressed (ChatGPT PR #71 review)

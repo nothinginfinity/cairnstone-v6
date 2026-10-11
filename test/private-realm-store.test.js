@@ -596,3 +596,128 @@ test("boundary plan: public gateway holds no private binding, storage Worker is 
   const store = createInMemoryHomeStore();
   assert.deepEqual(Object.keys(store).sort(), [...STORE_METHODS].sort(), "plan, interface and fake cannot drift");
 });
+
+// ---------------------------------------------------------------------------------------------
+// send() atomicity (PR #73 review): authorization, idempotency check and the message/delivery
+// writes must form one synchronous commit. Any await between them lets a concurrent same-id
+// send overwrite an immutable message, split deliveries, or outlive a revocation.
+// ---------------------------------------------------------------------------------------------
+
+async function raceFixture() {
+  const store = makeStore();
+  await aliceHome(store);
+  const inboxes = [];
+  for (let i = 0; i < 4; i += 1) {
+    const { inbox_id } = await store.createInbox(chatgpt, { scope: "home", label: `race ${i}` });
+    for (const target of [chatgpt, grok]) {
+      await store.grantInbox(chatgpt, { inboxId: inbox_id, targetConnectionId: target.connection_id, caps: { read: true, send: true, ack: true } });
+    }
+    inboxes.push(inbox_id);
+  }
+  return { store, inboxes };
+}
+
+const homeState = store => store.__inspect().homes[0];
+
+test("race: parallel IDENTICAL same-id sends commit exactly once, the rest are idempotent replays", async () => {
+  const { store, inboxes } = await raceFixture();
+  const msg = { fromInboxId: inboxes[0], toInboxIds: [inboxes[1], inboxes[2]], messageId: "msg-race-identical", body: SECRET };
+  const results = await Promise.all(Array.from({ length: 12 }, () => store.send(chatgpt, msg)));
+  assert.equal(results.filter(r => r.created === true).length, 1, "exactly one winner");
+  assert.equal(results.filter(r => r.created === false).length, 11, "everyone else replays");
+  const state = homeState(store);
+  assert.equal(state.messages.length, 1);
+  assert.deepEqual(state.deliveries.map(d => d.inbox_id).sort(), [inboxes[1], inboxes[2]].sort(), "no duplicate or missing deliveries");
+  const audits = store.__inspect().audit.filter(a => a.action === "send");
+  assert.equal(audits.filter(a => a.reason === "delivered").length, 1);
+  assert.equal(audits.filter(a => a.reason === "idempotent_replay").length, 11);
+});
+
+test("race: parallel CONFLICTING same-id sends keep one immutable winner, no overwrite, no split deliveries", async () => {
+  const { store, inboxes } = await raceFixture();
+  const contenders = [0, 1, 2, 3, 4, 5].map(i => ({
+    fromInboxId: inboxes[0],
+    toInboxIds: [inboxes[1 + (i % 3)]], // each contender targets a different inbox
+    messageId: "msg-race-conflict",
+    body: `contender-${i}-${SECRET}`
+  }));
+  const settled = await Promise.allSettled(contenders.map(c => store.send(chatgpt, c)));
+  const winners = settled.map((s, i) => [s, i]).filter(([s]) => s.status === "fulfilled" && s.value.created === true);
+  assert.equal(winners.length, 1, "exactly one contender commits");
+  const [, winnerIndex] = winners[0];
+  for (const s of settled) {
+    if (s.status === "rejected") assert.ok(s.reason instanceof PrivateRealmError && s.reason.code === "capability_denied");
+  }
+  assert.equal(settled.filter(s => s.status === "rejected").length, 5);
+  const state = homeState(store);
+  assert.equal(state.messages.length, 1);
+  assert.equal(state.messages[0].body_text, contenders[winnerIndex].body, "stored body is the winner's, never overwritten");
+  assert.deepEqual(state.deliveries.map(d => d.inbox_id), contenders[winnerIndex].toInboxIds, "deliveries are exactly the winner's recipients");
+  assert.ok(store.__inspect().audit.some(a => a.reason === "idempotency_conflict"));
+});
+
+test("race: the same message id sent in parallel by two different connections yields one winner", async () => {
+  const { store, inboxes } = await raceFixture();
+  const msg = { fromInboxId: inboxes[0], toInboxIds: [inboxes[1]], messageId: "msg-race-two-senders", body: "same content" };
+  const settled = await Promise.allSettled([store.send(chatgpt, msg), store.send(grok, msg)]);
+  assert.equal(settled.filter(s => s.status === "fulfilled" && s.value.created === true).length, 1);
+  assert.equal(settled.filter(s => s.status === "rejected").length, 1);
+  const state = homeState(store);
+  assert.equal(state.messages.length, 1);
+  assert.equal(state.deliveries.length, 1);
+  const winnerConnection = settled[0].status === "fulfilled" ? chatgpt.connection_id : grok.connection_id;
+  assert.equal(state.messages[0].sender_connection_id, winnerConnection);
+});
+
+test("race: revoking the sender connection while send() is in flight commits nothing", async () => {
+  const { store, inboxes } = await raceFixture();
+  const pending = store.send(grok, { fromInboxId: inboxes[0], toInboxIds: [inboxes[1]], messageId: "msg-revoke-during", body: SECRET });
+  await store.revokeConnection(chatgpt, grok.connection_id); // lands while send is awaiting its digest
+  await rejectsWith(() => pending, "scope_not_authorized");
+  const state = homeState(store);
+  assert.equal(state.messages.length, 0);
+  assert.equal(state.deliveries.length, 0);
+  const denied = store.__inspect().audit.filter(a => a.action === "send" && a.outcome === "deny");
+  assert.ok(denied.some(a => a.reason === "connection_revoked"));
+  assert.equal(store.__inspect().audit.some(a => a.action === "send" && a.outcome === "allow"), false);
+});
+
+test("race: revoking a target or sender grant while send() is in flight commits nothing", async () => {
+  for (const which of ["target", "sender"]) {
+    const { store, inboxes } = await raceFixture();
+    const pending = store.send(grok, { fromInboxId: inboxes[0], toInboxIds: [inboxes[1]], messageId: `msg-grant-during-${which}`, body: SECRET });
+    await store.revokeGrant(chatgpt, { inboxId: which === "target" ? inboxes[1] : inboxes[0], targetConnectionId: grok.connection_id });
+    await rejectsWith(() => pending, "capability_denied");
+    const state = homeState(store);
+    assert.equal(state.messages.length, 0, `${which} grant revoked mid-send`);
+    assert.equal(state.deliveries.length, 0, `${which} grant revoked mid-send`);
+  }
+});
+
+test("race: an unrelated change while send() is in flight does not block a legitimately authorized send", async () => {
+  const { store, inboxes } = await raceFixture();
+  await store.ensureDefaultHome(chatgpt2);
+  const pending = store.send(grok, { fromInboxId: inboxes[0], toInboxIds: [inboxes[1]], messageId: "msg-unrelated-change", body: "fine" });
+  await store.revokeConnection(chatgpt, chatgpt2.connection_id);
+  await store.revokeGrant(chatgpt, { inboxId: inboxes[2], targetConnectionId: grok.connection_id });
+  assert.equal((await pending).created, true);
+  assert.equal(homeState(store).deliveries.length, 1);
+});
+
+test("send(): the authoritative commit section contains no await, and it is the only place state is written", () => {
+  const text = readFileSync(path.join(root, "src", "private-realm", "store.js"), "utf8");
+  const begin = text.match(/COMMIT-SECTION-BEGIN/g) || [];
+  const end = text.match(/COMMIT-SECTION-END/g) || [];
+  assert.equal(begin.length, 1, "exactly one marked commit section");
+  assert.equal(end.length, 1);
+  const section = text.slice(text.indexOf("COMMIT-SECTION-BEGIN"), text.indexOf("COMMIT-SECTION-END"));
+  assert.doesNotMatch(section, /\bawait\b/, "no await inside the commit section");
+  assert.match(section, /authorize\(/, "authorization is re-evaluated inside the commit section");
+  assert.match(section, /checkCapability\(/, "capabilities are re-evaluated inside the commit section");
+  assert.match(section, /messages\.get\(/, "the idempotency lookup is inside the commit section");
+  assert.match(section, /messages\.set\(/, "the message write is inside the commit section");
+  assert.match(section, /deliveries\.set\(/, "delivery writes are inside the commit section");
+  // Nothing outside the section may write messages or deliveries.
+  const outside = text.replace(section, "");
+  assert.doesNotMatch(outside, /\bmessages\.set\(|\bdeliveries\.set\(/, "message/delivery writes live only in the commit section");
+});
