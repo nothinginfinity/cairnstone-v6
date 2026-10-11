@@ -1,0 +1,25 @@
+name: PR74 draft test gate (no deploy)
+
+on:
+  push:
+    branches:
+      - grok/s0b2-private-persistence
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Node 22 regression suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Full syntax, skill and test gate
+        run: npm run check
