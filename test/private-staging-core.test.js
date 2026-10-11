@@ -60,13 +60,15 @@ test("tampering with signed payload denies before storage", async () => {
   await assert.rejects(f.invoke(e), { code: "caller_not_authorized" });
   assert.equal(f.commits(), 0);
 });
-test("missing platform attestation never executes storage", async () => {
+test("signed caller required; optional platform caller mismatch denies", async () => {
   __resetNonceCacheForTests();
   const f = fixture();
   const e = await f.signed("no_platform_nonce_123456789");
-  await assert.rejects(f.invoke(e, { platformCaller: null }), { code: "caller_not_authorized" });
   await assert.rejects(f.invoke(e, { platformCaller: "legacy-gateway" }), { code: "caller_not_authorized" });
   assert.equal(f.commits(), 0);
+  // Cross-worker service binding provides no ctx.props; signed exact caller is authoritative.
+  assert.equal((await f.invoke(e, { platformCaller: null })).ok, true);
+  assert.equal(f.commits(), 1);
 });
 test("storage uncertainty or missing schema denies", async () => {
   __resetNonceCacheForTests();
@@ -90,4 +92,15 @@ test("production entrypoints and bindings have no staging activation", () => {
   }
   const prod = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
   assert.doesNotMatch(prod, /CAIRNSTONE_PRIVATE_DB|CAIRNSTONE_PRIVATE_R2|cairnstone-private-staging/);
+});
+
+test("correct key but non-stage caller is rejected by exact caller binding", async () => {
+  __resetNonceCacheForTests();
+  const f = fixture();
+  const envelope = await signEnvelope({ key, caller: "unlisted-but-signed", method: "listInboxes",
+    args: [{ homeId: "home_SYNTHETIC_00001" }], nonce: "wrong_caller_nonce_123456" });
+  await assert.rejects(f.invoke(envelope, { env: {
+    ...f.env, PRIVATE_ALLOWED_CALLERS: "cairnstone-stage-gateway,unlisted-but-signed"
+  }, platformCaller: null }), { code: "caller_not_authorized" });
+  assert.equal(f.commits(), 0);
 });

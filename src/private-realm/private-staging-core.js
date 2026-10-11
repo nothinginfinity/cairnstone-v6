@@ -14,13 +14,17 @@ export async function handleStagingPrivateCall({
 } = {}) {
   if (!env || env.PRIVATE_STAGE_ENABLED !== "true") throw unconfigured();
   if (typeof env.PRIVATE_STAGE_CALLER !== "string" || !env.PRIVATE_STAGE_CALLER) throw unconfigured();
-  // Attestation is REQUIRED (not optional as in the dormant general-purpose core).
-  // Caller can never substitute a property in the HMAC envelope for this platform value.
-  if (typeof platformCaller !== "string" || platformCaller !== env.PRIVATE_STAGE_CALLER) throw deny();
+  // Cross-Worker RPC service bindings do not supply ctx.props: that facility is for
+  // same-Worker ctx.exports loopback. The service binding itself restricts access.
+  // Caller identity is cryptographically attested by an exact HMAC-signed caller field.
+  // If a trusted platform caller is available in the future, require it to match too.
+  if (platformCaller !== null && platformCaller !== undefined &&
+      platformCaller !== env.PRIVATE_STAGE_CALLER) throw deny();
   const db = env.CAIRNSTONE_PRIVATE_DB;
   if (!db || typeof db.prepare !== "function") throw unconfigured();
   if (!env.CAIRNSTONE_PRIVATE_R2 || typeof env.CAIRNSTONE_PRIVATE_R2.put !== "function") throw unconfigured();
   const call = await verifyEnvelope({ env, envelope, platformCaller, nowMs });
+  if (call.caller !== env.PRIVATE_STAGE_CALLER) throw deny();
   if (!STORE_METHODS.includes(call.method)) throw new PrivateRealmError("unknown_store_method");
   if (call.args.length === 0 || call.args.length > 3) throw new PrivateRealmError("invalid_arguments");
   // D1's unique primary key is the cross-isolate durable replay barrier.

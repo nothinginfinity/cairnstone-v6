@@ -4,12 +4,9 @@ import { handleStagingPrivateCall } from "./private-staging-core.js";
 
 export default class PrivateStagingEntrypoint extends WorkerEntrypoint {
   async call(envelope) {
-    // Fail closed if service-binding props are missing. Gateway must attest caller.
-    const caller = typeof this.ctx?.props?.caller === "string" ? this.ctx.props.caller : null;
-    return handleStagingPrivateCall({
-      env: this.env,
-      envelope,
-      platformCaller: caller
-    });
+    // For separate-Worker service bindings, Cloudflare provides no ctx.props.
+    // HMAC authenticates exact caller + method + arguments; service binding
+    // limits who can reach this RPC in the first place.
+    return handleStagingPrivateCall({ env: this.env, envelope });
   }
 }

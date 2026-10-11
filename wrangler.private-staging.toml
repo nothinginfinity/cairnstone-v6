@@ -1,0 +1,27 @@
+# STAGING-ONLY CONFIG. NEW isolated D1 UUID independently verified live on 2026-10-11.
+# NEVER substitute a production database ID, production bucket or production Worker name.
+# No routes, no public workers.dev, no production gateway imports.
+name = "cairnstone-private-staging"
+main = "src/private-realm/private-staging-worker.js"
+compatibility_date = "2026-06-21"
+workers_dev = false
+preview_urls = false
+send_metrics = false
+
+[vars]
+PRIVATE_STAGE_ENABLED = "true"
+PRIVATE_STAGE_CALLER = "cairnstone-stage-gateway"
+PRIVATE_ALLOWED_CALLERS = "cairnstone-stage-gateway"
+
+[[d1_databases]]
+binding = "CAIRNSTONE_PRIVATE_DB"
+database_name = "cairnstone-private-staging"
+database_id = "26d4e786-2da7-47a4-a159-1ba206712b13"
+migrations_dir = "migrations/private-staging"
+
+[[r2_buckets]]
+binding = "CAIRNSTONE_PRIVATE_R2"
+bucket_name = "cairnstone-private-staging"
+
+# Inject PRIVATE_GATEWAY_HMAC_KEY via Wrangler secret, NOT this file.
+# Staging gateway needs its own secret copy; rotate under a recorded gate.
