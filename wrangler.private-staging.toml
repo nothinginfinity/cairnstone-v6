@@ -1,4 +1,4 @@
-# STAGING-ONLY CONFIG. NEW isolated D1 UUID independently verified live on 2026-10-11.
+# STAGING-ONLY CONFIG. Recreated isolated D1 (migrations 0001+0002) verified live read-only on 2026-10-11; old DB 26d4e786-... retained until E2E passes.
 # NEVER substitute a production database ID, production bucket or production Worker name.
 # No routes, no public workers.dev, no production gateway imports.
 name = "cairnstone-private-staging"
@@ -15,8 +15,8 @@ PRIVATE_ALLOWED_CALLERS = "cairnstone-stage-gateway"
 
 [[d1_databases]]
 binding = "CAIRNSTONE_PRIVATE_DB"
-database_name = "cairnstone-private-staging"
-database_id = "26d4e786-2da7-47a4-a159-1ba206712b13"
+database_name = "cairnstone-private-staging-2"
+database_id = "9420f645-4bdf-430f-a790-feb34d01f077"
 migrations_dir = "migrations/private-staging"
 
 [[r2_buckets]]
