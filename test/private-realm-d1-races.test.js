@@ -382,6 +382,26 @@ test("SWEEP readInbox vs revoking the reader's READ grant: no stamp commits afte
   await sweep({ build, op: fx => fx.store.readInbox(grok, { inboxId: "ibx_shared02" }), revoke: fx => fx.store.revokeGrant(chatgpt, { inboxId: "ibx_shared02", targetConnectionId: grok.connection_id }), protectedWrite: READ_STAMP });
 });
 
+
+test("listInbox withholds metadata if read access is revoked while its SELECT is pending", { skip }, async () => {
+  const { db, store } = await world();
+  await store.send(chatgpt, { ...baseSend, toInboxIds: ["ibx_shared02"], messageId: "msg_late_list01" });
+  db.before(/SELECT m\.message_id, m\.thread_id, m\.sender_inbox_id, m\.body_sha256/, () =>
+    store.revokeGrant(chatgpt, { inboxId: "ibx_shared02", targetConnectionId: grok.connection_id }));
+  await assert.rejects(() => store.listInbox(grok, { inboxId: "ibx_shared02" }),
+    error => error instanceof PrivateRealmError && AUTH_CODES.has(error.code));
+});
+
+test("readInbox withholds an already-read body if its READ grant was revoked after initial authorization", { skip }, async () => {
+  const { db, store } = await world();
+  await store.send(chatgpt, { ...baseSend, toInboxIds: ["ibx_shared02"], messageId: "msg_late_body01", body: "private" });
+  assert.equal((await store.readInbox(grok, { inboxId: "ibx_shared02" }))[0].body, "private");
+  db.before(/SELECT m\.message_id, m\.thread_id, m\.sender_inbox_id, m\.body_text/, () =>
+    store.revokeGrant(chatgpt, { inboxId: "ibx_shared02", targetConnectionId: grok.connection_id }));
+  await assert.rejects(() => store.readInbox(grok, { inboxId: "ibx_shared02" }),
+    error => error instanceof PrivateRealmError && AUTH_CODES.has(error.code));
+});
+
 test("SWEEP ack vs revoking the acker's connection: no ack stamp commits after the revocation", { skip }, async () => {
   const build = async () => {
     const fx = await world();

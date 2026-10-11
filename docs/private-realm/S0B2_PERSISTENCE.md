@@ -52,3 +52,15 @@ the binding (`ctx.props.caller`) it must match. All envelope failures collapse t
 8. Trailing `undefined` positional arguments cannot cross the signed JSON envelope; callers omit them.
 9. Inline/R2 threshold (`inlineBodyMax`, default 16384 chars) is a tunable default, not a measured limit.
 10. The public gateway client that builds and signs envelopes does not exist yet (`signEnvelope` is the reference).
+
+## Draft review addendum (2026-10-11)
+
+The legacy Event Journal tests now use a committed, test-only `node:sqlite` helper instead of
+relying on a locally installed `sqlite3` CLI shim. GitHub Actions on the PR branch runs
+`npm run check` under Node 22, without deployments or production credentials.
+
+A follow-up read-side race review added final read-grant/connection revalidation after
+`listInbox` query execution and `readInbox` body hydration, including the no-stamp
+(already-read) path. The extra boundary checks reduce the window for data being returned
+after revocation; they do not establish a transactional response boundary or a global
+cross-isolate revocation guarantee. D1 live acceptance is still required before activation.

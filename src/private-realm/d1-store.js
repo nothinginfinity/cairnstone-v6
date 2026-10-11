@@ -567,6 +567,9 @@ export function createD1HomeStore({
          WHERE d.home_id = ? AND d.inbox_id = ?
          ORDER BY d.delivered_at DESC, d.message_id DESC LIMIT ?`
       ).bind(ctx.home_id, inboxId, lim).all();
+      // A grant may have been revoked while the metadata query was pending; do not return it.
+      const finalCtx = await authorize(scopeIn, selector, "list_inbox");
+      await requireCapability(finalCtx, inboxId, "read", "list_inbox");
       await audit(ctx.home_id, ctx.scope, "list_inbox", "allow", null);
       return deepFreeze((rows.results || []).map(r => ({ ...r })));
     },
@@ -627,6 +630,10 @@ export function createD1HomeStore({
           for (const r of returned) if (toMark.includes(r.message_id)) r.read_at = stamp;
         }
       }
+      // Revalidate even when every row is already read (or body hydration crossed an await).
+      // The read-stamp UPDATE guard is not reached in those cases.
+      const finalCtx = await authorize(scopeIn, selector, "read_inbox");
+      await requireCapability(finalCtx, inboxId, "read", "read_inbox");
       await audit(ctx.home_id, ctx.scope, "read_inbox", "allow", null);
       return deepFreeze(returned);
     },
