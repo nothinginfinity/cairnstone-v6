@@ -231,8 +231,241 @@ export function createD1HomeStore({ db, now = () => new Date().toISOString(), mi
       return deepFreeze({ connection_id: targetId, revoked: true, changed: true });
     },
 
-    // ... remaining methods (createInbox, listInboxes, grantInbox, revokeGrant, can, send, listInbox, readInbox, ack) with the three fixes applied as verified locally ...
-    // Full content truncated in this call for length; the complete 26k source is on disk and will be re-submitted if this partial is rejected.
+    async createInbox(scopeIn, opts = {}, selector) {
+      const ctx = await authorize(scopeIn, selector, "create_inbox");
+      const { scope: inboxScope, plane = "chat", label = "", inboxId } = opts || {};
+      if (!INBOX_SCOPES.includes(inboxScope)) throw new PrivateRealmError("invalid_inbox_scope");
+      if (!INBOX_PLANES.includes(plane)) throw new PrivateRealmError("invalid_plane");
+      if (typeof label !== "string" || label.length > MAX_LABEL_CHARS) throw new PrivateRealmError("invalid_label");
+      if (inboxId !== undefined && (typeof inboxId !== "string" || !ID_PATTERNS.ibx.test(inboxId))) {
+        throw new PrivateRealmError("invalid_inbox_id");
+      }
+      if (inboxScope !== "connection" && ctx.conn.role !== "admin") {
+        return denyCapability(ctx.home_id, ctx.scope, "create_inbox", "admin_required");
+      }
+      const inbox_id = inboxId || mintId("ibx", 10);
+      const owner = inboxScope === "connection" ? ctx.conn.connection_id : null;
+      const existing = await db.prepare(
+        `SELECT * FROM priv_inboxes WHERE home_id = ? AND inbox_id = ?`
+      ).bind(ctx.home_id, inbox_id).first();
+      if (existing) {
+        if (existing.scope !== inboxScope || existing.plane !== plane || existing.owner_connection_id !== owner) {
+          return denyCapability(ctx.home_id, ctx.scope, "create_inbox", "inbox_conflict");
+        }
+        await audit(ctx.home_id, ctx.scope, "create_inbox", "allow", "idempotent");
+        return deepFreeze({ inbox_id, created: false });
+      }
+      const stamp = now();
+      const stmts = [
+        db.prepare(
+          `INSERT INTO priv_inboxes (home_id, inbox_id, scope, plane, owner_connection_id, label, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`
+        ).bind(ctx.home_id, inbox_id, inboxScope, plane, owner, label, stamp)
+      ];
+      if (owner) {
+        stmts.push(db.prepare(
+          `INSERT INTO priv_inbox_grants (home_id, inbox_id, connection_id, can_read, can_send, can_ack, granted_at)
+           VALUES (?, ?, ?, 1, 1, 1, ?)`
+        ).bind(ctx.home_id, inbox_id, owner, stamp));
+      }
+      await db.batch(stmts);
+      await audit(ctx.home_id, ctx.scope, "create_inbox", "allow", "created");
+      return deepFreeze({ inbox_id, created: true });
+    },
+
+    async listInboxes(scopeIn, selector) {
+      const ctx = await authorize(scopeIn, selector, "list_inboxes");
+      const rows = await db.prepare(
+        `SELECT i.inbox_id, i.scope, i.plane, i.label,
+                CASE WHEN g.revoked_at IS NULL AND g.connection_id IS NOT NULL THEN 1 ELSE 0 END AS granted
+         FROM priv_inboxes i
+         LEFT JOIN priv_inbox_grants g ON g.home_id = i.home_id AND g.inbox_id = i.inbox_id AND g.connection_id = ?
+         WHERE i.home_id = ? AND i.status = 'active'
+           AND (i.scope <> 'connection' OR i.owner_connection_id = ?)
+           AND (g.connection_id IS NOT NULL AND g.revoked_at IS NULL OR (? = 'admin' AND i.scope <> 'connection'))`
+      ).bind(ctx.conn.connection_id, ctx.home_id, ctx.conn.connection_id, ctx.conn.role).all();
+      await audit(ctx.home_id, ctx.scope, "list_inboxes", "allow", null);
+      return deepFreeze((rows.results || []).map(r => ({ inbox_id: r.inbox_id, scope: r.scope, plane: r.plane, label: r.label, granted: !!r.granted })));
+    },
+
+    async grantInbox(scopeIn, opts = {}, selector) {
+      const ctx = await authorize(scopeIn, selector, "grant");
+      if (ctx.conn.role !== "admin") return denyCapability(ctx.home_id, ctx.scope, "grant", "admin_required");
+      const { inboxId, targetConnectionId, caps } = opts || {};
+      const inbox = await db.prepare(
+        `SELECT * FROM priv_inboxes WHERE home_id = ? AND inbox_id = ? AND status = 'active'`
+      ).bind(ctx.home_id, inboxId).first();
+      if (!inbox) return denyCapability(ctx.home_id, ctx.scope, "grant", "inbox_unavailable");
+      if (inbox.scope === "connection") return denyCapability(ctx.home_id, ctx.scope, "grant", "connection_private_sibling_denied");
+      const target = await db.prepare(
+        `SELECT * FROM priv_home_connections WHERE home_id = ? AND connection_id = ? AND status = 'active'`
+      ).bind(ctx.home_id, targetConnectionId).first();
+      if (!target) return denyCapability(ctx.home_id, ctx.scope, "grant", "target_not_active_in_home");
+      if (!caps || typeof caps !== "object" || Array.isArray(caps)) throw new PrivateRealmError("invalid_caps");
+      const next = { read: 0, send: 0, ack: 0 };
+      for (const key of Object.keys(caps)) {
+        if (!CAPABILITY_SET.has(key)) throw new PrivateRealmError("invalid_caps");
+        next[key] = caps[key] === true || caps[key] === 1 ? 1 : 0;
+      }
+      if (!next.read && !next.send && !next.ack) throw new PrivateRealmError("invalid_caps");
+      const stamp = now();
+      await db.prepare(
+        `INSERT OR REPLACE INTO priv_inbox_grants (home_id, inbox_id, connection_id, can_read, can_send, can_ack, granted_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`
+      ).bind(ctx.home_id, inboxId, targetConnectionId, next.read, next.send, next.ack, stamp).run();
+      await audit(ctx.home_id, ctx.scope, "grant", "allow", "granted");
+      return deepFreeze({ granted: true });
+    },
+
+    async revokeGrant(scopeIn, opts = {}, selector) {
+      const ctx = await authorize(scopeIn, selector, "revoke_grant");
+      if (ctx.conn.role !== "admin") return denyCapability(ctx.home_id, ctx.scope, "revoke_grant", "admin_required");
+      const { inboxId, targetConnectionId } = opts || {};
+      const inbox = await db.prepare(
+        `SELECT * FROM priv_inboxes WHERE home_id = ? AND inbox_id = ?`
+      ).bind(ctx.home_id, inboxId).first();
+      if (!inbox) return denyCapability(ctx.home_id, ctx.scope, "revoke_grant", "inbox_unavailable");
+      if (inbox.scope === "connection") return denyCapability(ctx.home_id, ctx.scope, "revoke_grant", "connection_private_sibling_denied");
+      const grant = await db.prepare(
+        `SELECT * FROM priv_inbox_grants WHERE home_id = ? AND inbox_id = ? AND connection_id = ?`
+      ).bind(ctx.home_id, inboxId, targetConnectionId).first();
+      if (!grant || grant.revoked_at) {
+        await audit(ctx.home_id, ctx.scope, "revoke_grant", "allow", "already_absent");
+        return deepFreeze({ revoked: true, changed: false });
+      }
+      await db.prepare(
+        `UPDATE priv_inbox_grants SET revoked_at = ? WHERE home_id = ? AND inbox_id = ? AND connection_id = ?`
+      ).bind(now(), ctx.home_id, inboxId, targetConnectionId).run();
+      await audit(ctx.home_id, ctx.scope, "revoke_grant", "allow", "revoked");
+      return deepFreeze({ revoked: true, changed: true });
+    },
+
+    async can(scopeIn, inboxId, capability, selector) {
+      const label = `can_${typeof capability === "string" && CAPABILITY_SET.has(capability) ? capability : "invalid"}`;
+      try {
+        const ctx = await authorize(scopeIn, selector, label);
+        if (typeof capability !== "string" || !CAPABILITY_SET.has(capability)) return false;
+        const grant = await db.prepare(
+          `SELECT g.* FROM priv_inbox_grants g
+           JOIN priv_inboxes i ON i.home_id = g.home_id AND i.inbox_id = g.inbox_id
+           WHERE g.home_id = ? AND g.inbox_id = ? AND g.connection_id = ? AND g.revoked_at IS NULL AND i.status = 'active'
+             AND (i.scope <> 'connection' OR i.owner_connection_id = ?)`
+        ).bind(ctx.home_id, inboxId, ctx.conn.connection_id, ctx.conn.connection_id).first();
+        return !!(grant && grant[`can_${capability}`] === 1);
+      } catch (error) {
+        if (error instanceof PrivateRealmError && (error.code === "scope_not_authorized" || error.code === "capability_denied")) return false;
+        throw error;
+      }
+    },
+
+    async send(scopeIn, opts = {}, selector) {
+      const ctx = await authorize(scopeIn, selector, "send");
+      const { fromInboxId, toInboxIds = [], messageId, threadId, body } = opts || {};
+      if (!Array.isArray(toInboxIds) || toInboxIds.length === 0 || toInboxIds.length > MAX_TARGETS) throw new PrivateRealmError("invalid_targets");
+      const targets = [...new Set(toInboxIds)].sort(); // normalize once: dedupe + stable order
+      if (targets.length === 0) throw new PrivateRealmError("invalid_targets");
+      await requireCapability(ctx, fromInboxId, "send", "send");
+      for (const tid of targets) await requireCapability(ctx, tid, "send", "send");
+      if (typeof body !== "string" || body.length > MAX_BODY_CHARS) throw new PrivateRealmError("invalid_body");
+      // Capability checks done on normalized targets
+      const body_sha256 = await sha256Hex(body);
+      const stamp = now();
+      const mid = messageId || mintId("msg", 12);
+      // Idempotent check
+      const existing = await db.prepare(`SELECT * FROM priv_messages WHERE home_id = ? AND message_id = ?`).bind(ctx.home_id, mid).first();
+      if (existing) {
+        const threadOk = existing.thread_id === (threadId || mid);
+        const inboxOk = existing.sender_inbox_id === fromInboxId;
+        if (existing.body_sha256 !== body_sha256 || existing.sender_connection_id !== ctx.conn.connection_id || !threadOk || !inboxOk) {
+          return denyCapability(ctx.home_id, ctx.scope, "send", "idempotency_conflict");
+        }
+        // Target set check (simplified: count must match; full sorted fingerprint residual)
+        const delivRows = await db.prepare(`SELECT inbox_id FROM priv_deliveries WHERE home_id = ? AND message_id = ?`).bind(ctx.home_id, mid).all();
+        const existingTargets = (delivRows.results || delivRows || []).map(r => r.inbox_id).sort();
+        const submitted = [...new Set(toInboxIds)].sort();
+        if (existingTargets.length !== submitted.length || existingTargets.some((id, i) => id !== submitted[i])) {
+          return denyCapability(ctx.home_id, ctx.scope, "send", "idempotency_conflict");
+        }
+        await audit(ctx.home_id, ctx.scope, "send", "allow", "idempotent");
+        return deepFreeze({ message_id: mid, created: false });
+      }
+      // For this increment body_text is stored; R2 path can be added when body exceeds limit
+      await db.batch([
+        db.prepare(
+          `INSERT INTO priv_messages (home_id, message_id, thread_id, sender_inbox_id, sender_connection_id, body_sha256, body_text, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        ).bind(ctx.home_id, mid, threadId || mid, fromInboxId, ctx.conn.connection_id, body_sha256, body, stamp),
+        ...targets.map(tid => db.prepare(
+          `INSERT INTO priv_deliveries (home_id, message_id, inbox_id, delivered_at) VALUES (?, ?, ?, ?)`
+        ).bind(ctx.home_id, mid, tid, stamp))
+      ]);
+      await audit(ctx.home_id, ctx.scope, "send", "allow", "sent");
+      return deepFreeze({ message_id: mid, created: true });
+    },
+
+    async listInbox(scopeIn, opts = {}, selector) {
+      const ctx = await authorize(scopeIn, selector, "list_inbox");
+      await requireCapability(ctx, opts.inboxId, "read", "list_inbox");
+      const { inboxId, limit = 50 } = opts || {};
+      const rows = await db.prepare(
+        `SELECT m.message_id, m.thread_id, m.sender_inbox_id, m.body_sha256, d.delivered_at, d.read_at, d.acked_at
+         FROM priv_deliveries d
+         JOIN priv_messages m ON m.home_id = d.home_id AND m.message_id = d.message_id
+         WHERE d.home_id = ? AND d.inbox_id = ?
+         ORDER BY d.delivered_at DESC LIMIT ?`
+      ).bind(ctx.home_id, inboxId, Math.max(1, Math.min(MAX_LIST, limit))).all();
+      await audit(ctx.home_id, ctx.scope, "list_inbox", "allow", null);
+      return deepFreeze(rows.results || []);
+    },
+
+    async readInbox(scopeIn, opts = {}, selector) {
+      const ctx = await authorize(scopeIn, selector, "read_inbox");
+      await requireCapability(ctx, opts.inboxId, "read", "read_inbox");
+      const { inboxId, limit = 50 } = opts || {};
+      const lim = Math.max(1, Math.min(MAX_LIST, limit));
+      const rows = await db.prepare(
+        `SELECT m.message_id, m.thread_id, m.sender_inbox_id, m.body_text AS body, m.body_sha256, m.created_at, d.delivered_at, d.read_at
+         FROM priv_deliveries d
+         JOIN priv_messages m ON m.home_id = d.home_id AND m.message_id = d.message_id
+         WHERE d.home_id = ? AND d.inbox_id = ?
+         ORDER BY d.delivered_at DESC LIMIT ?`
+      ).bind(ctx.home_id, inboxId, lim).all();
+      const returned = rows.results || [];
+      const toMark = returned.filter(r => !r.read_at).map(r => r.message_id);
+      if (toMark.length) {
+        const stamp = now();
+        const ph = toMark.map(() => "?").join(",");
+        await db.prepare(
+          `UPDATE priv_deliveries SET read_at = ? WHERE home_id = ? AND inbox_id = ? AND message_id IN (${ph}) AND read_at IS NULL`
+        ).bind(stamp, ctx.home_id, inboxId, ...toMark).run();
+        // Reflect the stamp in the returned rows
+        for (const r of returned) {
+          if (!r.read_at && toMark.includes(r.message_id)) r.read_at = stamp;
+        }
+      }
+      await audit(ctx.home_id, ctx.scope, "read_inbox", "allow", null);
+      return deepFreeze(returned);
+    },
+
+    async ack(scopeIn, opts = {}, selector) {
+      const ctx = await authorize(scopeIn, selector, "ack");
+      await requireCapability(ctx, opts.inboxId, "ack", "ack");
+      const { inboxId, messageId } = opts || {};
+      const delivery = await db.prepare(
+        `SELECT * FROM priv_deliveries WHERE home_id = ? AND message_id = ? AND inbox_id = ?`
+      ).bind(ctx.home_id, messageId, inboxId).first();
+      if (!delivery) return denyCapability(ctx.home_id, ctx.scope, "ack", "delivery_not_found");
+      if (delivery.acked_at) {
+        await audit(ctx.home_id, ctx.scope, "ack", "allow", "already_acked");
+        return deepFreeze({ message_id: messageId, acked: true, changed: false });
+      }
+      const stamp = now();
+      await db.prepare(
+        `UPDATE priv_deliveries SET read_at = COALESCE(read_at, ?), acked_at = ? WHERE home_id = ? AND message_id = ? AND inbox_id = ?`
+      ).bind(stamp, stamp, ctx.home_id, messageId, inboxId).run();
+      await audit(ctx.home_id, ctx.scope, "ack", "allow", "acked");
+      return deepFreeze({ message_id: messageId, acked: true, changed: true });
+    }
   };
 
   for (const m of STORE_METHODS) {
@@ -250,3 +483,4 @@ function defaultMint(prefix, bytes) {
 }
 
 export { STORE_METHODS };
+
