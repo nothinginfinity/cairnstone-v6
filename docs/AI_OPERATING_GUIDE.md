@@ -252,7 +252,7 @@ count and version — this list will keep growing.
 - **Pre-acceptance QA rule (V6.9.2):** candidate Git catalogs must pass the same pure linter in CI before any accepted skill path HEAD moves. The canonical repo runs this through `npm run lint:skills` inside `npm run check`.
 - **Staged catalog acceptance rule (V6.9.2):** accept every changed/new `SKILL.md` path HEAD at one immutable Git commit first, verify those path HEADs, and move `skills/manifest.json` **last**. Until the manifest moves, the previous catalog remains authoritative even if candidate skill path HEADs have been prepared.
 - **Tool-registry rule (V6.9.2):** the manifest may carry a `tool_registry`; skill `requires_tools` entries are linted against that declared production vocabulary rather than being accepted as arbitrary strings.
-- **Current accepted catalog:** manifest v2 contains 15 skills — the original five plus six GitHub operational skills (`github.repo-file-read`, `github.pull-request-triage`, `github.commit-evidence`, `github.release-inspection`, `github.branch-protection-inspection`, `github.workflow-dispatch-safety`) and four CairnStone operational skills (`cairnstone.source-freshness`, `cairnstone.repo-reconcile`, `cairnstone.skill-acceptance`, `cairnstone.project-handoff`).
+- **Skill catalog:** the October 2026 roster contains 16 skills (check the accepted manifest for the active version) — the original five plus six GitHub operational skills (`github.repo-file-read`, `github.pull-request-triage`, `github.commit-evidence`, `github.release-inspection`, `github.branch-protection-inspection`, `github.workflow-dispatch-safety`) and four CairnStone operational skills (`cairnstone.source-freshness`, `cairnstone.repo-reconcile`, `cairnstone.skill-acceptance`, `cairnstone.project-handoff`) plus `cairnstone.hop-card`.
 - **Downstream-consumer rule (V6.9.1):** another MCP may cache a validated accepted bundle for availability/performance, but cache storage is never authority. A consumer must prefer live CairnStone accepted state, may fall back only to its last-known validated accepted bundle, and must never fall back to arbitrary mutable Git or an older mutable skill document.
 - **Draft-skill rule:** consumer-local `upsert_skill`-style operations may be retained for `draft` / `experimental` / `staging` data, but they must not silently replace a canonically accepted skill ID. Production changes go Git → CairnStone acceptance → accepted bundle → consumer cache.
 - **Progressive-loading rule:** start with the boot skill (`core.orient`), then resolve/load specialized skills only as the task requires. Do not preload the whole catalog merely because it exists. This is designed to remain cheap with 50+ skills.
@@ -415,6 +415,36 @@ version-controlled instructions participate in the same precision-hop
 experiment without manually pasting the Project URL into every project's
 instructions.
 
+### Automatic cross-LLM Hop Cards — interactive companion policy (2026-10-10)
+
+Every operator-facing response that reports a successfully created outgoing AC1
+message, dispatch handoff, or other cross-LLM assignment should **automatically
+include a Hop Card** using the currently accepted `cairnstone.hop-card` skill.
+The operator must not have to request a card separately.
+
+1. Activate the skill on confirmed `cairnstone_send_message`,
+   `cairnstone_dispatch_handoff`, and `cairnstone_forward_with_note` calls to
+   another LLM (including informational messages); also show a clearly marked
+   *proposal* card for proposed, not-yet-dispatched Task Runs when useful.
+2. Ground cards in the tool's actual receipt: recipient actor ID, message ID,
+   thread ID, immutable Stone hash, and delivery state where returned. Do not
+   fabricate IDs, destinations, delivery claims, or receipt status.
+3. Use one recipient-specific card, or a compact Hop Bar for multiple recipients.
+   Show distinct **Copy pointer** and **Open destination** actions wherever the
+   host supports them; otherwise use one-line copyable pointer text and an HTTPS
+   link. Prefer the actual intended recipient's provider, not a generic list.
+4. Follow the Hop Registry's per-client owner-tested navigation classifications.
+   An app-home or open + paste hop is not exact-project/chat routing. Do not
+   construct unverified deep links or pass untested prefill query parameters.
+5. A failed/unknown AC1 delivery is not a successful handoff. A proposed Task
+   Run is not dispatched. A card is not an execution approval, permission grant,
+   or accepted-state promotion. Never include credentials, secrets, private
+   message bodies, or bearer capabilities in the pointer or URL.
+6. This is **response-time presentation only**. It does not cause an agent to
+   send messages, add a persistent record, or perform background event handling.
+   Automatic durable Hop Cards from AC1 receipts/events belong to the separate
+   Hop Bar runtime implementation and its own review/live-acceptance gates.
+
 ## 8. MCP Twin — client tool-catalog cache workaround (Grok, Claude, ChatGPT)
 
 Across Grok, Claude, and ChatGPT sessions we've repeatedly hit the same failure
@@ -521,7 +551,7 @@ documented decision, not a default reflex.
 
 ---
 
-*Last updated: 2026-10-07 (added experimental cross-provider Hop Registry bootstrap for version-controlled precision-hop mass testing).*\n\n*Previously: 2026-09-07 (added Section 8, MCP Twin client tool-catalog
+*Last updated: 2026-10-10 (added automatic AC1-to-Hop Card interactive companion policy).*\n\n*Previously: 2026-10-07 (added experimental cross-provider Hop Registry bootstrap for version-controlled precision-hop mass testing).*\n\n*Previously: 2026-09-07 (added Section 8, MCP Twin client tool-catalog
 cache workaround; renumbered old Sections 8→9, 9→10).*
 
 *Previously: 2026-09-06. V7.7.1a bounded START HERE orientation is production-live-accepted on runtime 0.5.27: normal continuation should use `cairnstone_resume_chain(..., detail="start_here")`, with `compact`/`full` as deliberate expansion modes. V7.7 vault catalog/scope/search primitives are live; Scope is retrieval/navigation context only and never synthetic global authority. Cross-chain grounded Q&A (`cairnstone_ask_scope`) remains planned for V7.7.2 and must not be assumed shipped. V6.10 remains the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
