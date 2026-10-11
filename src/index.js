@@ -249,6 +249,7 @@ import {
 } from "./executor-profile.js";
 import {
   CORE_AUTH_RESOURCE_PATH,
+  CORE_AUTH_TWIN_RESOURCE_PATH,
   assertCallerIdentity,
   assertResourceSelectors,
   authorizationServerMetadata,
@@ -345,9 +346,21 @@ export default {
       // V7.7.10i.1 additive authenticated Core canary. Legacy routes above are unchanged.
       // Deploy / required-mode / runtime bump are NOT authorized by this slice.
       if (url.pathname === "/mcp/core-auth") return handleMcp(request, env, url, { core: true, auth: true });
+      // V7.7.10f.1d connect-time twin. Same Core auth realm and canonical
+      // audience as /mcp/core-auth. Distinct URL so clients that only upgrade
+      // to OAuth on a connect-time 401 (Grok) cannot mark the connector
+      // connected after anonymous initialize/tools/list. Primary keeps
+      // discovery-open behavior because Claude is proven there.
+      if (url.pathname === "/mcp/core-auth-b") {
+        return handleMcp(request, env, url, { core: true, auth: true, connectTimeAuth: true });
+      }
       // Path-only PRM (RFC 9728). Do not publish a root well-known PRM that could
       // confuse legacy /mcp discovery with the authenticated Core resource.
-      if (request.method === "GET" && url.pathname === `/.well-known/oauth-protected-resource${CORE_AUTH_RESOURCE_PATH}`) {
+      // Twin alias returns the SAME metadata document (canonical resource).
+      if (request.method === "GET" && (
+        url.pathname === `/.well-known/oauth-protected-resource${CORE_AUTH_RESOURCE_PATH}`
+        || url.pathname === `/.well-known/oauth-protected-resource${CORE_AUTH_TWIN_RESOURCE_PATH}`
+      )) {
         return json(protectedResourceMetadata(env, url));
       }
       if (request.method === "GET" && (
@@ -1007,6 +1020,7 @@ function landing(env, url) {
     mcp: `${url.origin}/mcp`,
     mcp_core: `${url.origin}/mcp/core`,
     mcp_core_auth: `${url.origin}/mcp/core-auth`,
+    mcp_core_auth_b: `${url.origin}/mcp/core-auth-b`,
     core_auth_enforcement: resolveEnforcementMode(env),
     message: "CairnStone v6 is live. Isolated successor to cairnstone-v5. Claude and other MCP clients should connect to /mcp for the full legacy catalog, or /mcp/core for the V7.6.2a bounded deferred-tool boot surface (search/hydrate/execute the rest generically). Additive /mcp/core-auth is the authenticated Core canary (V7.7.10i.1); legacy URLs stay unchanged. REST clients can use /health, /v1/stones, /v1/stones/github, /v1/search, and /v1/expand.",
     base_url: url.origin,
@@ -1037,6 +1051,7 @@ function health(env) {
     // cairnstone_tool_execute (or the full /mcp surface directly).
     mcp_core_tools: [...CORE_TOOL_NAMES],
     mcp_core_auth: "/mcp/core-auth",
+    mcp_core_auth_b: "/mcp/core-auth-b",
     core_auth_enforcement: resolveEnforcementMode(env)
   };
 }
@@ -1053,7 +1068,10 @@ function routes() {
     "GET /mcp-b",
     "POST /mcp/core-auth",
     "GET /mcp/core-auth",
+    "POST /mcp/core-auth-b",
+    "GET /mcp/core-auth-b",
     "GET /.well-known/oauth-protected-resource/mcp/core-auth",
+    "GET /.well-known/oauth-protected-resource/mcp/core-auth-b",
     "GET /.well-known/oauth-authorization-server/oauth",
     "GET /.well-known/oauth-authorization-server",
     "GET /oauth/.well-known/oauth-authorization-server",
@@ -1166,8 +1184,9 @@ function routes() {
   ];
 }
 
-export function mcpToolsForProfile(core, hydratedToolIds) {
+export function mcpToolsForProfile(core, hydratedToolIds, profileOptions = {}) {
   const all = mcpTools();
+  const auth = profileOptions === true || profileOptions?.auth === true;
   // cairnstone_load_tools is a /mcp/core session-control primitive, not a
   // full-profile tool. Full /mcp already exposes the complete native catalog
   // and deliberately does not establish listChanged/session hydration state.
@@ -1177,9 +1196,11 @@ export function mcpToolsForProfile(core, hydratedToolIds) {
     : new Set(Array.isArray(hydratedToolIds) ? hydratedToolIds : []);
   // V7.6.2b: the boot-visible core set is CORE_TOOL_NAMES plus whatever this
   // session has explicitly and eligibly hydrated via cairnstone_load_tools.
-  // Session overlays are transport state only -- they never change which
-  // tools exist, only which are natively listed for this one session.
-  return all.filter(tool => CORE_TOOL_NAMES.has(tool.name) || hydrated.has(tool.name));
+  // Authenticated Core (primary and connect-time twin) lists AUTH_CORE_TOOL_NAMES
+  // so GET discovery and POST tools/list advertise the same native catalog,
+  // including cairnstone_event_list. Unauthenticated /mcp/core stays at 9.
+  const nativeNames = auth ? AUTH_CORE_TOOL_NAMES : CORE_TOOL_NAMES;
+  return all.filter(tool => nativeNames.has(tool.name) || hydrated.has(tool.name));
 }
 
 async function getSessionHydratedToolIds(env, core, sessionId) {
@@ -1223,25 +1244,34 @@ function annotateNotificationDelivery(rpcResultEnvelope, delivered) {
 async function handleMcp(request, env, url, options = {}) {
   const core = options.core === true;
   const auth = options.auth === true;
-  const endpointPath = auth ? "/mcp/core-auth" : (core ? "/mcp/core" : "/mcp");
+  const connectTimeAuth = options.connectTimeAuth === true;
+  const endpointPath = connectTimeAuth
+    ? CORE_AUTH_TWIN_RESOURCE_PATH
+    : (auth ? CORE_AUTH_RESOURCE_PATH : (core ? "/mcp/core" : "/mcp"));
 
   if (request.method === "GET") {
     return json({
       ok: true,
-      name: auth ? "cairnstone-v6-mcp-core-auth" : (core ? "cairnstone-v6-mcp-core" : "cairnstone-v6-mcp"),
+      name: connectTimeAuth
+        ? "cairnstone-v6-mcp-core-auth-b"
+        : (auth ? "cairnstone-v6-mcp-core-auth" : (core ? "cairnstone-v6-mcp-core" : "cairnstone-v6-mcp")),
       version: VERSION,
       protocol: "MCP JSON-RPC over HTTP",
       profile: auth ? "deferred_tool_vault_core_auth" : (core ? "deferred_tool_vault_core" : "legacy_full"),
       endpoint: `${url.origin}${endpointPath}`,
       methods: ["initialize", "tools/list", "tools/call"],
-      tools: mcpToolsForProfile(core).map(tool => ({ name: tool.name, description: tool.description })),
+      tools: mcpToolsForProfile(core, undefined, { auth }).map(tool => ({ name: tool.name, description: tool.description })),
       auth_required_for_protected_tools: auth === true,
+      auth_bootstrap: connectTimeAuth ? "connect_time" : (auth ? "tool_call" : "none"),
       enforcement: auth ? resolveEnforcementMode(env) : undefined,
       resource: auth ? canonicalCoreAuthResource(env, url) : undefined,
+      logical_resource: auth ? canonicalCoreAuthResource(env, url) : undefined,
       residual_risk_stolen_bearer_replay: auth ? "documented_not_solved" : undefined,
-      note: auth
-        ? "V7.7.10i.1 additive authenticated Core canary. Protected tools/call require a CairnStone Bearer token. Legacy /mcp, /mcp/core, and /mcp-b are unchanged. Stolen same-resource bearer replay remains residual risk until sender-constrained tokens are host-supported."
-        : (core ? "Bounded V7.6.2a boot surface plus V7.6.2b experimental native tool hydration via cairnstone_load_tools. Every other catalog tool remains reachable generically via cairnstone_tool_search -> cairnstone_get_tool_contract -> cairnstone_tool_policy_preview -> cairnstone_tool_execute, or from the full /mcp surface." : undefined)
+      note: connectTimeAuth
+        ? "Connect-time authenticated Core twin. Anonymous MCP POST initialize/tools/list/tools/call return 401 + WWW-Authenticate. OAuth audience and token family stay canonical /mcp/core-auth. GET is diagnostic only. Legacy /mcp, /mcp/core, /mcp-b, and primary /mcp/core-auth are unchanged."
+        : (auth
+        ? "V7.7.10i.1 additive authenticated Core canary. Protected tools/call require a CairnStone Bearer token. initialize and tools/list stay discoverable. Legacy /mcp, /mcp/core, and /mcp-b are unchanged. Stolen same-resource bearer replay remains residual risk until sender-constrained tokens are host-supported."
+        : (core ? "Bounded V7.6.2a boot surface plus V7.6.2b experimental native tool hydration via cairnstone_load_tools. Every other catalog tool remains reachable generically via cairnstone_tool_search -> cairnstone_get_tool_contract -> cairnstone_tool_policy_preview -> cairnstone_tool_execute, or from the full /mcp surface." : undefined))
     });
   }
 
@@ -1275,7 +1305,9 @@ async function handleMcp(request, env, url, options = {}) {
   let authContext = null;
   if (auth) {
     const gate = await enforceCoreAuthRequest(request, env, url, {
-      isProtectedToolCall: isProtectedMcpRpc(rpc)
+      // Twin: every MCP POST is connect-time protected so initialize cannot
+      // succeed anonymously. Primary: only tools/call is protected.
+      isProtectedToolCall: connectTimeAuth || isProtectedMcpRpc(rpc)
     });
     if (!gate.ok) {
       const headers = new Headers({
@@ -1435,11 +1467,8 @@ export async function handleMcpRpc(rpc, env, options = {}) {
 
     if (method === "tools/list") {
       const hydrated = await getSessionHydratedToolIds(env, core, sessionId);
-      const listed = mcpToolsForProfile(core, hydrated);
-      if (!core || !auth) return rpcResult(id, { tools: listed });
-      const listedNames = new Set(listed.map(tool => tool.name));
-      const authAdditions = mcpTools().filter(tool => AUTH_CORE_TOOL_NAMES.has(tool.name) && !listedNames.has(tool.name));
-      return rpcResult(id, { tools: [...listed, ...authAdditions] });
+      const listed = mcpToolsForProfile(core, hydrated, { auth });
+      return rpcResult(id, { tools: listed });
     }
 
     if (method === "tools/call") {

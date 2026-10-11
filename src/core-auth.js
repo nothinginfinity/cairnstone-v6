@@ -13,13 +13,16 @@
 import { sha256Text, stableJson } from "./agent-bootstrap.js";
 import {
   advertisedAuthorizationScopes,
+  canonicalizeCoreTransportResource,
   canonicalizeMessagesResource,
+  coreTransportResourcesEquivalent,
   messagesResourcesEquivalent,
   resolveResourceScopePolicy
 } from "./resource-scope-policy.js";
 
 export const CORE_AUTH_REALM = "core-auth";
 export const CORE_AUTH_RESOURCE_PATH = "/mcp/core-auth";
+export const CORE_AUTH_TWIN_RESOURCE_PATH = "/mcp/core-auth-b";
 export const ACCOUNT_SCHEMA = "cairnstone-account-v1";
 export const AUTHENTICATOR_SCHEMA = "cairnstone-authenticator-v1";
 export const CONNECTION_PRINCIPAL_SCHEMA = "cairnstone-connection-principal-v1";
@@ -159,21 +162,28 @@ export function canonicalCoreAuthResource(env, url) {
 
 /**
  * Canonicalize a resource for storage on codes/tokens.
- * Messages …/mcp collapses to bare origin; other audiences are unchanged.
+ * Messages …/mcp collapses to bare origin.
+ * Connect-time twin `/mcp/core-auth-b` collapses to canonical `/mcp/core-auth`
+ * on the same origin. No second token family or auth realm.
  */
 export function canonicalizeOauthResource(resource) {
   if (typeof resource !== "string" || !resource.trim()) return resource;
   const messages = canonicalizeMessagesResource(resource);
-  return messages || resource.trim();
+  if (messages) return messages;
+  const core = canonicalizeCoreTransportResource(resource);
+  return core || resource.trim();
 }
 
 /**
  * Compare OAuth resource parameters across authorize ↔ token ↔ refresh.
- * Messages bare origin and …/mcp are equivalent; Core remains exact.
+ * Messages bare origin and …/mcp are equivalent.
+ * Core primary `/mcp/core-auth` and twin `/mcp/core-auth-b` are equivalent
+ * on the same origin; stored audience remains the canonical Core resource.
  */
 export function oauthResourcesMatch(stored, requested) {
   if (stored === requested) return true;
   if (messagesResourcesEquivalent(stored, requested)) return true;
+  if (coreTransportResourcesEquivalent(stored, requested)) return true;
   return false;
 }
 
