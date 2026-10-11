@@ -5,6 +5,11 @@
 -- Applying this requires a separate explicit owner approval and a dedicated private D1 binding.
 -- Fixed: ESCAPE uses a single backslash character (SQLite requires one character).
 -- Added: role column on connections for admin/member persistence.
+-- Added: BEFORE INSERT authorization triggers on priv_messages/priv_deliveries. Application code
+--   checks authorization first (for precise audited denials), but a revocation can commit between
+--   that check and the write. These triggers re-evaluate authorization INSIDE the write, so a
+--   message or delivery from a connection/grant that is no longer effective cannot commit. A
+--   RAISE(ABORT) inside db.batch() rolls back the whole batch: no partial delivery.
 
 PRAGMA foreign_keys = ON;
 
@@ -85,6 +90,22 @@ BEGIN SELECT RAISE(ABORT, 'priv_messages is immutable'); END;
 CREATE TRIGGER priv_messages_no_delete BEFORE DELETE ON priv_messages
 BEGIN SELECT RAISE(ABORT, 'priv_messages is immutable'); END;
 
+-- Backstop: a message may only be written by a connection that is active, in an active Home, holding
+-- a live `send` grant on an active sender inbox it may reach (connection-private inboxes: owner only).
+CREATE TRIGGER priv_messages_sender_authorized BEFORE INSERT ON priv_messages
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM priv_home_connections c
+  JOIN priv_homes h ON h.home_id = c.home_id
+  JOIN priv_inbox_grants g ON g.home_id = c.home_id AND g.connection_id = c.connection_id
+  JOIN priv_inboxes i ON i.home_id = g.home_id AND i.inbox_id = g.inbox_id
+  WHERE c.home_id = NEW.home_id AND c.connection_id = NEW.sender_connection_id
+    AND c.status = 'active' AND h.status = 'active'
+    AND g.inbox_id = NEW.sender_inbox_id AND g.revoked_at IS NULL AND g.can_send = 1
+    AND i.status = 'active' AND (i.scope <> 'connection' OR i.owner_connection_id = c.connection_id)
+)
+BEGIN SELECT RAISE(ABORT, 'sender_not_authorized'); END;
+
 CREATE TABLE priv_deliveries (
   home_id      TEXT NOT NULL,
   message_id   TEXT NOT NULL,
@@ -121,3 +142,20 @@ CREATE TRIGGER priv_audit_no_update BEFORE UPDATE ON priv_audit
 BEGIN SELECT RAISE(ABORT, 'priv_audit is append-only'); END;
 CREATE TRIGGER priv_audit_no_delete BEFORE DELETE ON priv_audit
 BEGIN SELECT RAISE(ABORT, 'priv_audit is append-only'); END;
+
+-- Backstop: a delivery may only target an inbox on which the message's sender holds a live `send`
+-- grant at the moment of the write (same reachability rules as above).
+CREATE TRIGGER priv_deliveries_target_authorized BEFORE INSERT ON priv_deliveries
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM priv_messages m
+  JOIN priv_home_connections c ON c.home_id = m.home_id AND c.connection_id = m.sender_connection_id
+  JOIN priv_homes h ON h.home_id = c.home_id
+  JOIN priv_inbox_grants g ON g.home_id = c.home_id AND g.connection_id = c.connection_id
+  JOIN priv_inboxes i ON i.home_id = g.home_id AND i.inbox_id = g.inbox_id
+  WHERE m.home_id = NEW.home_id AND m.message_id = NEW.message_id
+    AND c.status = 'active' AND h.status = 'active'
+    AND g.inbox_id = NEW.inbox_id AND g.revoked_at IS NULL AND g.can_send = 1
+    AND i.status = 'active' AND (i.scope <> 'connection' OR i.owner_connection_id = c.connection_id)
+)
+BEGIN SELECT RAISE(ABORT, 'delivery_not_authorized'); END;

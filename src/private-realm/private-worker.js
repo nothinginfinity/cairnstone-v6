@@ -1,28 +1,20 @@
-// S0b-2 — Internal private-storage Worker skeleton.
+// S0b-2 — Internal private-storage Worker entrypoint (glue only). DORMANT.
 //
-// DORMANT. No public URL, no workers.dev, no custom domain, no routes.
-// Holds CAIRNSTONE_PRIVATE_DB and CAIRNSTONE_PRIVATE_R2 only.
-// Called solely via service binding from the public gateway.
-// Gateway never holds the private bindings.
+// Not deployed, not routed, no bindings provisioned by this repository state. When provisioned it is
+// reachable ONLY through a service binding; it defines no fetch handler, so there is no HTTP surface.
+// All logic lives in ./private-worker-core.js (unit-tested in Node); this file only adapts it to the
+// Workers runtime and is syntax-checked (`node --check`), not executed, in CI.
+//
+// `this.env` is the worker's own environment. It is never a parameter of the RPC method.
 
-import { createD1HomeStore } from "./d1-store.js";
-import { STORE_METHODS } from "./store.js";
+import { WorkerEntrypoint } from "cloudflare:workers";
+import { handlePrivateCall } from "./private-worker-core.js";
 
-export default {
-  async fetch(request, env) {
-    // No public routes. Any direct HTTP is denied.
-    return new Response("private storage worker: service binding only", { status: 404 });
-  },
-
-  // Service-binding RPC entrypoint (Cloudflare service binding call).
-  async handleStoreCall(method, args, env) {
-    if (!STORE_METHODS.includes(method)) {
-      throw new Error("unknown_store_method");
-    }
-    const store = createD1HomeStore({
-      db: env.CAIRNSTONE_PRIVATE_DB,
-      r2: env.CAIRNSTONE_PRIVATE_R2
-    });
-    return store[method](...args);
+export default class PrivateStorageEntrypoint extends WorkerEntrypoint {
+  // Service-binding RPC: one method taking one signed envelope. Platform-attached caller identity
+  // (ctx.props.caller, set in the binding configuration) is cross-checked against the envelope when present.
+  async call(envelope) {
+    const platformCaller = typeof this.ctx?.props?.caller === "string" ? this.ctx.props.caller : null;
+    return handlePrivateCall({ env: this.env, envelope, platformCaller });
   }
-};
+}
