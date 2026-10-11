@@ -22,6 +22,7 @@ import {
   NOTE_SELF_TOOL_DEFINITION,
   GET_NOTES_TOOL_DEFINITION
 } from "./correspondence.js";
+import { applyRealmGuard } from "./realm-guard.js";
 import {
   runTaskRequestFromBody,
   issueMailboxCapabilityFromBody,
@@ -933,7 +934,10 @@ export default {
         return json(routeExecutorFromBody(await request.json(), env));
       }
       if (request.method === "POST" && url.pathname === "/v1/correspondence/forward-with-note") {
-        return json(await forwardWithNoteFromBody(await request.json(), env, {
+        const forwardBody = await request.json();
+        const realmDenied = applyRealmGuard("cairnstone_forward_with_note", forwardBody, env);
+        if (realmDenied) return json(realmDenied, realmDenied.status);
+        return json(await forwardWithNoteFromBody(forwardBody, env, {
           createStone: body => createStoneFromBody(body, env)
         }));
       }
@@ -1624,6 +1628,10 @@ function trustedAuditActorId(options = {}) {
 
 async function callMcpTool(name, args, env, options = {}) {
   const authContext = options.authContext || null;
+  // S0a: unauthenticated callers may not name private-realm addresses on AC1 mailbox tools.
+  // Default OFF (AC1_REALM_GUARD); authenticated calls are bound by assertCallerIdentity below.
+  const realmDenied = applyRealmGuard(name, args, env, { authContext });
+  if (realmDenied) return realmDenied;
   if (authContext) {
     const asserted = assertCallerIdentity(args, authContext);
     if (!asserted.ok) {
