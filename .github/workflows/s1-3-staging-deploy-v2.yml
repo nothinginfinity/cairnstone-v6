@@ -1,3 +1,5 @@
+# SAFETY: Only exact reviewed S1-3 candidate may be deployed. Update ALLOWED_SOURCE_SHA in a separately reviewed PR.
+# Cloudflare credentials are step-scoped: never exposed to checkout, installation, or tests.
 name: S1-3 isolated private staging deploy v2 (manual only, STAGING ONLY)
 
 # Deploys ONLY the Worker `cairnstone-private-staging` from a pinned, reviewed commit, bound to the
@@ -26,9 +28,8 @@ jobs:
     timeout-minutes: 25
     environment: s1-3-staging
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       SOURCE_SHA: ${{ github.event.inputs.source_sha }}
+      ALLOWED_SOURCE_SHA: bec2e2e8f0287ac1ff84280344166f1f1d9b9fb0
       EXPECTED_DB_ID: 9420f645-4bdf-430f-a790-feb34d01f077
       OLD_DB_ID: 26d4e786-2da7-47a4-a159-1ba206712b13
       WORKER_NAME: cairnstone-private-staging
@@ -38,6 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "source_sha must be a full 40-char lowercase SHA"; exit 1; }
+          test "$SOURCE_SHA" = "$ALLOWED_SOURCE_SHA" || { echo "::error::Source commit is not the pinned reviewed S1-3 candidate"; exit 1; }
           test "${GITHUB_REF_NAME}" = "main"
       - uses: actions/checkout@v4
         with:
@@ -52,7 +54,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           f=wrangler.private-staging.toml
-          test -f $f
+          test -f "$f"
           grep -Fxq 'name = "cairnstone-private-staging"' $f
           grep -Fxq 'workers_dev = false' $f
           grep -Fxq 'preview_urls = false' $f
@@ -72,6 +74,9 @@ jobs:
           node --check src/private-realm/private-staging-worker.js
           node --test test/private-staging-core.test.js test/private-staging-schema-parity.test.js test/private-realm-worker.test.js
       - name: Verify target D1 schema live (read-only) before deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -82,8 +87,14 @@ jobs:
       - name: Validate Cloudflare bundle (no deploy)
         run: npx wrangler deploy --dry-run --outdir /tmp/s1-3-stage-build --config wrangler.private-staging.toml
       - name: Deploy isolated private staging Worker ONLY
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy --config wrangler.private-staging.toml
       - name: Live readback (bindings, no public exposure)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
