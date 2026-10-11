@@ -14,3 +14,7 @@ export { STORE_METHODS, createInMemoryHomeStore, resolveHomeStore } from "./stor
 export { HOME_STORE_BOUNDARY } from "./boundary.js";
 export { createIdentityHomeBridge, createCoreAuthIdentityHomeBridge } from "./identity-home-bridge.js";
 export { PRIVATE_INBOX_TOOL_DEFINITIONS, PRIVATE_INBOX_TOOL_NAMES, createPrivateInboxTools } from "./private-inbox-tools.js";
+export {
+  PRIVATE_CORE_AUTH_ENDPOINT_PATH, PRIVATE_INBOX_MCP_DESCRIPTORS, PRIVATE_INBOX_TOOL_EFFECTS,
+  bearerFromHeaders, createPrivateCoreAuthTransport
+} from "./private-core-auth-transport.js";
