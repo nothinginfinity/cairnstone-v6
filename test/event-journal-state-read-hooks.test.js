@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execSqlite } from "./helpers/event-journal-sqlite.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -12,7 +12,7 @@ const CONTENT = "e".repeat(64);
 const OTHER_COMMIT = "f".repeat(40);
 
 function sql(dbPath, statement) {
-  return execFileSync("sqlite3", [dbPath, statement], { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+  return execSqlite( [dbPath, statement], { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
 function setupDb() {
@@ -35,7 +35,7 @@ function setupDb() {
     readFileSync(new URL("../migrations/0025_v7710f1_event_journal.sql", import.meta.url), "utf8"),
     readFileSync(new URL("../migrations/0027_v7710f1c_semantic_state_read_hooks.sql", import.meta.url), "utf8")
   ];
-  execFileSync("sqlite3", [dbPath], { input: parts.join("\n") });
+  execSqlite( [dbPath], { input: parts.join("\n") });
   return { dir, dbPath };
 }
 

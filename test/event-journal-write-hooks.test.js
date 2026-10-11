@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execSqlite } from "./helpers/event-journal-sqlite.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -49,7 +49,7 @@ const RAW_2 = `raw/${"2".repeat(64)}.txt`;
 const RAW_3 = `raw/${"3".repeat(64)}.txt`;
 
 function sql(dbPath, statement) {
-  return execFileSync("sqlite3", [dbPath, statement], { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+  return execSqlite( [dbPath, statement], { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
 function insertStone(dbPath, hash, rawKey, author = "chatgpt:cairnstone-v6") {
@@ -63,7 +63,7 @@ function setupDb() {
   const dbPath = join(dir, "journal.sqlite");
   const substrate = readFileSync(new URL("../migrations/0025_v7710f1_event_journal.sql", import.meta.url), "utf8");
   const hooks = readFileSync(new URL("../migrations/0026_v7710f1b_event_journal_write_hooks.sql", import.meta.url), "utf8");
-  execFileSync("sqlite3", [dbPath], { input: `${BASE_SCHEMA}\n${substrate}\n${hooks}` });
+  execSqlite( [dbPath], { input: `${BASE_SCHEMA}\n${substrate}\n${hooks}` });
   return { dir, dbPath };
 }
 

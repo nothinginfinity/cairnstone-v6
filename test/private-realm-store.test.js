@@ -558,25 +558,43 @@ test("resolveHomeStore is closed unless a test store is injected, even with real
 test("the store module is dormant: no production import, binding, migration or legacy table reference", () => {
   const srcDir = path.join(root, "src", "private-realm");
   const files = readdirSync(srcDir).filter(f => f.endsWith(".js"));
-  assert.deepEqual(files.sort(), ["boundary.js", "index.js", "scope.js", "store.js"]);
+  // S0b-1 modules plus the S0b-2 dormant candidates. Any other file in this directory fails this test.
+  assert.deepEqual(files.sort(), [
+    "boundary.js", "d1-store.js", "hash.js", "index.js", "private-worker-core.js", "private-worker.js", "r2-body.js", "scope.js", "store.js"
+  ]);
+  const S0B2 = new Set(["d1-store.js", "hash.js", "private-worker-core.js", "private-worker.js", "r2-body.js"]);
   for (const file of files) {
     const text = readFileSync(path.join(srcDir, file), "utf8");
     const code = text.replace(/\/\/.*$/gm, "");
     const imports = [...code.matchAll(/from\s+"([^"]+)"/g)].map(m => m[1]);
-    assert.ok(imports.every(i => i.startsWith("./")), `${file} imports only private-realm siblings: ${imports.join(",")}`);
-    assert.doesNotMatch(code, /env\.(DB|CAIRNSTONE_\w+)/, `${file} must not touch bindings`);
+    // The ONLY non-sibling import allowed anywhere is the Workers runtime base class, and only in the glue.
+    const allowed = i => i.startsWith("./") || (file === "private-worker.js" && i === "cloudflare:workers");
+    assert.ok(imports.every(allowed), `${file} imports only private-realm siblings: ${imports.join(",")}`);
+    if (file === "private-worker-core.js") {
+      // The core may name exactly the two PRIVATE bindings it is handed; never a shared one.
+      const bindings = [...code.matchAll(/env\.(DB|CAIRNSTONE_\w+)/g)].map(m => m[1]);
+      assert.deepEqual([...new Set(bindings)].sort(), ["CAIRNSTONE_PRIVATE_DB", "CAIRNSTONE_PRIVATE_R2"]);
+    } else {
+      assert.doesNotMatch(code, /env\.(DB|CAIRNSTONE_\w+)/, `${file} must not touch bindings`);
+    }
     assert.doesNotMatch(code, /\b(correspondence_\w+|auth_\w+)\b/, `${file} must not name legacy or auth tables`);
     assert.doesNotMatch(code, /\b(from|join)\s+(stones|refs|chains|stone_edges)\b|\binsert\s+into\s+(stones|refs|chains|stone_edges)\b|\bupdate\s+(stones|refs|chains|stone_edges)\s+set\b/i, `${file} must not run SQL against shared stone tables`);
     assert.doesNotMatch(code, /Math\.random/, `${file} must not use weak randomness`);
-    assert.doesNotMatch(code, /\bfetch\(|\bconsole\./, `${file} must not do I/O`);
+    assert.doesNotMatch(code, /\bfetch\b|\bconsole\./, `${file} must not do network I/O or log`);
+    assert.ok(S0B2.has(file) || !/priv_(homes|messages|deliveries|inboxes|audit|home_connections|inbox_grants)/.test(code) || file === "index.js", `${file}: only S0b-2 modules may name private tables`);
   }
   for (const entry of ["index.js", "worker.js"]) {
-    assert.doesNotMatch(readFileSync(path.join(root, "src", entry), "utf8"), /private-realm\/(store|scope|boundary|index)/, `src/${entry} must not import the store`);
+    assert.doesNotMatch(readFileSync(path.join(root, "src", entry), "utf8"), /private-realm\//, `src/${entry} must not import any private-realm module`);
   }
+  const index = readFileSync(path.join(srcDir, "index.js"), "utf8");
+  assert.doesNotMatch(index, /d1-store|r2-body|private-worker/, "the S0b-1 barrel does not export the S0b-2 adapters");
   const wrangler = readFileSync(path.join(root, "wrangler.toml"), "utf8");
-  assert.doesNotMatch(wrangler, /CAIRNSTONE_PRIVATE|private_storage|priv_/i, "no private binding is declared");
-  const migrations = readdirSync(path.join(root, "migrations"));
-  assert.ok(migrations.every(m => !/private|priv_|home/i.test(m)), "no private-realm migration exists");
+  assert.doesNotMatch(wrangler, /CAIRNSTONE_PRIVATE|private_storage|priv_|migrations\/private/i, "no private binding or migration dir is declared");
+  // Applied migration sets are the top-level .sql files of the configured dirs. The private candidate lives in
+  // migrations/private/, which no wrangler [[d1_databases]] block points at.
+  const applied = readdirSync(path.join(root, "migrations"), { withFileTypes: true }).filter(e => e.isFile()).map(e => e.name);
+  assert.ok(applied.every(m => !/private|priv_|home/i.test(m)), "no private-realm migration exists in the applied set");
+  assert.deepEqual(readdirSync(path.join(root, "migrations", "private")), ["0001_s0b2_private_realm.sql"]);
 });
 
 test("boundary plan: public gateway holds no private binding, storage Worker is internal-only, and the RPC surface equals the store interface", () => {
