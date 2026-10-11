@@ -97,7 +97,9 @@ This is a recommendation for the owner and the independent architecture review, 
 - `injectServerDerivedCaller` should keep deriving the default mailbox from server context;
   `assertCallerIdentity` already rejects a mismatching `from` / `recipient_id` / `actor_id`.
 
-## 6. Decisions needed from the owner
+## 6. Decisions (owner directions of 2026-10-10 recorded in `V7_S0B_S1_PRIVATE_REALM_DESIGN.md`)
+
+Owner approved: staged legacy transition behind credentials; reserve `prin conn home acct ten` (and `inbox` pending the audit, `agent:` NOT reserved); Option B private storage as architecture only. Production enforcement, bindings and migrations still need separate approval. Original questions below kept for history.
 
 1. **Legacy inbox containment.** Keep `chatgpt:chat` / `chatgpt:cairnstone-v6` and the other
    shared legacy inboxes open as a compatibility realm, or put them behind a credential. The

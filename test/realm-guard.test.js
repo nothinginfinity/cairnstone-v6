@@ -24,7 +24,9 @@ const LEGACY_ACTORS = [
   "grok-xcom:cairnstone-v6",
   "perplexity:chat",
   "perplexity-2:cairnstone-v6",
-  "chatgpt-2:chat"
+  "chatgpt-2:chat",
+  "agent:claude:jared",
+  "agent:chatgpt:jared"
 ];
 
 const PRIVATE_ACTORS = [
@@ -33,6 +35,11 @@ const PRIVATE_ACTORS = [
   "home:abc123",
   "acct:abc123",
   "ten:abc123",
+  "inbox:default",
+  "INBOX:abc",
+  "home_abc123",
+  "ibx_abc123",
+  "chatgpt:ibx_abc123",
   "PRIN:ABC123",
   "  prin:abc123  ",
   "prin_abc123",

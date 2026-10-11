@@ -23,10 +23,12 @@ export const DEFAULT_REALM_GUARD_MODE = "off";
 
 // Address namespaces reserved for the core-auth private realm. A legacy caller may not
 // name an address in any of these, as sender, mailbox owner, or recipient.
-export const PRIVATE_REALM_NAMESPACES = Object.freeze(["prin", "conn", "home", "acct", "ten"]);
+export const PRIVATE_REALM_NAMESPACES = Object.freeze(["prin", "conn", "home", "acct", "ten", "inbox"]);
 
-// Opaque identifier prefixes minted by core-auth (see ID_PATTERNS in core-auth.js).
-const PRIVATE_REALM_ID_PREFIXES = Object.freeze(["prin_", "conn_", "acct_", "ten_", "authn_", "tfam_", "walacct_"]);
+// Opaque identifier prefixes minted by core-auth (see ID_PATTERNS in core-auth.js) plus the
+// planned private-realm Home (home_) and inbox (ibx_) ids. `agent:` is deliberately NOT reserved:
+// existing fixtures use agent:claude:jared; reserving it needs its own audit and approval.
+const PRIVATE_REALM_ID_PREFIXES = Object.freeze(["prin_", "conn_", "acct_", "ten_", "authn_", "tfam_", "walacct_", "home_", "ibx_"]);
 
 // AC1 tools that take a mailbox actor on the unauthenticated surface.
 export const AC1_MAILBOX_TOOLS = Object.freeze([
