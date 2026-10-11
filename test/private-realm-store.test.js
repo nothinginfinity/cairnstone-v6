@@ -558,10 +558,10 @@ test("resolveHomeStore is closed unless a test store is injected, even with real
 test("the store module is dormant: no production import, binding, migration or legacy table reference", () => {
   const srcDir = path.join(root, "src", "private-realm");
   const files = readdirSync(srcDir).filter(f => f.endsWith(".js"));
-  // S0b-1/S0b-2 modules plus the dormant S1-1 Core-auth bridge.
+  // S0b-1/S0b-2 modules plus the dormant S1-1 Core-auth bridge and S1-2 private inbox tools (relative imports only).
   // Any other file in this directory fails the isolation inventory gate.
   assert.deepEqual(files.sort(), [
-    "boundary.js", "d1-store.js", "hash.js", "identity-home-bridge.js", "index.js", "private-worker-core.js", "private-worker.js", "r2-body.js", "scope.js", "store.js"
+    "boundary.js", "d1-store.js", "hash.js", "identity-home-bridge.js", "index.js", "private-inbox-tools.js", "private-worker-core.js", "private-worker.js", "r2-body.js", "scope.js", "store.js"
   ]);
   const S0B2 = new Set(["d1-store.js", "hash.js", "private-worker-core.js", "private-worker.js", "r2-body.js"]);
   for (const file of files) {
