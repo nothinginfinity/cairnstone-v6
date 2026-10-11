@@ -60,15 +60,22 @@ test("tampering with signed payload denies before storage", async () => {
   await assert.rejects(f.invoke(e), { code: "caller_not_authorized" });
   assert.equal(f.commits(), 0);
 });
-test("signed caller required; optional platform caller mismatch denies", async () => {
+test("platform caller attestation is required and must match (fail closed)", async () => {
   __resetNonceCacheForTests();
   const f = fixture();
-  const e = await f.signed("no_platform_nonce_123456789");
-  await assert.rejects(f.invoke(e, { platformCaller: "legacy-gateway" }), { code: "caller_not_authorized" });
+  for (const [i, pc] of [null, undefined, "", "legacy-gateway", 42].entries()) {
+    const e = await f.signed("platform_nonce_" + i + "_123456789");
+    await assert.rejects(f.invoke(e, { platformCaller: pc }), { code: "caller_not_authorized" });
+  }
   assert.equal(f.commits(), 0);
-  // Cross-worker service binding provides no ctx.props; signed exact caller is authoritative.
-  assert.equal((await f.invoke(e, { platformCaller: null })).ok, true);
+  const ok = await f.signed("platform_nonce_ok_123456789");
+  assert.equal((await f.invoke(ok)).ok, true);
   assert.equal(f.commits(), 1);
+});
+test("staging worker forwards ctx.props.caller", () => {
+  const worker = readFileSync(new URL("../src/private-realm/private-staging-worker.js", import.meta.url), "utf8");
+  assert.match(worker, /this\.ctx\?\.props\?\.caller/);
+  assert.match(worker, /platformCaller\s*\}/);
 });
 test("storage uncertainty or missing schema denies", async () => {
   __resetNonceCacheForTests();

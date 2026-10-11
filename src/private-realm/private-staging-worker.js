@@ -10,9 +10,9 @@ export default class PrivateStagingEntrypoint extends WorkerEntrypoint {
   }
 
   async call(envelope) {
-    // For separate-Worker service bindings, Cloudflare provides no ctx.props.
-    // HMAC authenticates exact caller + method + arguments; service binding
-    // limits who can reach this RPC in the first place.
-    return handleStagingPrivateCall({ env: this.env, envelope });
+    // ctx.props is set by the gateway's service-binding `props` config and is unforgeable by the caller.
+    // The core fails closed when it is absent or does not equal PRIVATE_STAGE_CALLER.
+    const platformCaller = typeof this.ctx?.props?.caller === "string" ? this.ctx.props.caller : null;
+    return handleStagingPrivateCall({ env: this.env, envelope, platformCaller });
   }
 }

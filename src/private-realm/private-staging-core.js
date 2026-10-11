@@ -14,12 +14,10 @@ export async function handleStagingPrivateCall({
 } = {}) {
   if (!env || env.PRIVATE_STAGE_ENABLED !== "true") throw unconfigured();
   if (typeof env.PRIVATE_STAGE_CALLER !== "string" || !env.PRIVATE_STAGE_CALLER) throw unconfigured();
-  // Cross-Worker RPC service bindings do not supply ctx.props: that facility is for
-  // same-Worker ctx.exports loopback. The service binding itself restricts access.
-  // Caller identity is cryptographically attested by an exact HMAC-signed caller field.
-  // If a trusted platform caller is available in the future, require it to match too.
-  if (platformCaller !== null && platformCaller !== undefined &&
-      platformCaller !== env.PRIVATE_STAGE_CALLER) throw deny();
+  // Platform attestation is REQUIRED (fail closed). The gateway's [[services]] binding must set
+  // props = { caller = "<PRIVATE_STAGE_CALLER>" } (wrangler >= 4.13); Cloudflare delivers it as
+  // ctx.props and the calling Worker cannot forge it. The signed HMAC caller must match it too.
+  if (typeof platformCaller !== "string" || platformCaller !== env.PRIVATE_STAGE_CALLER) throw deny();
   const db = env.CAIRNSTONE_PRIVATE_DB;
   if (!db || typeof db.prepare !== "function") throw unconfigured();
   if (!env.CAIRNSTONE_PRIVATE_R2 || typeof env.CAIRNSTONE_PRIVATE_R2.put !== "function") throw unconfigured();
