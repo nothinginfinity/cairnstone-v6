@@ -185,7 +185,18 @@ export function createIdentityHomeBridge({
     });
   }
 
-  return Object.freeze({ onboard, inspect });
+  // S1-2 seam: the ONLY way the dormant inbox tools obtain identity. Verifies the token, resolves the Home from
+  // the verified connection (non-provisioning, audited), and derives this caller's own inbox addresses.
+  // It never accepts a selector, never provisions, and exposes no sibling connection's address.
+  async function authorizeHome(accessToken, request) {
+    rejectForeignKeys(request);
+    const { scope } = await verifiedScope(accessToken);
+    const home = await store.resolveHome(scope);
+    const map = await addresses(scope, home.home_id);
+    return Object.freeze({ scope, home_id: home.home_id, role: home.role, addresses: map });
+  }
+
+  return Object.freeze({ onboard, inspect, authorizeHome });
 }
 
 // Production wiring seam (DORMANT). The caller supplies the private-store client and
