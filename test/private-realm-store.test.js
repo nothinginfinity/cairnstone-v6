@@ -588,7 +588,14 @@ test("the store module is dormant: no production import, binding, migration or l
     assert.doesNotMatch(code, /\b(correspondence_\w+|auth_\w+)\b/, `${file} must not name legacy or auth tables`);
     assert.doesNotMatch(code, /\b(from|join)\s+(stones|refs|chains|stone_edges)\b|\binsert\s+into\s+(stones|refs|chains|stone_edges)\b|\bupdate\s+(stones|refs|chains|stone_edges)\s+set\b/i, `${file} must not run SQL against shared stone tables`);
     assert.doesNotMatch(code, /Math\.random/, `${file} must not use weak randomness`);
-    assert.doesNotMatch(code, /\bfetch\b|\bconsole\./, `${file} must not do network I/O or log`);
+    if (file === "private-staging-worker.js") {
+      // Cloudflare requires a registered handler. Allow ONLY this fixed inert 404 handler.
+      assert.match(code, /async fetch\(\)\s*\{\s*return new Response\(null,\s*\{ status: 404 \}\);\s*\}/);
+      const noHttp = code.replace(/async fetch\(\)\s*\{\s*return new Response\(null,\s*\{ status: 404 \}\);\s*\}/, "");
+      assert.doesNotMatch(noHttp, /\bfetch\b|\bconsole\./, `${file} must not do network I/O or log`);
+    } else {
+      assert.doesNotMatch(code, /\bfetch\b|\bconsole\./, `${file} must not do network I/O or log`);
+    }
     assert.ok(S0B2.has(file) || !/priv_(homes|messages|deliveries|inboxes|audit|home_connections|inbox_grants)/.test(code) || file === "index.js", `${file}: only S0b-2 modules may name private tables`);
   }
   for (const entry of ["index.js", "worker.js"]) {

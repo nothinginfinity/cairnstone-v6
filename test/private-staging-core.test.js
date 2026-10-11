@@ -104,3 +104,9 @@ test("correct key but non-stage caller is rejected by exact caller binding", asy
   }, platformCaller: null }), { code: "caller_not_authorized" });
   assert.equal(f.commits(), 0);
 });
+
+test("staging HTTP handler remains an inert 404 deployment prerequisite", () => {
+  const worker = readFileSync(new URL("../src/private-realm/private-staging-worker.js", import.meta.url), "utf8");
+  assert.match(worker, /async fetch\(\)\s*\{\s*return new Response\(null,\s*\{ status: 404 \}\);\s*\}/);
+  assert.doesNotMatch(worker, /fetch\(request\)|\.get\(\s*request\)|handlePrivateCall\(\s*\{\s*request/);
+});
