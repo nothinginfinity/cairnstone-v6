@@ -561,7 +561,7 @@ test("the store module is dormant: no production import, binding, migration or l
   // S0b-1/S0b-2 modules plus the dormant S1-1 Core-auth bridge.
   // Any other file in this directory fails the isolation inventory gate.
   assert.deepEqual(files.sort(), [
-    "boundary.js", "d1-store.js", "hash.js", "identity-home-bridge.js", "index.js", "private-worker-core.js", "private-worker.js", "r2-body.js", "scope.js", "store.js"
+    "boundary.js", "d1-store.js", "hash.js", "identity-home-bridge.js", "index.js", "private-inbox-tools.js", "private-worker-core.js", "private-worker.js", "r2-body.js", "scope.js", "store.js"
   ]);
   const S0B2 = new Set(["d1-store.js", "hash.js", "private-worker-core.js", "private-worker.js", "r2-body.js"]);
   for (const file of files) {
