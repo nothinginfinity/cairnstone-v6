@@ -14,3 +14,7 @@ This candidate is deliberately dormant. It adds an internal `createStagingPrivat
 The token verifier is a **trusted injected dependency**, not a caller-supplied callback. It must validate issuer, audience/resource, token revocation, account/tenant/connection status, and expiry independently. `createIdentityHomeBridge` still rejects client-supplied identity selectors and defaults onboarding/recovery to denial.
 
 Before activation, execute the full Stage C test matrix in `S1_3_STAGE_C_GATE.md`. Until then, treat all source and CI as **candidate-only**.
+
+## Isolation correction
+
+The adapter MUST live under `src/staging-gateway/` rather than `src/private-realm/` because the latter's `test/private-realm-store.test.js` is a strict security inventory for storage modules. Do **not** loosen that invariant for a client/gateway adapter. The gateway references audited private-realm exports as a separate, staging-only consumer.

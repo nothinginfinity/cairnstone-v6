@@ -2,11 +2,11 @@
 // NEVER import from a production/legacy entrypoint; never expose over an HTTP route.
 // Cloudflare service binding must configure props = { caller = "cairnstone-stage-gateway" }.
 // Auth is verified ONLY through a separately-reviewed, staging-audience verifier.
-import { PrivateRealmError } from "./scope.js";
-import { STORE_METHODS } from "./store.js";
-import { signEnvelope } from "./private-worker-core.js";
-import { createIdentityHomeBridge } from "./identity-home-bridge.js";
-import { createPrivateInboxTools } from "./private-inbox-tools.js";
+import { PrivateRealmError } from "../private-realm/scope.js";
+import { STORE_METHODS } from "../private-realm/store.js";
+import { signEnvelope } from "../private-realm/private-worker-core.js";
+import { createIdentityHomeBridge } from "../private-realm/identity-home-bridge.js";
+import { createPrivateInboxTools } from "../private-realm/private-inbox-tools.js";
 
 export const STAGING_GATEWAY_CALLER = "cairnstone-stage-gateway";
 const err = code => new PrivateRealmError(code);

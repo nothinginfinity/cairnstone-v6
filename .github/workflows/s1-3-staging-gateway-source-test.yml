@@ -16,7 +16,7 @@ jobs:
         with:
           node-version: '22'
       - name: Compile gateway source
-        run: node --check src/private-realm/private-staging-gateway-client.js && node --check test/private-staging-gateway-client.test.js
+        run: node --check src/staging-gateway/private-staging-gateway-client.js && node --check test/private-staging-gateway-client.test.js
       - name: Run isolated gateway unit/security tests
         run: node --test test/private-staging-gateway-client.test.js
       - name: No deploy

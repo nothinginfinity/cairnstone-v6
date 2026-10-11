@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createStagingPrivateStoreClient, createStagingGatewayCore, STAGING_GATEWAY_CALLER } from "../src/private-realm/private-staging-gateway-client.js";
+import { createStagingPrivateStoreClient, createStagingGatewayCore, STAGING_GATEWAY_CALLER } from "../src/staging-gateway/private-staging-gateway-client.js";
 import { verifyEnvelope, __resetNonceCacheForTests } from "../src/private-realm/private-worker-core.js";
 
 const KEY = "staging-test-secret-".repeat(4);
