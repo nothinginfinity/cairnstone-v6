@@ -225,6 +225,14 @@ export function createD1HomeStore({
       throw lastError || concurrentChange();
     },
 
+    // Authorized, audited, NON-provisioning Home lookup. Unknown/revoked/mismatched connections are denied
+    // exactly like every other method; this never creates a Home or attaches a connection.
+    async resolveHome(scopeIn, selector) {
+      const ctx = await authorize(scopeIn, selector, "resolve_home");
+      await audit(ctx.home_id, ctx.scope, "resolve_home", "allow", null);
+      return deepFreeze({ home_id: ctx.home_id, role: ctx.conn.role });
+    },
+
     async setConnectionRole(scopeIn, targetConnectionId, role, selector) {
       const ctx = await authorize(scopeIn, selector, "set_role");
       if (ctx.conn.role !== "admin") return denyCapability(ctx.home_id, ctx.scope, "set_role", "admin_required");
@@ -311,8 +319,11 @@ export function createD1HomeStore({
 
     async createInbox(scopeIn, opts = {}, selector) {
       const ctx = await authorize(scopeIn, selector, "create_inbox");
-      const { scope: inboxScope, plane = "chat", label = "", inboxId } = opts || {};
+      const { scope: inboxScope, plane = "chat", label = "", inboxId, grantToCreator = false } = opts || {};
       if (!INBOX_SCOPES.includes(inboxScope)) throw new PrivateRealmError("invalid_inbox_scope");
+      // grantToCreator: the creating admin receives full capabilities on the NEW inbox in the same atomic
+      // batch. Only meaningful for Home-owned inboxes; never applied to an inbox that already exists.
+      if (typeof grantToCreator !== "boolean" || (grantToCreator && inboxScope === "connection")) throw new PrivateRealmError("invalid_options");
       if (!INBOX_PLANES.includes(plane)) throw new PrivateRealmError("invalid_plane");
       if (typeof label !== "string" || label.length > MAX_LABEL_CHARS) throw new PrivateRealmError("invalid_label");
       if (inboxId !== undefined && !isInboxId(inboxId)) throw new PrivateRealmError("invalid_inbox_id");
@@ -349,6 +360,14 @@ export function createD1HomeStore({
            WHERE ${actor.sql}
              AND EXISTS (SELECT 1 FROM priv_inboxes oi WHERE oi.home_id = ? AND oi.inbox_id = ? AND oi.owner_connection_id = ?)`
         ).bind(ctx.home_id, inbox_id, owner, stamp, ...actor.args, ctx.home_id, inbox_id, owner));
+      }
+      if (grantToCreator) {
+        stmts.push(db.prepare(
+          `INSERT INTO priv_inbox_grants (home_id, inbox_id, connection_id, can_read, can_send, can_ack, granted_at)
+           SELECT ?, ?, ?, 1, 1, 1, ?
+           WHERE ${actor.sql}
+             AND EXISTS (SELECT 1 FROM priv_inboxes ci WHERE ci.home_id = ? AND ci.inbox_id = ? AND ci.scope <> 'connection' AND ci.status = 'active')`
+        ).bind(ctx.home_id, inbox_id, ctx.conn.connection_id, stamp, ...actor.args, ctx.home_id, inbox_id));
       }
       let results;
       try {

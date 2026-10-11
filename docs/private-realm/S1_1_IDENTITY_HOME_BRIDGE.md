@@ -8,7 +8,7 @@
 
 `authContext.client_family` is the Core-auth source field; `provider_label` is merely sanitized metadata, never a Home identifier. The underlying S0b store remains sole authority for Home association, account/tenant/principal conflicts, connection revocation, roles, inbox grants, and last-admin protection.
 
-A second independent, server-injected `admitAdminRecovery(context)` hook defaults to deny. When it explicitly authorizes recovery, the bridge may request `home_role: admin` from S0b, which permits a new connection to become admin only if the Home has **no** active admin. This never grants the new admin access to connection-private content or old Home inbox grants; SQL enforces the role decision under concurrent attachments. The owner controls both bootstrap and recovery admission independently.
+A second independent, server-injected `admitAdminRecovery(context)` hook defaults to deny. When it explicitly authorizes recovery, the bridge may request `home_role: admin` from S0b, which permits a new connection to become admin only if the Home has **no** active admin. Recovery does not by itself grant the new admin any inbox capability and never exposes connection-private content. **However (corrected, review finding F1):** under the current S0b store an admin may `grantInbox` any Home-owned inbox to any active connection *including itself*, so an admitted recovery admin can self-grant read access to all existing Home-inbox history. Until the owner decides between (a) accepting that, and (b) separating admin recovery from historical-content recovery in the store, `admitAdminRecovery` must be treated as consent to full Home-inbox history. SQL enforces the role decision under concurrent attachments. The owner controls both bootstrap and recovery admission independently.
 
 The bridge has two server-only methods:
 
@@ -21,7 +21,7 @@ There are deliberately **no** caller-supplied account/tenant/principal/connectio
 
 Home inboxes and connection-private inboxes are kept separate for both `chat` and `work` planes. Stable IDs use a versioned HMAC-SHA256 keyed derivation over `(scope, Home ID, connection ID if private, plane)` and are mapped as `inbox:ibx_<opaque>`. The key must be a protected server-only secret retained for future sessions and export/import; changing it without a migration plan changes all deterministic IDs.
 
-A newly created Home has an initial admin as defined by S0b store. Initial Home-owned inboxes are created only by an admitted admin; the store creates an explicit grant for private inbox owners. The bridge issues a full Home inbox grant **only for a newly created inbox**, and only to the creating admin; an existing revoked grant is never silently resurrected. A new attached provider gets its own private inboxes, **zero implicit Home grants**, and no sibling-private access even when promoted admin. Admin role is control-plane metadata, not mailbox-body permission; `listInboxes` and `can` are rechecked to display capabilities.
+A newly created Home has an initial admin as defined by S0b store. Initial Home-owned inboxes are created only by an admitted admin; the store creates an explicit grant for private inbox owners. The bridge creates each Home inbox with `createInbox({grantToCreator: true})`, so the creating admin's first grant is written in the **same atomic store operation** as the inbox (no inbox without its grant, no separate `grantInbox` call). It applies **only to a newly created inbox**; an existing inbox, and any revoked grant on it, is never touched or resurrected. A new attached provider gets its own private inboxes, **zero implicit Home grants**, and no sibling-private access even when promoted admin. Admin role grants no mailbox capability by default, but see the self-grant caveat above; `listInboxes` and `can` are rechecked to display capabilities.
 
 Creation is idempotent under simultaneous requests through S0b's guarded SQL and unique indexes. Partial failure after a Home or inbox create may require an approved retry/manual grant; it must not auto-restore a revoked grant. Private Home-owned history persists after provider revocation; no data is copied into public/legacy AC1. Provider changes do not change Home ownership.
 
@@ -34,3 +34,10 @@ Creation is idempotent under simultaneous requests through S0b's guarded SQL and
 **Operator decisions still open:** automatic vs explicit first-connection bootstrap; legacy claim proof and L0–L3 transition/sunset. This draft chooses *explicit default-deny* rather than making that policy decision implicitly.
 
 Never enable S1-1 on a public Worker or share the private binding with legacy tool/REST/Stone/FTS/R2 code paths. No production storage or migration should be touched as part of draft review.
+
+## Repairs from the converged review (stacked draft)
+
+* `inspect` resolves `home_id`/`role` through the new authorized, audited, **non-provisioning** `resolveHome(scope)` store method (the 13th `STORE_METHODS` entry; the worker allow-list follows `STORE_METHODS`).
+* Admission hooks receive copies of the context; after the second verification the **entire** fresh context must equal the first (canonical comparison). Any drift (assurance, scopes, client family, token family, authz version, statuses) denies and writes nothing.
+* A throwing verifier is `scope_not_authorized`; a throwing `admitOnboarding` is `onboarding_not_admitted`; a throwing `admitAdminRecovery` means *no recovery* (less privilege). No raw error text crosses the bridge.
+* Still open (not in this slice): F1 owner policy decision, dedicated private scope (F4), inbox-HMAC key versioning/rotation and read-path independence from the key (F5), `can()` N+1 (F6), admin-side provider grant flow (F7), and every pre-activation gate listed above.
