@@ -3,13 +3,15 @@
 -- Based on docs/private-realm/schema.sql.draft at PR #73 head 5a97e9cc552a2db576ccb40236f9f699816e5073.
 -- Lives under migrations/private/ so wrangler d1 migrations apply on CAIRNSTONE_DB will never pick it up.
 -- Applying this requires a separate explicit owner approval and a dedicated private D1 binding.
+-- Fixed: ESCAPE uses a single backslash character (SQLite requires one character).
+-- Added: role column on connections for admin/member persistence.
 
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE priv_homes (
-  home_id      TEXT PRIMARY KEY CHECK (home_id LIKE 'home\_%' ESCAPE '\\' AND length(home_id) BETWEEN 12 AND 80),
-  account_id   TEXT NOT NULL CHECK (account_id LIKE 'acct\_%' ESCAPE '\\'),
-  tenant_id    TEXT NOT NULL CHECK (tenant_id LIKE 'ten\_%' ESCAPE '\\'),
+  home_id      TEXT PRIMARY KEY CHECK (home_id LIKE 'home\_%' ESCAPE '\' AND length(home_id) BETWEEN 12 AND 80),
+  account_id   TEXT NOT NULL CHECK (account_id LIKE 'acct\_%' ESCAPE '\'),
+  tenant_id    TEXT NOT NULL CHECK (tenant_id LIKE 'ten\_%' ESCAPE '\'),
   is_default   INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0,1)),
   status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended','exporting','retired')),
   created_at   TEXT NOT NULL,
@@ -21,9 +23,10 @@ CREATE INDEX priv_homes_account ON priv_homes(account_id);
 
 CREATE TABLE priv_home_connections (
   home_id        TEXT NOT NULL REFERENCES priv_homes(home_id),
-  connection_id  TEXT NOT NULL CHECK (connection_id LIKE 'conn\_%' ESCAPE '\\'),
-  principal_id   TEXT NOT NULL CHECK (principal_id LIKE 'prin\_%' ESCAPE '\\'),
+  connection_id  TEXT NOT NULL CHECK (connection_id LIKE 'conn\_%' ESCAPE '\'),
+  principal_id   TEXT NOT NULL CHECK (principal_id LIKE 'prin\_%' ESCAPE '\'),
   provider_label TEXT NOT NULL DEFAULT 'unspecified',
+  role           TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin','member')),
   status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
   created_at     TEXT NOT NULL,
   revoked_at     TEXT,
@@ -34,7 +37,7 @@ CREATE TABLE priv_home_connections (
 
 CREATE TABLE priv_inboxes (
   home_id    TEXT NOT NULL REFERENCES priv_homes(home_id),
-  inbox_id   TEXT NOT NULL CHECK (inbox_id LIKE 'ibx\_%' ESCAPE '\\' AND length(inbox_id) BETWEEN 8 AND 80),
+  inbox_id   TEXT NOT NULL CHECK (inbox_id LIKE 'ibx\_%' ESCAPE '\' AND length(inbox_id) BETWEEN 8 AND 80),
   scope      TEXT NOT NULL CHECK (scope IN ('home','connection','agent_identity')),
   plane      TEXT NOT NULL CHECK (plane IN ('chat','work','notifications','control')),
   owner_connection_id TEXT,
