@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execSqlite } from "./helpers/event-journal-sqlite.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -80,19 +80,19 @@ test("migration enforces append-only rows and rejects accepted authority", () =>
   const migration = readFileSync(new URL("../migrations/0025_v7710f1_event_journal.sql", import.meta.url), "utf8");
 
   try {
-    execFileSync("sqlite3", [dbPath], { input: migration });
-    execFileSync("sqlite3", [dbPath, `INSERT INTO event_journal (event_id, schema, event_type, occurred_at, accepted_state_authority) VALUES ('evt:test', '${EVENT_JOURNAL_SCHEMA}', 'stone.created', '${FIXED_NOW}', 0);`]);
+    execSqlite( [dbPath], { input: migration });
+    execSqlite( [dbPath, `INSERT INTO event_journal (event_id, schema, event_type, occurred_at, accepted_state_authority) VALUES ('evt:test', '${EVENT_JOURNAL_SCHEMA}', 'stone.created', '${FIXED_NOW}', 0);`]);
 
     assert.throws(() => {
-      execFileSync("sqlite3", [dbPath, "UPDATE event_journal SET event_type='stone.updated' WHERE event_id='evt:test';"], { stdio: "pipe" });
+      execSqlite( [dbPath, "UPDATE event_journal SET event_type='stone.updated' WHERE event_id='evt:test';"], { stdio: "pipe" });
     }, /event_journal_append_only/);
 
     assert.throws(() => {
-      execFileSync("sqlite3", [dbPath, "DELETE FROM event_journal WHERE event_id='evt:test';"], { stdio: "pipe" });
+      execSqlite( [dbPath, "DELETE FROM event_journal WHERE event_id='evt:test';"], { stdio: "pipe" });
     }, /event_journal_append_only/);
 
     assert.throws(() => {
-      execFileSync("sqlite3", [dbPath, `INSERT INTO event_journal (event_id, schema, event_type, occurred_at, accepted_state_authority) VALUES ('evt:authority', '${EVENT_JOURNAL_SCHEMA}', 'stone.created', '${FIXED_NOW}', 1);`], { stdio: "pipe" });
+      execSqlite( [dbPath, `INSERT INTO event_journal (event_id, schema, event_type, occurred_at, accepted_state_authority) VALUES ('evt:authority', '${EVENT_JOURNAL_SCHEMA}', 'stone.created', '${FIXED_NOW}', 1);`], { stdio: "pipe" });
     }, /CHECK constraint failed/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
