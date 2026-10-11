@@ -558,12 +558,12 @@ test("resolveHomeStore is closed unless a test store is injected, even with real
 test("the store module is dormant: no production import, binding, migration or legacy table reference", () => {
   const srcDir = path.join(root, "src", "private-realm");
   const files = readdirSync(srcDir).filter(f => f.endsWith(".js"));
-  // S0b-1/S0b-2 modules plus the dormant S1-1 Core-auth bridge, S1-2 private inbox tools and S1-2b transport adapter (relative imports only).
+  // S0b-1/S0b-2 modules, S1-1 bridge, S1-2 tools, S1-2b adapter, and S1-3 STAGING-ONLY private modules.
   // Any other file in this directory fails the isolation inventory gate.
   assert.deepEqual(files.sort(), [
-    "boundary.js", "d1-store.js", "hash.js", "identity-home-bridge.js", "index.js", "private-core-auth-transport.js", "private-inbox-tools.js", "private-worker-core.js", "private-worker.js", "r2-body.js", "scope.js", "store.js"
+    "boundary.js", "d1-store.js", "hash.js", "identity-home-bridge.js", "index.js", "private-core-auth-transport.js", "private-inbox-tools.js", "private-staging-core.js", "private-staging-worker.js", "private-worker-core.js", "private-worker.js", "r2-body.js", "scope.js", "store.js"
   ]);
-  const S0B2 = new Set(["d1-store.js", "hash.js", "private-worker-core.js", "private-worker.js", "r2-body.js"]);
+  const S0B2 = new Set(["d1-store.js", "hash.js", "private-staging-core.js", "private-staging-worker.js", "private-worker-core.js", "private-worker.js", "r2-body.js"]);
   for (const file of files) {
     const text = readFileSync(path.join(srcDir, file), "utf8");
     const code = text.replace(/\/\/.*$/gm, "");
@@ -572,14 +572,14 @@ test("the store module is dormant: no production import, binding, migration or l
     // no raw legacy storage, public gateway or other auth/adapters may enter private storage.
     // The existing Worker glue may import its Cloudflare runtime base class.
     const allowed = i => i.startsWith("./") ||
-      (file === "private-worker.js" && i === "cloudflare:workers") ||
+      (["private-worker.js", "private-staging-worker.js"].includes(file) && i === "cloudflare:workers") ||
       (file === "identity-home-bridge.js" && i === "../core-auth.js");
     if (file === "identity-home-bridge.js") {
       assert.deepEqual(imports.filter(i => !i.startsWith("./")), ["../core-auth.js"]);
     }
     assert.ok(imports.every(allowed), `${file} imports only private-realm siblings: ${imports.join(",")}`);
-    if (file === "private-worker-core.js") {
-      // The core may name exactly the two PRIVATE bindings it is handed; never a shared one.
+    if (["private-worker-core.js", "private-staging-core.js"].includes(file)) {
+      // The storage cores may name exactly the two PRIVATE bindings they are handed; never a shared one.
       const bindings = [...code.matchAll(/env\.(DB|CAIRNSTONE_\w+)/g)].map(m => m[1]);
       assert.deepEqual([...new Set(bindings)].sort(), ["CAIRNSTONE_PRIVATE_DB", "CAIRNSTONE_PRIVATE_R2"]);
     } else {
