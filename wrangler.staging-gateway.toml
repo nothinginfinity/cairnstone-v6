@@ -1,0 +1,21 @@
+# STAGING-ONLY GATEWAY CONFIG. NEVER use production resources or enable without owner review.
+# Service binding attests caller via unforgeable props.
+name = "cairnstone-stage-gateway"
+main = "src/staging-gateway/staging-gateway-worker.js"
+compatibility_date = "2026-06-21"
+workers_dev = false
+preview_urls = false
+send_metrics = false
+
+[vars]
+PRIVATE_STAGE_GATEWAY_ENABLED = "false"
+STAGING_OAUTH_RESOURCE = "https://stage.cairnstone.example/mcp/core-auth"
+STAGING_OAUTH_ISSUER = "https://stage.cairnstone.example"
+# PRIVATE_GATEWAY_HMAC_KEY and STAGING_OAUTH_SIGNING_KEY via Wrangler secret only.
+
+[[services]]
+binding = "CAIRNSTONE_PRIVATE_STAGE"
+service = "cairnstone-private-staging"
+props = { caller = "cairnstone-stage-gateway" }
+
+# No routes, no public workers.dev, no production D1/R2. Gateway holds only the service binding and HMAC secret copy.
