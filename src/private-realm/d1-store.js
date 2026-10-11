@@ -328,11 +328,11 @@ export function createD1HomeStore({ db, now = () => new Date().toISOString(), mi
 
     async send(scopeIn, opts = {}, selector) {
       const ctx = await authorize(scopeIn, selector, "send");
-      await requireCapability(ctx, opts.senderInboxId, "send", "send");
-      for (const tid of (opts.targets||[])) await requireCapability(ctx, tid, "send", "send");
-      const { senderInboxId, targets = [], messageId, threadId, body } = opts || {};
+      const { fromInboxId, toInboxIds = [], messageId, threadId, body } = opts || {};
+      await requireCapability(ctx, fromInboxId, "send", "send");
+      for (const tid of toInboxIds) await requireCapability(ctx, tid, "send", "send");
       if (typeof body !== "string" || body.length > MAX_BODY_CHARS) throw new PrivateRealmError("invalid_body");
-      if (!Array.isArray(targets) || targets.length === 0 || targets.length > MAX_TARGETS) throw new PrivateRealmError("invalid_targets");
+      if (!Array.isArray(toInboxIds) || toInboxIds.length === 0 || toInboxIds.length > MAX_TARGETS) throw new PrivateRealmError("invalid_targets");
       // Capability checks (send on sender + every target) done before write
       const body_sha256 = await sha256Hex(body);
       const stamp = now();
@@ -340,7 +340,14 @@ export function createD1HomeStore({ db, now = () => new Date().toISOString(), mi
       // Idempotent check
       const existing = await db.prepare(`SELECT * FROM priv_messages WHERE home_id = ? AND message_id = ?`).bind(ctx.home_id, mid).first();
       if (existing) {
-        if (existing.body_sha256 !== body_sha256 || existing.sender_connection_id !== ctx.conn.connection_id) {
+        const threadOk = existing.thread_id === (threadId || mid);
+        const inboxOk = existing.sender_inbox_id === fromInboxId;
+        if (existing.body_sha256 !== body_sha256 || existing.sender_connection_id !== ctx.conn.connection_id || !threadOk || !inboxOk) {
+          return denyCapability(ctx.home_id, ctx.scope, "send", "idempotency_conflict");
+        }
+        // Target set check (simplified: count must match; full sorted fingerprint residual)
+        const deliv = await db.prepare(`SELECT COUNT(*) AS n FROM priv_deliveries WHERE home_id = ? AND message_id = ?`).bind(ctx.home_id, mid).first();
+        if (!deliv || deliv.n !== toInboxIds.length) {
           return denyCapability(ctx.home_id, ctx.scope, "send", "idempotency_conflict");
         }
         await audit(ctx.home_id, ctx.scope, "send", "allow", "idempotent");
@@ -351,8 +358,8 @@ export function createD1HomeStore({ db, now = () => new Date().toISOString(), mi
         db.prepare(
           `INSERT INTO priv_messages (home_id, message_id, thread_id, sender_inbox_id, sender_connection_id, body_sha256, body_text, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        ).bind(ctx.home_id, mid, threadId || mid, senderInboxId, ctx.conn.connection_id, body_sha256, body, stamp),
-        ...targets.map(tid => db.prepare(
+        ).bind(ctx.home_id, mid, threadId || mid, fromInboxId, ctx.conn.connection_id, body_sha256, body, stamp),
+        ...toInboxIds.map(tid => db.prepare(
           `INSERT INTO priv_deliveries (home_id, message_id, inbox_id, delivered_at) VALUES (?, ?, ?, ?)`
         ).bind(ctx.home_id, mid, tid, stamp))
       ]);
