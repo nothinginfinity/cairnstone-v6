@@ -558,17 +558,25 @@ test("resolveHomeStore is closed unless a test store is injected, even with real
 test("the store module is dormant: no production import, binding, migration or legacy table reference", () => {
   const srcDir = path.join(root, "src", "private-realm");
   const files = readdirSync(srcDir).filter(f => f.endsWith(".js"));
-  // S0b-1 modules plus the S0b-2 dormant candidates. Any other file in this directory fails this test.
+  // S0b-1/S0b-2 modules plus the dormant S1-1 Core-auth bridge.
+  // Any other file in this directory fails the isolation inventory gate.
   assert.deepEqual(files.sort(), [
-    "boundary.js", "d1-store.js", "hash.js", "index.js", "private-worker-core.js", "private-worker.js", "r2-body.js", "scope.js", "store.js"
+    "boundary.js", "d1-store.js", "hash.js", "identity-home-bridge.js", "index.js", "private-worker-core.js", "private-worker.js", "r2-body.js", "scope.js", "store.js"
   ]);
   const S0B2 = new Set(["d1-store.js", "hash.js", "private-worker-core.js", "private-worker.js", "r2-body.js"]);
   for (const file of files) {
     const text = readFileSync(path.join(srcDir, file), "utf8");
     const code = text.replace(/\/\/.*$/gm, "");
     const imports = [...code.matchAll(/from\s+"([^"]+)"/g)].map(m => m[1]);
-    // The ONLY non-sibling import allowed anywhere is the Workers runtime base class, and only in the glue.
-    const allowed = i => i.startsWith("./") || (file === "private-worker.js" && i === "cloudflare:workers");
+    // S1-1 may import ONLY Core-auth's verified-token validator from outside private-realm;
+    // no raw legacy storage, public gateway or other auth/adapters may enter private storage.
+    // The existing Worker glue may import its Cloudflare runtime base class.
+    const allowed = i => i.startsWith("./") ||
+      (file === "private-worker.js" && i === "cloudflare:workers") ||
+      (file === "identity-home-bridge.js" && i === "../core-auth.js");
+    if (file === "identity-home-bridge.js") {
+      assert.deepEqual(imports.filter(i => !i.startsWith("./")), ["../core-auth.js"]);
+    }
     assert.ok(imports.every(allowed), `${file} imports only private-realm siblings: ${imports.join(",")}`);
     if (file === "private-worker-core.js") {
       // The core may name exactly the two PRIVATE bindings it is handed; never a shared one.
