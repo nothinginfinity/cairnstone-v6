@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 0e7333f8c61d0eb8b640ba4c8e087c6454bd0d3e
+          ref: 6941cd6af4ee2bec6d37d84a21648564909979da
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "0e7333f8c61d0eb8b640ba4c8e087c6454bd0d3e"
+          test "$(git rev-parse HEAD)" = "6941cd6af4ee2bec6d37d84a21648564909979da"
           test "${GITHUB_REF_NAME}" = "main"
           test -f wrangler.private-staging.toml
           grep -Fxq 'name = "cairnstone-private-staging"' wrangler.private-staging.toml
@@ -50,4 +50,4 @@ jobs:
       - name: Deploy isolated private staging Worker ONLY
         run: npx wrangler deploy --config wrangler.private-staging.toml
       - name: Staging deployment receipt
-        run: echo "S1-3 STAGING ONLY deployed commit 0e7333f8c61d0eb8b640ba4c8e087c6454bd0d3e; no public route, production Worker or auth changes."
+        run: echo "S1-3 STAGING ONLY deployed commit 6941cd6af4ee2bec6d37d84a21648564909979da; no public route, production Worker or auth changes."
