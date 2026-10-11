@@ -1,7 +1,11 @@
 // S0b-2 contract tests for the D1-backed store.
-// Interface tests + targeted parity checks for recipient dedupe, limited read stamps,
-// and last-admin conditional updates. Full concurrent SQLite/Miniflare race and
-// cross-Home isolation tests remain residual (require private D1/Miniflare harness).
+// Interface tests + structural parity notes for recipient dedupe, limited read stamps,
+// and last-admin conditional updates (landed in d1-store.js @13ea8c70).
+//
+// Residuals (require private D1/Miniflare harness or further wiring):
+// - Real concurrent SQLite/Miniflare race, revocation, replay, and cross-Home isolation tests.
+// - Private-worker caller identity verification (skeleton only).
+// - Home-scoped R2 body path wired into send/readInbox.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
