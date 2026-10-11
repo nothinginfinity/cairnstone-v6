@@ -346,8 +346,10 @@ export function createD1HomeStore({ db, now = () => new Date().toISOString(), mi
           return denyCapability(ctx.home_id, ctx.scope, "send", "idempotency_conflict");
         }
         // Target set check (simplified: count must match; full sorted fingerprint residual)
-        const deliv = await db.prepare(`SELECT COUNT(*) AS n FROM priv_deliveries WHERE home_id = ? AND message_id = ?`).bind(ctx.home_id, mid).first();
-        if (!deliv || deliv.n !== toInboxIds.length) {
+        const delivRows = await db.prepare(`SELECT inbox_id FROM priv_deliveries WHERE home_id = ? AND message_id = ?`).bind(ctx.home_id, mid).all();
+        const existingTargets = (delivRows.results || delivRows || []).map(r => r.inbox_id).sort();
+        const submitted = [...new Set(toInboxIds)].sort();
+        if (existingTargets.length !== submitted.length || existingTargets.some((id, i) => id !== submitted[i])) {
           return denyCapability(ctx.home_id, ctx.scope, "send", "idempotency_conflict");
         }
         await audit(ctx.home_id, ctx.scope, "send", "allow", "idempotent");
