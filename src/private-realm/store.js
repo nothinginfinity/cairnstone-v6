@@ -118,12 +118,13 @@ export function createInMemoryHomeStore() {
       return { revoked: true };
     },
 
-    async createInbox(scopeIn, home_id, { scope: inboxScope, plane = "chat", label = "" } = {}) {
+    async createInbox(scopeIn, home_id, opts = {}) {
+      const { scope: inboxScope, plane = "chat", label = "", inbox_id: requested } = opts;
       const scope = assertHomeScope({ ...scopeIn, home_id });
       const home = homes.get(home_id);
       requireActiveConnection(scope, home);
-      if (!ID.ibx.test(arguments[2]?.inbox_id || "") && arguments[2]?.inbox_id) throw new Error("invalid_inbox_id");
-      const inbox_id = arguments[2]?.inbox_id || `ibx_${cryptoRandom(10)}`;
+      if (requested && !ID.ibx.test(requested)) throw new Error("invalid_inbox_id");
+      const inbox_id = requested || `ibx_${cryptoRandom(10)}`;
       const key = `${home_id}:${inbox_id}`;
       if (inboxes.has(key)) return { inbox_id, created: false };
       const owner = inboxScope === "connection" ? scope.connection_id : null;
