@@ -1,0 +1,33 @@
+name: PR78 S1-1 repairs test gate (no deploy)
+
+# TEST ONLY. No deploy, no secrets, no migrations, read-only token.
+# Runs on pushes to the PR78 branch and on any pull_request (so the stacked
+# PRs #70..#78 are covered whatever base they are retargeted to).
+on:
+  push:
+    branches:
+      - claude/s1-1-bridge-repairs
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr78-s1-1-repairs-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Node 22 npm run check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Full syntax, skill and test gate (TEST ONLY)
+        run: npm run check

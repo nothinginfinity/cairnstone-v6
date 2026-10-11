@@ -8,6 +8,10 @@ const PLANES = Object.freeze(["chat", "work"]);
 const FULL = Object.freeze({ read: true, send: true, ack: true });
 const hex = bytes => [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
 const denied = () => new PrivateRealmError("scope_not_authorized");
+// Deterministic serialisation (sorted keys) for exact context comparison.
+const canonical = v => Array.isArray(v) ? `[${v.map(canonical).join(",")}]`
+  : v && typeof v === "object" ? `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`
+  : JSON.stringify(v);
 
 function assertContext(context, resource) {
   if (!context || typeof context !== "object" || Array.isArray(context) ||
@@ -58,7 +62,7 @@ export function createIdentityHomeBridge({
       typeof admitAdminRecovery !== "function") {
     throw new PrivateRealmError("trusted_gateway_dependencies_required");
   }
-  for (const method of ["ensureDefaultHome", "listInboxes", "createInbox", "grantInbox", "can"]) {
+  for (const method of ["ensureDefaultHome", "resolveHome", "listInboxes", "createInbox", "can"]) {
     if (typeof store?.[method] !== "function") throw new PrivateRealmError("private_home_store_required");
   }
   if (typeof inboxDerivationKey !== "string" || inboxDerivationKey.length < 32) throw new PrivateRealmError("inbox_derivation_key_required");
@@ -76,7 +80,13 @@ export function createIdentityHomeBridge({
     if (typeof accessToken !== "string" || !accessToken.startsWith("csat_")) throw denied();
     // The validator must be wired to validateAccessToken(env, token, {expectedResource});
     // never use token parsing, unverified headers, request actor fields, or a client identity hint.
-    const result = await validateToken(accessToken, expectedResource);
+    // Any verifier failure (including a thrown storage error) is an authentication failure, never a raw error.
+    let result;
+    try {
+      result = await validateToken(accessToken, expectedResource);
+    } catch {
+      throw denied();
+    }
     if (result?.ok !== true || !result.context) throw denied();
     return Object.freeze({ scope: assertContext(result.context, expectedResource), context: result.context });
   }
@@ -120,28 +130,34 @@ export function createIdentityHomeBridge({
   async function onboard(accessToken, request) {
     rejectForeignKeys(request);
     const { scope, context } = await verifiedScope(accessToken);
-    if (await admitOnboarding(context) !== true) throw new PrivateRealmError("onboarding_not_admitted");
+    // Policy hooks are owner code. A hook that throws is a denial (onboarding) or no recovery (admin): fail
+    // toward LESS privilege, and never let a policy/storage error text cross this boundary.
+    let admitted = false;
+    try { admitted = await admitOnboarding(structuredClone(context)) === true; } catch { admitted = false; }
+    if (!admitted) throw new PrivateRealmError("onboarding_not_admitted");
     // Admin recovery needs separate, server-held owner consent. A new connection never
     // becomes an admin by presenting an actor string, a token scope, or a request role.
-    const recoverAdmin = await admitAdminRecovery(context) === true;
-    // Re-verify immediately before the first store write; the S0b store also rechecks its own
-    // connection/tenant/admin/grant state at write boundaries. Cross-DB atomicity is not claimed.
+    let recoverAdmin = false;
+    try { recoverAdmin = await admitAdminRecovery(structuredClone(context)) === true; } catch { recoverAdmin = false; }
+    // Re-verify immediately before the first store write. The admission decisions above were made on `context`;
+    // they are honoured only if the FRESH context is identical in every field (assurance, scopes, client family,
+    // token family, authz version, statuses, ids). Any drift invalidates the admission and requires a new
+    // request. The S0b store separately rechecks connection/tenant/admin/grant state at write boundaries.
+    // Cross-DB atomicity is not claimed.
     const fresh = await verifiedScope(accessToken);
-    if (fresh.scope.account_id !== scope.account_id || fresh.scope.tenant_id !== scope.tenant_id ||
-        fresh.scope.principal_id !== scope.principal_id || fresh.scope.connection_id !== scope.connection_id) throw denied();
+    if (canonical(fresh.context) !== canonical(context)) throw denied();
     const attachScope = recoverAdmin
       ? assertHomeScope({ ...fresh.scope, home_role: "admin" }) : fresh.scope;
     const home = await store.ensureDefaultHome(attachScope);
     const map = await addresses(attachScope, home.home_id);
-    // If the first operation failed halfway through, a retry may create missing inbox rows.
-    // Crucially, an existing inbox NEVER gets grants silently reissued after revocation.
+    // Home-owned inboxes are created by an admin together with the creator's first grant in ONE atomic store
+    // operation, so a failure can never leave an inbox without its grant. An inbox that already exists is never
+    // re-granted: a revoked grant is not resurrected by a retry.
     for (const plane of PLANES) {
       if (home.role === "admin") {
-        const target = map[plane].home.inbox_id;
-        const created = await store.createInbox(attachScope, { scope: "home", plane, inboxId: target, label: plane }, { homeId: home.home_id });
-        if (created.created) {
-          await store.grantInbox(attachScope, { inboxId: target, targetConnectionId: attachScope.connection_id, caps: FULL }, { homeId: home.home_id });
-        }
+        await store.createInbox(attachScope, {
+          scope: "home", plane, inboxId: map[plane].home.inbox_id, label: plane, grantToCreator: true
+        }, { homeId: home.home_id });
       }
       await store.createInbox(attachScope, {
         scope: "connection", plane, inboxId: map[plane].connection.inbox_id, label: plane
@@ -157,15 +173,16 @@ export function createIdentityHomeBridge({
   async function inspect(accessToken, request) {
     rejectForeignKeys(request);
     const { scope } = await verifiedScope(accessToken);
-    const listings = await store.listInboxes(scope);
-    // A missing Home/connection fails in the store; no auto-provisioning or legacy fallback.
-    const ids = listings.map(i => i.inbox_id);
+    // The store resolves the Home from the verified connection only (authorized, audited, non-provisioning).
+    // A missing Home/connection or revoked connection fails there; no selector is ever taken from the caller.
+    const home = await store.resolveHome(scope);
+    const listings = await store.listInboxes(scope, { homeId: home.home_id });
     const map = {};
     for (const row of listings) map[row.inbox_id] = row;
-    // Derive candidate stable addresses from the Home ID only once it is resolved by the
-    // store itself. We expose no selectors to avoid treating a caller's guessed Home as identity.
-    const homeId = typeof store.resolveHomeId === "function" ? await store.resolveHomeId(scope) : null;
-    return Object.freeze({ inbox_ids: Object.freeze(ids), inboxes: Object.freeze(map), home_id: homeId });
+    return Object.freeze({
+      inbox_ids: Object.freeze(listings.map(i => i.inbox_id)), inboxes: Object.freeze(map),
+      home_id: home.home_id, role: home.role
+    });
   }
 
   return Object.freeze({ onboard, inspect });

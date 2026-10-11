@@ -34,6 +34,7 @@ const CAPABILITY_SET = new Set(CAPABILITIES);
 
 export const STORE_METHODS = Object.freeze([
   "ensureDefaultHome",
+  "resolveHome",
   "setConnectionRole",
   "revokeConnection",
   "createInbox",
@@ -260,8 +261,9 @@ export function createInMemoryHomeStore({ now = () => new Date().toISOString(), 
     // shared only by explicit grant. Creating an inbox grants the admin nothing by itself.
     async createInbox(scopeIn, opts = {}, selector) {
       const ctx = authorize(scopeIn, selector, "create_inbox");
-      const { scope: inboxScope, plane = "chat", label = "", inboxId } = opts || {};
+      const { scope: inboxScope, plane = "chat", label = "", inboxId, grantToCreator = false } = opts || {};
       if (!INBOX_SCOPES.includes(inboxScope)) throw new PrivateRealmError("invalid_inbox_scope");
+      if (typeof grantToCreator !== "boolean" || (grantToCreator && inboxScope === "connection")) throw new PrivateRealmError("invalid_options");
       if (!INBOX_PLANES.includes(plane)) throw new PrivateRealmError("invalid_plane");
       if (typeof label !== "string" || label.length > MAX_LABEL_CHARS) throw new PrivateRealmError("invalid_label");
       if (inboxId !== undefined && (typeof inboxId !== "string" || !ID_PATTERNS.ibx.test(inboxId))) {
@@ -287,11 +289,18 @@ export function createInMemoryHomeStore({ now = () => new Date().toISOString(), 
         status: "active",
         created_at: now()
       });
-      if (owner) {
-        ctx.home.grants.set(`${inbox_id}|${owner}`, { read: 1, send: 1, ack: 1, granted_at: now(), revoked_at: null });
+      if (owner || grantToCreator) {
+        ctx.home.grants.set(`${inbox_id}|${owner || ctx.conn.connection_id}`, { read: 1, send: 1, ack: 1, granted_at: now(), revoked_at: null });
       }
       audit(ctx.home.home_id, ctx.scope, "create_inbox", "allow", "created");
       return deepFreeze({ inbox_id, created: true });
+    },
+
+    // Authorized, audited, non-provisioning Home lookup.
+    async resolveHome(scopeIn, selector) {
+      const ctx = authorize(scopeIn, selector, "resolve_home");
+      audit(ctx.home.home_id, ctx.scope, "resolve_home", "allow", null);
+      return deepFreeze({ home_id: ctx.home.home_id, role: ctx.conn.role });
     },
 
     // Discovery is least-privilege: a connection sees only inboxes it holds a live grant on

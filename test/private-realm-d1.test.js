@@ -9,9 +9,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { STORE_METHODS } from "../src/private-realm/store.js";
 import { createD1HomeStore } from "../src/private-realm/d1-store.js";
 
-test("STORE_METHODS is the closed 12-method interface the D1 adapter implements", () => {
+test("STORE_METHODS is the closed 13-method interface the D1 adapter implements", () => {
   assert.deepEqual([...STORE_METHODS].sort(), [
-    "ack", "can", "createInbox", "ensureDefaultHome", "grantInbox", "listInbox", "listInboxes", "readInbox", "revokeConnection", "revokeGrant", "send", "setConnectionRole"
+    "ack", "can", "createInbox", "ensureDefaultHome", "grantInbox", "listInbox", "listInboxes", "readInbox", "resolveHome", "revokeConnection", "revokeGrant", "send", "setConnectionRole"
   ]);
 });
 

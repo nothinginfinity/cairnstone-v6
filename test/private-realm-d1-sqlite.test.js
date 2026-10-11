@@ -61,7 +61,7 @@ test("migration file applies to a fresh SQLite and creates the full private sche
 
 test("adapter exposes exactly the STORE_METHODS interface and requires a D1 handle", { skip }, () => {
   const { store } = fixture();
-  assert.equal(STORE_METHODS.length, 12);
+  assert.equal(STORE_METHODS.length, 13);
   for (const m of STORE_METHODS) assert.equal(typeof store[m], "function", m);
   assert.throws(() => createD1HomeStore({}), /private_d1_required/);
 });
