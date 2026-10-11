@@ -182,8 +182,8 @@ test("revoked connection cannot reattach, read, or inherit grants from a still-a
   assert.equal(store.__inspect().homes.length, 1);
 });
 
-test("the last admin remains protected; admin role cannot magically grant connection-private access", async () => {
-  const { bridge, store } = fixture();
+test("the last admin remains protected; admin role cannot magically grant connection-private access", { skip: !SQLITE_AVAILABLE }, async () => {
+  const { bridge, store } = fixture({ sqlite: true });
   const alice = await bridge.onboard("csat_alice");
   const grok = await bridge.onboard("csat_grok");
   await denies(store.revokeConnection(a, a.connection_id), "capability_denied");
