@@ -1,0 +1,23 @@
+name: S1-3 staging gateway adapter source gate (NO DEPLOY)
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gateway-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Compile gateway source
+        run: node --check src/staging-gateway/private-staging-gateway-client.js && node --check test/private-staging-gateway-client.test.js
+      - name: Run isolated gateway unit/security tests
+        run: node --test test/private-staging-gateway-client.test.js
+      - name: No deploy
+        run: echo "S1-3 gateway source tests only; no Cloudflare deployment"
