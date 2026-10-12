@@ -1,7 +1,7 @@
 // Staging-only OAuth/token verifier. DORMANT until PRIVATE_STAGE_GATEWAY_ENABLED=true and secrets present.
 // Checks issuer, audience/resource, expiry, revocation status, account/connection status.
 // Never accepts client-supplied identity, role, or HomeScope. Uses staging-specific signing key.
-// Real staging auth backend (or external verifier) must be wired before live use; this implements the check contract.
+// Revocation and connection status come from a trusted durable store interface (not static env, not production OAuth).
 import { PrivateRealmError } from "../private-realm/scope.js";
 
 const err = code => new PrivateRealmError(code);
@@ -17,7 +17,7 @@ async function verifyHmac(key, data, sig) {
   return crypto.subtle.verify("HMAC", cryptoKey, sigBytes, new TextEncoder().encode(data));
 }
 
-export async function createStagingOAuthVerifier({ env } = {}) {
+export async function createStagingOAuthVerifier({ env, revocationStore } = {}) {
   if (env?.PRIVATE_STAGE_GATEWAY_ENABLED !== "true") throw err("private_tools_disabled");
   const signingKey = env.STAGING_OAUTH_SIGNING_KEY;
   const expectedResource = env.STAGING_OAUTH_RESOURCE;
@@ -27,8 +27,12 @@ export async function createStagingOAuthVerifier({ env } = {}) {
     throw err("trusted_gateway_dependencies_required");
   }
 
-  // Optional revocation set (staging-only, populated from staging auth store in live)
-  const revoked = new Set((env.STAGING_REVOKED_TOKEN_FAMILIES || "").split(",").filter(Boolean));
+  // Durable store interface: async isRevoked(tokenFamilyId) and async connectionActive(connectionId)
+  // In live staging this binds to a staging-only D1 or external authority. Tests inject a mock.
+  const store = revocationStore || {
+    isRevoked: async () => false,
+    connectionActive: async () => true
+  };
 
   return async function validateStagingToken(accessToken, resource) {
     if (typeof accessToken !== "string" || !accessToken.startsWith("csat_")) throw err("scope_not_authorized");
@@ -42,12 +46,16 @@ export async function createStagingOAuthVerifier({ env } = {}) {
     if (payload.iss !== expectedIssuer || payload.aud !== expectedResource || payload.resource !== resource ||
         payload.exp <= now || payload.iat > now + 60 ||
         payload.account_status !== "active" || payload.connection_status !== "active" ||
-        payload.token_family_status !== "active" || revoked.has(payload.token_family_id)) {
+        payload.token_family_status !== "active") {
       throw err("scope_not_authorized");
     }
+    if (!Array.isArray(payload.scopes) || !payload.scopes.includes("mcp:core")) {
+      throw err("scope_not_authorized");
+    }
+    if (await store.isRevoked(payload.token_family_id)) throw err("scope_not_authorized");
+    if (!(await store.connectionActive(payload.connection_id))) throw err("scope_not_authorized");
     if (!(await verifyHmac(signingKey, payloadB64, sig))) throw err("scope_not_authorized");
 
-    // Return only the verified context shape expected by the bridge. No client selectors.
     return {
       ok: true,
       context: {
@@ -62,7 +70,7 @@ export async function createStagingOAuthVerifier({ env } = {}) {
         connection_status: payload.connection_status,
         token_family_status: payload.token_family_status,
         token_family_id: payload.token_family_id,
-        scopes: payload.scopes || ["mcp:core"],
+        scopes: payload.scopes,
         client_family: payload.client_family || "unspecified"
       }
     };
