@@ -1,0 +1,115 @@
+# SAFETY: STAGING ONLY, manual dispatch only, owner-reviewed environment. Sends SYNTHETIC test traffic to the
+# isolated staging gateway harness and reads (never changes) Cloudflare state. It deploys nothing, merges nothing,
+# promotes no accepted HEAD, and touches no production resource.
+# Green CI is NOT live acceptance: acceptance = this run's evidence artifact reviewed by the owner and recorded in a
+# CairnStone evidence Stone (docs/private-realm/S1_3_STAGE_C_E2E.md).
+name: S1-3 Stage C live E2E (manual only, STAGING ONLY)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_stage_only:
+        description: "Enter RUN_S1_3_STAGEC_E2E_STAGING_ONLY"
+        required: true
+        type: string
+      source_sha:
+        description: "Full 40-char SHA of the deployed private Worker source (must equal the pinned reviewed SHA)"
+        required: true
+        type: string
+      cleanup_approval:
+        description: "Leave empty. Fixture cleanup runs ONLY with the exact owner phrase OWNER_APPROVED_STAGEC_FIXTURE_CLEANUP"
+        required: false
+        type: string
+        default: ""
+      cleanup_approval_id:
+        description: "Owner approval reference (required with cleanup_approval)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  stagec-e2e:
+    if: ${{ github.event.inputs.confirm_stage_only == 'RUN_S1_3_STAGEC_E2E_STAGING_ONLY' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: s1-3-staging
+    concurrency:
+      group: s1-3-stagec-e2e
+      cancel-in-progress: false
+    env:
+      SOURCE_SHA: ${{ github.event.inputs.source_sha }}
+      ALLOWED_SOURCE_SHA: bec2e2e8f0287ac1ff84280344166f1f1d9b9fb0
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::source_sha must be a full 40-char lowercase SHA"; exit 1; }
+          test "$SOURCE_SHA" = "$ALLOWED_SOURCE_SHA" || { echo "::error::Source commit is not the pinned reviewed S1-3 candidate"; exit 1; }
+          test "${GITHUB_REF_NAME}" = "main" || { echo "::error::must be dispatched from main"; exit 1; }
+      # Trusted tooling = this workflow's own commit (main). The deployed source is checked out only to run the pure
+      # in-process gate below; nothing from it is executed with credentials.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Pin check (no credentials)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_SHA"
+      - name: Driver gate against the pinned source on real SQLite (no credentials, no network)
+        env:
+          S1_3_SOURCE_DIR: ${{ github.workspace }}/source
+          CI: "true"
+        run: node --test trusted/test/s1-3-stagec.test.js
+      - name: Live Stage C E2E (staging harness + read-only Cloudflare readback)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STAGE_C_HARNESS_URL: ${{ secrets.STAGE_C_HARNESS_URL }}
+          STAGE_C_HARNESS_TOKEN: ${{ secrets.STAGE_C_HARNESS_TOKEN }}
+          STAGE_C_GATEWAY_WORKER: ${{ vars.STAGE_C_GATEWAY_WORKER }}
+          STAGE_C_CLEANUP_APPROVAL: ${{ github.event.inputs.cleanup_approval }}
+          STAGE_C_CLEANUP_APPROVAL_ID: ${{ github.event.inputs.cleanup_approval_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export STAGE_C_RUN_ID="r${GITHUB_RUN_ID: -8}a${GITHUB_RUN_ATTEMPT}"
+          node trusted/scripts/staging/s1-3-stagec.mjs run --receipt "$RUNNER_TEMP/s1-3-stagec-evidence.json"
+      - name: Write run summary (no secrets, no bodies)
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "## S1-3 Stage C live E2E (STAGING ONLY)"
+            echo "- source: \`$SOURCE_SHA\` (run $GITHUB_RUN_ID, attempt $GITHUB_RUN_ATTEMPT)"
+            f="$RUNNER_TEMP/s1-3-stagec-evidence.json"
+            if [ -f "$f" ]; then
+              echo "- mode: $(jq -r .mode "$f"), ok: $(jq -r .ok "$f"), aborted: $(jq -r '.aborted // "no"' "$f")"
+              echo "- evidence_sha256: \`$(jq -r '.evidence_sha256 // "n/a"' "$f")\`"
+              jq -r '(.cases // [])[] | "- \(.id) \(.title): \(if .ok then "PASS" else "FAIL" end)"' "$f"
+            else
+              echo "- evidence: not produced"
+            fi
+            echo "- NOT acceptance by itself: owner review + CairnStone evidence Stone required."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload evidence (redacted, no secrets)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: s1-3-stagec-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/s1-3-stagec-evidence.json
+          if-no-files-found: warn

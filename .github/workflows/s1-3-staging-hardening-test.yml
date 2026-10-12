@@ -6,6 +6,8 @@ on:
       - 'scripts/staging/**'
       - 'deploy/s1-3-staging/**'
       - 'test/s1-3-*.test.js'
+      - 'test/helpers/stagec-*'
+      - 'docs/private-realm/S1_3_STAGE_C_E2E.md'
   workflow_dispatch:
 permissions:
   contents: read
@@ -16,6 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
+      # Pinned reviewed Worker source (PR #82 head). Read-only, credential-less; the Stage C driver tests run the REAL
+      # staging core and REAL staging migrations from it on SQLite.
+      - uses: actions/checkout@v4
+        with:
+          ref: bec2e2e8f0287ac1ff84280344166f1f1d9b9fb0
+          path: source
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -29,8 +38,17 @@ jobs:
               print('ok', f)
           PY
       - name: Compile staging preflight scripts
-        run: node --check scripts/staging/s1-3-preflight-lib.mjs && node --check scripts/staging/s1-3-preflight.mjs
+        run: |
+          node --check scripts/staging/s1-3-preflight-lib.mjs
+          node --check scripts/staging/s1-3-preflight.mjs
+          node --check scripts/staging/s1-3-stagec-lib.mjs
+          node --check scripts/staging/s1-3-stagec.mjs
       - name: Preflight verifier failure-case tests and workflow invariants
         run: node --test test/s1-3-staging-preflight.test.js test/s1-3-staging-workflow-invariants.test.js
+      - name: Stage C driver (real staging core + schema on SQLite), mutation checks, workflow invariants
+        env:
+          S1_3_SOURCE_DIR: ${{ github.workspace }}/source
+          CI: "true"
+        run: node --test test/s1-3-stagec.test.js test/s1-3-stagec-workflow-invariants.test.js
       - name: No deploy
-        run: echo "S1-3 staging hardening source tests only; no Cloudflare access, no secrets"
+        run: echo "S1-3 staging hardening + Stage C driver source tests only; no Cloudflare access, no secrets, no live acceptance"
