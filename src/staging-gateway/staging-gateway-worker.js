@@ -5,7 +5,13 @@ import { createStagingGatewayCore } from "./private-staging-gateway-client.js";
 import { createStagingOAuthVerifier } from "./staging-oauth-verifier.js";
 import { PrivateRealmError } from "../private-realm/scope.js";
 
-const ALLOWED_TOOLS = new Set(["private_inbox_get", "private_inbox_list", "private_inbox_read", "private_inbox_send", "private_inbox_ack"]);
+const PATH_TO_TOOL = Object.freeze({
+  get: "private_inbox_get",
+  list: "private_inbox_list",
+  read: "private_inbox_read",
+  send: "private_inbox_send",
+  ack: "private_inbox_ack"
+});
 
 export default {
   async fetch(request, env) {
@@ -16,8 +22,9 @@ export default {
     if (request.method !== "POST" || !url.pathname.startsWith("/v1/private-inbox/")) {
       return new Response(null, { status: 404 });
     }
-    const tool = url.pathname.slice("/v1/private-inbox/".length);
-    if (!ALLOWED_TOOLS.has(tool)) return new Response(null, { status: 404 });
+    const short = url.pathname.slice("/v1/private-inbox/".length);
+    const tool = PATH_TO_TOOL[short];
+    if (!tool) return new Response(null, { status: 404 });
 
     const auth = request.headers.get("Authorization") || "";
     if (!auth.startsWith("Bearer ")) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
