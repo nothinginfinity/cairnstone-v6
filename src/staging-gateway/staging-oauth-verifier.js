@@ -1,7 +1,8 @@
 // Staging-only OAuth/token verifier. DORMANT until PRIVATE_STAGE_GATEWAY_ENABLED=true and secrets present.
 // Checks issuer, audience/resource, expiry, revocation status, account/connection status.
 // Never accepts client-supplied identity, role, or HomeScope. Uses staging-specific signing key.
-// Revocation and connection status come from a trusted durable store interface (not static env, not production OAuth).
+// Revocation and connection status MUST come from a required durable store interface.
+// Absent or failed store denies. Verify signature before any privileged lookup. Never use production auth.
 import { PrivateRealmError } from "../private-realm/scope.js";
 
 const err = code => new PrivateRealmError(code);
@@ -26,19 +27,19 @@ export async function createStagingOAuthVerifier({ env, revocationStore } = {}) 
       typeof expectedResource !== "string" || typeof expectedIssuer !== "string") {
     throw err("trusted_gateway_dependencies_required");
   }
-
-  // Durable store interface: async isRevoked(tokenFamilyId) and async connectionActive(connectionId)
-  // In live staging this binds to a staging-only D1 or external authority. Tests inject a mock.
-  const store = revocationStore || {
-    isRevoked: async () => false,
-    connectionActive: async () => true
-  };
+  if (!revocationStore || typeof revocationStore.isRevoked !== "function" || typeof revocationStore.connectionActive !== "function") {
+    throw err("trusted_gateway_dependencies_required"); // fail closed; no permissive default
+  }
 
   return async function validateStagingToken(accessToken, resource) {
     if (typeof accessToken !== "string" || !accessToken.startsWith("csat_")) throw err("scope_not_authorized");
     const parts = accessToken.slice(5).split(".");
     if (parts.length !== 2) throw err("scope_not_authorized");
     const [payloadB64, sig] = parts;
+
+    // Verify signature FIRST before any claim use or DB lookup
+    if (!(await verifyHmac(signingKey, payloadB64, sig))) throw err("scope_not_authorized");
+
     let payload;
     try { payload = JSON.parse(base64UrlDecode(payloadB64)); } catch { throw err("scope_not_authorized"); }
 
@@ -52,9 +53,15 @@ export async function createStagingOAuthVerifier({ env, revocationStore } = {}) 
     if (!Array.isArray(payload.scopes) || !payload.scopes.includes("mcp:core")) {
       throw err("scope_not_authorized");
     }
-    if (await store.isRevoked(payload.token_family_id)) throw err("scope_not_authorized");
-    if (!(await store.connectionActive(payload.connection_id))) throw err("scope_not_authorized");
-    if (!(await verifyHmac(signingKey, payloadB64, sig))) throw err("scope_not_authorized");
+
+    let revoked, active;
+    try {
+      revoked = await revocationStore.isRevoked(payload.token_family_id);
+      active = await revocationStore.connectionActive(payload.connection_id);
+    } catch {
+      throw err("scope_not_authorized"); // store error denies
+    }
+    if (revoked || !active) throw err("scope_not_authorized");
 
     return {
       ok: true,
