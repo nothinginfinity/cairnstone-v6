@@ -2,7 +2,7 @@
 
 STAGING ONLY. Every step below is a manually dispatched workflow in protected environment `s1-3-staging`
 (required reviewer `nothinginfinity`, deployment branch `main` only). Nothing auto-deploys; no workflow touches
-production, routes, workers.dev, the old staging D1 or secret values. Source work in this PR changes none of it.
+production, routes, workers.dev, the old staging D1 or secret values. The preparation PR #98 was merged source-only; this SHA-repin PR changes none of it.
 
 ## New workflows (all: workflow_dispatch only, main only, `source_sha == github.sha`, step-scoped Cloudflare credentials, serialized group `s1-3-staging-activation`)
 | Workflow | Confirm phrase | Effect |
@@ -11,10 +11,10 @@ production, routes, workers.dev, the old staging D1 or secret values. Source wor
 | `s1-3-staging-auth-d1` | `CREATE_ISOLATED_S1_3_STAGING_AUTH_D1` | Creates ONLY `cairnstone-staging-auth` (refuses if it exists), applies ONLY reviewed migration `0001` (sha256 pinned), verifies schema/empty. |
 | `s1-3-staging-harness-deploy` | `DEPLOY_ISOLATED_S1_3_STAGE_HARNESS` | Deploys ONLY `cairnstone-stage-harness`. `phase=dormant` (default, 404 everywhere) or `phase=enable` (needs `ENABLE_S1_3_STAGEC_HARNESS_FOR_OWNER_RUN`). |
 
-Existing `s1-3-staging-deploy-v2` and `s1-3-stagec-e2e` keep their fixed-SHA pins, now moved to merged main `d2c12cbc…`.
+Existing `s1-3-staging-deploy-v2` and `s1-3-stagec-e2e` keep fixed source-SHA pins; this reviewed repin selects PR #98's merged `main` commit `ce565ef97eb7b5a6847679604e1abb42daaef700` (same Git tree as the independently reviewed PR head `c85f6532d0dfb49dd75b622c96bc328c21da9599`). The workflow's `github.sha` is the trusted workflow revision and intentionally differs from the deployable source SHA.
 
 ## Ordered launch checklist (operator approvals)
-1. Review + merge this PR (human). Then re-pin deploy-v2/e2e `ALLOWED_SOURCE_SHA` to the new main tip if it moved (reviewed PR).
+1. PR #98 is merged; independently review and merge the separate, source-only SHA repin PR. Verify the exact pinned source tree and green source checks before any workflow dispatch. If `main` moves after review, recheck source equivalence and repin through another reviewed PR rather than improvising a SHA.
 2. Dispatch `activation-plan`; approve the environment gate; read the board.
 3. Dispatch `s1-3-staging-deploy-v2` to rebind `cairnstone-private-staging` to the replacement D1 (approval).
 4. Dispatch `s1-3-staging-auth-d1` (approval). Note the created D1 id from the verified summary.
