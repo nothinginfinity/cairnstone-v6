@@ -23,13 +23,14 @@ export const STAGEC = Object.freeze({
 
 export const ENVELOPE_PROBES = Object.freeze(["bad_sig", "stale_iat", "future_iat", "mutated_method", "mutated_args", "wrong_caller_name"]);
 export const PLATFORM_PROBES = Object.freeze(["missing_platform_caller", "wrong_platform_caller"]);
-export const GATEWAY_PROBES = Object.freeze(["wrong_audience_token", "revoked_oauth", "caller_selector_injection"]);
-export const ALL_PROBES = Object.freeze([...ENVELOPE_PROBES, ...PLATFORM_PROBES, ...GATEWAY_PROBES, "replay_same_nonce", "legacy_regression"]);
+export const OAUTH_PROBES = Object.freeze(["wrong_audience_token", "revoked_oauth", "wrong_account_association"]);
+export const GATEWAY_PROBES = Object.freeze([...OAUTH_PROBES, "caller_selector_injection"]);
+export const ALL_PROBES = Object.freeze([...ENVELOPE_PROBES, ...PLATFORM_PROBES, ...GATEWAY_PROBES, "replay_same_nonce", "replay_preseeded_nonce", "legacy_regression"]);
 
 export const connectionIdOf = ({ account, provider }) => `conn_stagec_${account}_${provider}`;
 export const inboxIdOf = (account, kind) => `ibx_stagec_${account}_${kind}`;
 const ident = (account, provider) => ({ account, provider });
-const SAFE_KEYS = new Set(["ok", "code", "isolate", "result", "stub", "first", "second", "isolates", "nonce", "health", "private_tools_visible"]);
+const SAFE_KEYS = new Set(["ok", "code", "isolate", "result", "stub", "first", "second", "isolates", "nonce", "health", "private_tools_visible", "code_source", "control", "isolates_unattested"]);
 // Stubs exist only so the in-process CI harness can exercise this driver. A LIVE run never allows them.
 let ALLOW_STUBS = false;
 const real = (r) => ALLOW_STUBS || r?.stub !== true;
@@ -91,11 +92,14 @@ export function createHttpHarness({ url, token, runId, fetchImpl = globalThis.fe
   }
   return {
     kind: "http",
+    // "injected" = a test double stood in for the network; evidence from such a run can never be labelled live.
+    transport: fetchImpl === globalThis.fetch ? "network" : "injected",
     call: (identity, method, args = []) => post("/stagec/v1/call", { identity, method, args }),
     probe: (name, params = {}) => post("/stagec/v1/probe", { name, params })
   };
 }
 
+export const NONCE_RE = /^[A-Za-z0-9_-]{16,64}$/;
 const READ_ONLY = /^\s*(SELECT|PRAGMA)\s/i;
 const ABORT_ALLOWED = /^\s*INSERT INTO (priv_messages|priv_deliveries)\s*\(/i;
 export function assertReadOnlySql(sql) { if (!READ_ONLY.test(sql) || /;\s*\S/.test(sql)) throw new StageCError("d1_statement_not_read_only"); }
@@ -121,6 +125,13 @@ export function createD1Http({ token, accountId, dbId = STAGEC.d1Id, fetchImpl =
       const { json } = await exec(sql, params);
       if (json?.success !== true) throw new StageCError("d1_query_failed");
       return json.result?.[0]?.results ?? [];
+    },
+    // Plants ONE synthetic nonce receipt (fixed statement, fixed caller) so a signed envelope reusing it has never been seen by
+    // ANY isolate's in-memory cache: only the durable D1 key can stop it. The only non-trigger write this driver makes.
+    async seedNonce(caller, nonce, issuedAt) {
+      if (caller !== STAGEC.caller || !NONCE_RE.test(String(nonce)) || !Number.isInteger(issuedAt)) throw new StageCError("d1_nonce_seed_not_allowed");
+      const { json } = await exec("INSERT INTO priv_service_nonces (caller, nonce, issued_at) VALUES (?1, ?2, ?3)", [caller, nonce, issuedAt]);
+      if (json?.success !== true) throw new StageCError("d1_nonce_seed_failed");
     },
     // Executes ONE allow-listed INSERT that the database triggers MUST reject. Returns whether it aborted and the reason.
     async expectAbort(sql, params) {
@@ -160,7 +171,7 @@ function newRecorder() {
     async call(harness, identity, method, ...args) {
       while (args.length && args[args.length - 1] === undefined) args.pop();
       const r = await harness.call(identity, method, args);
-      requests.push(redact({ kind: "call", identity, method, ok: r?.ok === true, code: r?.code ?? null, isolate: r?.isolate ?? null, stub: r?.stub === true ? true : undefined }));
+      requests.push(redact({ kind: "call", identity, method, ok: r?.ok === true, code: r?.code ?? null, code_source: r?.code_source ?? null, isolate: r?.isolate ?? null, stub: r?.stub === true ? true : undefined }));
       return r;
     },
     async probe(harness, name, params) {
@@ -296,22 +307,33 @@ async function revokedGrantTrigger({ harness, d1, rec, runId, codes }) {
   return { expected: "store denies revoked sender; BOTH D1 triggers abort direct inserts with their named reasons; no message/delivery created; other account unaffected", observed: { ...checks, ...(stray ? { stray } : {}), trigger_messages: msgProbe.aborted ? "aborted" : "NOT_ABORTED", trigger_deliveries: delProbe.aborted ? "aborted" : "NOT_ABORTED" }, ok: Object.values(checks).every(Boolean), d1: { s0, s1, s2 } };
 }
 
-async function nonceReplay({ harness, d1, rec }) {
+async function nonceReplay({ harness, d1, rec, runId }) {
   const before = await snapshot(d1);
-  const r = await rec.probe(harness, "replay_same_nonce", { identity: ident("alpha", "chatgpt"), method: "listInboxes", isolates: 2, restart: true });
+  const r = await rec.probe(harness, "replay_same_nonce", { identity: ident("alpha", "chatgpt"), method: "listInboxes" });
   const checks = {
     first_accepted: r?.first?.ok === true,
     second_denied_caller_not_authorized: r?.second?.ok === false && r?.second?.code === "caller_not_authorized",
-    isolates_distinct: Array.isArray(r?.isolates) && r.isolates.length >= 2 && new Set(r.isolates).size === r.isolates.length && r.isolates.every((x) => typeof x === "string" && x),
     not_a_stub: real(r)
   };
   const nonce = typeof r?.nonce === "string" ? r.nonce : "";
   const rows = nonce ? await d1.query("SELECT COUNT(*) AS n FROM priv_service_nonces WHERE caller = ? AND nonce = ?", [STAGEC.caller, nonce]) : [];
   checks.exactly_one_nonce_receipt_in_d1 = Number(rows[0]?.n) === 1;
+  const mid = await snapshot(d1);
+  checks.nonce_table_grew_by_one = mid.n - before.n === 1;
+  checks.replay_wrote_nothing_else = sameWrites(before, mid);
+  // A harness cannot force or attest a second isolate. The durable barrier is therefore proved directly: a nonce receipt
+  // planted in D1 is a nonce NO isolate's in-memory cache has ever seen, so only the D1 primary key can reject it.
+  const seeded = `pre-${runId}-durable-barrier`;
+  let seededOk = false;
+  try { await d1.seedNonce(STAGEC.caller, seeded, Math.floor(Date.now() / 1000)); seededOk = true; } catch { seededOk = false; }
+  checks.nonce_seed_written = seededOk;
+  const afterSeed = await snapshot(d1);
+  const p = seededOk ? await rec.probe(harness, "replay_preseeded_nonce", { identity: ident("alpha", "chatgpt"), method: "listInboxes", nonce: seeded }) : null;
+  checks.preseeded_nonce_denied_by_durable_barrier = p?.ok === false && p?.code === "caller_not_authorized" && real(p);
   const after = await snapshot(d1);
-  checks.nonce_table_grew_by_one = after.n - before.n === 1;
-  checks.replay_wrote_nothing_else = sameWrites(before, after);
-  return { expected: "same signed envelope across distinct isolates: exactly one accepted, second caller_not_authorized, one D1 nonce row", observed: checks, ok: Object.values(checks).every(Boolean), d1: { before, after } };
+  checks.preseeded_replay_wrote_nothing = sameAll(afterSeed, after);
+  const attested = Array.isArray(r?.isolates) && r.isolates.length >= 2 && new Set(r.isolates).size === r.isolates.length;
+  return { expected: "same signed envelope: first accepted, second caller_not_authorized, one D1 nonce row; AND a nonce planted in D1 is rejected by the durable key with no write", observed: { ...checks, isolates_attested_distinct: attested }, ok: Object.values(checks).every(Boolean), d1: { before, mid, afterSeed, after } };
 }
 
 async function platformCaller({ harness, d1, rec }) {
@@ -345,7 +367,9 @@ async function gatewayAuth({ harness, d1, rec, codes }) {
   const roleBefore = (await d1.query(roleSql, [connectionIdOf(ident("alpha", "grok"))]))[0]?.role;
   for (const name of GATEWAY_PROBES) {
     const r = await rec.probe(harness, name, { identity: ident("alpha", "grok"), method: "listInboxes" });
-    checks[`${name}_denied`] = isFailClosed(r) && real(r);
+    // OAuth-layer denials must come from the real verifier AND be accompanied by a passed positive control.
+    const oauthOk = !OAUTH_PROBES.includes(name) || r?.stub === true || (r?.code === "scope_not_authorized" && r?.control === "passed");
+    checks[`${name}_denied`] = isFailClosed(r) && real(r) && oauthOk;
   }
   // Recovery-admin self-grant: a member asks to become admin / to be granted admin over the Home.
   const self = ident("alpha", "grok");
@@ -357,7 +381,7 @@ async function gatewayAuth({ harness, d1, rec, codes }) {
   checks.role_unchanged_member = roleBefore === "member" && roleAfter === "member";
   const after = await snapshot(d1);
   checks.no_store_write = sameWrites(before, after);
-  return { expected: "wrong audience, revoked OAuth, selector/authContext/role injection, recovery-admin self-grant: all fail closed; role stays member; no write", observed: checks, ok: Object.values(checks).every(Boolean), d1: { before, after } };
+  return { expected: "wrong audience, revoked OAuth (with positive control), wrong account association, selector/role injection, recovery-admin self-grant: all fail closed; role stays member; no write", observed: checks, ok: Object.values(checks).every(Boolean), d1: { before, after } };
 }
 
 function rpcErrorIdentity({ codes }) {
@@ -454,7 +478,7 @@ export async function runStageC({ harness, d1, runId, sourceSha, extraCases = []
   const warnings = cases.flatMap((c) => c.warnings);
   const expectedIds = ["C00", "C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", ...requiredExtra];
   const ok = expectedIds.every((id) => cases.find((c) => c.id === id)?.ok === true) && cases.every((c) => c.ok);
-  const body = { schema: STAGEC.evidenceSchema, mode: ALLOW_STUBS ? "simulated" : "live", source_sha: sourceSha, run_id: runId, harness_kind: harness.kind ?? "unknown", d1_kind: d1.kind ?? "unknown", d1_id: STAGEC.d1Id, ok, cases, warnings, cleanup: cleanupResult, requests: rec.requests };
+  const body = { schema: STAGEC.evidenceSchema, mode: ALLOW_STUBS || harness.transport === "injected" ? "simulated" : "live", harness_transport: harness.transport ?? "unknown", source_sha: sourceSha, run_id: runId, harness_kind: harness.kind ?? "unknown", d1_kind: d1.kind ?? "unknown", d1_id: STAGEC.d1Id, ok, cases, warnings, cleanup: cleanupResult, requests: rec.requests };
   return { ...body, evidence_sha256: sha256(canonical(body)) };
 }
 

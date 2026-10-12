@@ -19,3 +19,11 @@ service = "cairnstone-private-staging"
 props = { caller = "cairnstone-stage-gateway" }
 
 # No routes, no public workers.dev, no production D1/R2. Gateway holds only the service binding and HMAC secret copy.
+
+# Staging auth status/revocation DB (migrations/staging-auth). Placeholder id: the owner creates the DB and applies the
+# migration. All-zero id can never match a real database. Missing/unmigrated DB => every token is denied (fail closed).
+[[d1_databases]]
+binding = "STAGING_AUTH_DB"
+database_name = "cairnstone-staging-auth"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations/staging-auth"

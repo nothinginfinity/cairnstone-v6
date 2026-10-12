@@ -1,36 +1,22 @@
-# Staging-only durable auth store (source-only)
+# Staging-only durable auth store (issue #94)
 
-Required for `STAGING_AUTH_STORE` binding in the gateway Worker.
+Real D1 adapter replacing the former interface-only stub. Source: `src/staging-gateway/staging-auth-store.js`.
+Schema: `migrations/staging-auth/0001_staging_auth.sql` (versioned via `staging_auth_schema`). Binding: `STAGING_AUTH_DB`
+(`cairnstone-staging-auth`, placeholder id in the tomls). Staging only; never production.
 
-## Interface
-The binding must expose:
-- `isRevoked(tokenFamilyId: string): Promise<boolean>`
-- `connectionActive(connectionId: string): Promise<boolean>`
+## Behavior
+`checkAuth({accountId, connectionId, tokenFamilyId})` resolves with `true` only when ALL hold: the family row exists,
+`revoked = 0`, its connection exists with `status = 'active'`, and the family's account, the connection's account and the
+token's account agree and the family belongs to the token's connection. Everything else denies: missing/unknown/inactive/revoked
+family or connection, malformed ids, null input, missing/invalid DB, query errors, wrong-account association.
+The OAuth verifier admits only a strict `true`, and checks the signature and claims before touching the store.
 
-Absent binding, missing record, revoked family, inactive connection, or any store error **denies**.
+## Schema guarantees (triggers)
+Connection and family identity frozen; revoked connection terminal; revocation permanent (no un-revoke); no deletes;
+a family can only be created on a connection of the same account.
 
-## Proposed schema (staging D1 only; never production)
-```sql
-CREATE TABLE IF NOT EXISTS staging_token_families (
-  token_family_id TEXT PRIMARY KEY,
-  account_id TEXT NOT NULL,
-  revoked INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS staging_connections (
-  connection_id TEXT PRIMARY KEY,
-  account_id TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active',
-  created_at INTEGER NOT NULL
-);
-```
-
-Wrangler binding example (not activated):
-```toml
-[[d1_databases]]
-binding = "STAGING_AUTH_STORE"
-database_name = "cairnstone-staging-auth"
-database_id = "<owner-provisioned>"
-```
-
-Activation is an owner gate under issue #90. No secrets or production data.
+## Owner prerequisites (not done here; issue #90)
+1. Create D1 `cairnstone-staging-auth`, put its real id into the tomls (placeholder is all zeros).
+2. Apply `migrations/staging-auth/0001_staging_auth.sql` to staging only.
+3. Seed real staging connections/families (the Stage C harness upserts only synthetic `*_stagec_*` fixtures).
+No secrets, merges or promotions happen in this PR.

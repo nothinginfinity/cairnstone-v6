@@ -48,11 +48,10 @@ const validPayload = {
 };
 
 test("verifier requires explicit mcp:core and durable revocation", async () => {
-  const store = {
-    isRevoked: async id => id === "tfam_revoked",
-    connectionActive: async id => id !== "conn_inactive"
+  const authStore = {
+    checkAuth: async ({ tokenFamilyId, connectionId }) => tokenFamilyId !== "tfam_revoked" && connectionId !== "conn_inactive"
   };
-  const verify = await createStagingOAuthVerifier({ env: stageEnv(), revocationStore: store });
+  const verify = await createStagingOAuthVerifier({ env: stageEnv(), authStore });
   const good = await signToken(validPayload);
   const result = await verify(good, validPayload.resource);
   assert.equal(result.ok, true);
@@ -83,4 +82,30 @@ test("HTTP routes map short path to tool and reject unknown", async () => {
 
 test("error codes stay stable across boundary", () => {
   assert.throws(() => { throw new PrivateRealmError("caller_not_authorized"); }, { code: "caller_not_authorized" });
+});
+
+test("gateway: /stagec/* is NOT served by the product gateway (harness is a separate Worker)", async () => {
+  for (const path of ["/stagec/v1/call", "/stagec/v1/probe"]) {
+    const res = await gateway.fetch(new Request("https://stage.example.test" + path, { method: "POST", headers: { Authorization: "Bearer " + "x".repeat(40) }, body: "{}" }), stageEnv({ STAGE_C_HARNESS_TOKEN: "x".repeat(40) }));
+    assert.equal(res.status, 404, path);
+  }
+});
+
+test("gateway: without a STAGING_AUTH_DB binding the route denies (no permissive default)", async () => {
+  const token = await signToken(validPayload);
+  const res = await gateway.fetch(new Request("https://stage.example.test/v1/private-inbox/get", { method: "POST", headers: { Authorization: "Bearer " + token }, body: "{}" }), stageEnv());
+  assert.equal(res.status, 403);
+  assert.deepEqual(await res.json(), { error: "trusted_gateway_dependencies_required" });
+});
+
+test("gateway: a revoked token family is denied through the real D1 adapter", async () => {
+  const { createSqliteD1 } = await import("./helpers/sqlite-d1.js");
+  const { readFileSync } = await import("node:fs");
+  const db = createSqliteD1({ sql: readFileSync(new URL("../migrations/staging-auth/0001_staging_auth.sql", import.meta.url), "utf8") });
+  db.exec("INSERT INTO staging_connections VALUES ('conn_stage','acct_stage','active',1,1)");
+  db.exec("INSERT INTO staging_token_families (token_family_id, account_id, connection_id, revoked, created_at, revoked_at) VALUES ('tfam_test','acct_stage','conn_stage',1,1,2)");
+  const token = await signToken(validPayload);
+  const res = await gateway.fetch(new Request("https://stage.example.test/v1/private-inbox/get", { method: "POST", headers: { Authorization: "Bearer " + token }, body: "{}" }), stageEnv({ STAGING_AUTH_DB: db }));
+  assert.equal(res.status, 403);
+  assert.deepEqual(await res.json(), { error: "scope_not_authorized" });
 });

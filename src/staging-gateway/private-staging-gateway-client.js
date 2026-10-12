@@ -5,6 +5,7 @@
 import { PrivateRealmError } from "../private-realm/scope.js";
 import { STORE_METHODS } from "../private-realm/store.js";
 import { signEnvelope } from "../private-realm/private-worker-core.js";
+import { privateErrorCode } from "./private-error-code.js";
 import { createIdentityHomeBridge } from "../private-realm/identity-home-bridge.js";
 import { createPrivateInboxTools } from "../private-realm/private-inbox-tools.js";
 
@@ -32,8 +33,9 @@ export function createStagingPrivateStoreClient({ env } = {}) {
         return await binding.call(envelope);
       } catch (error) {
         // Never pass SQL, Worker internals, or raw exception text to the gateway caller.
-        throw err(error instanceof PrivateRealmError && safeCodes.has(error.code)
-          ? error.code : "private_store_error");
+        // Recover the code by value, not by class identity: `instanceof` does not hold across a service binding.
+        const { code } = privateErrorCode(error);
+        throw err(safeCodes.has(code) ? code : "private_store_error");
       }
     };
   }
