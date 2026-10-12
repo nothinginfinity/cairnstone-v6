@@ -43,7 +43,7 @@ test("order: validate -> checkouts -> pin -> credential-less gate -> live run ->
   assert.ok(order.every((i) => i >= 0), JSON.stringify(order));
   assert.deepEqual([...order].sort((a, b) => a - b), order);
   assert.match(steps[idx("node --test")], /S1_3_SOURCE_DIR: \$\{\{ github\.workspace \}\}\/source/);
-  assert.match(steps[idx("node --test")], /CI: "true"/);
+  assert.match(steps[idx("node --test")], /S1_3_REQUIRE_SOURCE: "1"/);
 });
 
 test("the tooling executed with credentials comes from the trusted checkout, never the deployed source", () => {

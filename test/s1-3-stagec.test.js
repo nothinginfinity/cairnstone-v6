@@ -13,7 +13,9 @@ import {
 const SHA = "bec2e2e8f0287ac1ff84280344166f1f1d9b9fb0";
 const sourceDir = process.env.S1_3_SOURCE_DIR ? resolve(process.env.S1_3_SOURCE_DIR) : null;
 const haveSource = sourceDir && existsSync(resolve(sourceDir, "migrations/private-staging/0002_parity_role_and_authz_triggers.sql"));
-if (!haveSource && process.env.CI) throw new Error("S1_3_SOURCE_DIR must point at the pinned source in CI");
+// The dedicated gates set S1_3_REQUIRE_SOURCE=1 so a missing checkout can never turn into a silent skip there.
+// The repo-wide `node --test` gate has no pinned checkout: source-dependent tests skip, pure tests still run.
+if (!haveSource && process.env.S1_3_REQUIRE_SOURCE === "1") throw new Error("S1_3_SOURCE_DIR must point at the pinned source when S1_3_REQUIRE_SOURCE=1");
 const skip = haveSource ? false : "S1_3_SOURCE_DIR (pinned source checkout) not set";
 const { createInProcessHarness } = haveSource ? await import("./helpers/stagec-inprocess-harness.mjs") : {};
 

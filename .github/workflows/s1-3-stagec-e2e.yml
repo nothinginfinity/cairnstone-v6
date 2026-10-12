@@ -73,7 +73,7 @@ jobs:
       - name: Driver gate against the pinned source on real SQLite (no credentials, no network)
         env:
           S1_3_SOURCE_DIR: ${{ github.workspace }}/source
-          CI: "true"
+          S1_3_REQUIRE_SOURCE: "1"
         run: node --test trusted/test/s1-3-stagec.test.js
       - name: Live Stage C E2E (staging harness + read-only Cloudflare readback)
         env:

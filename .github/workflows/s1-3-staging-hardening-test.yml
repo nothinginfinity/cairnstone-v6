@@ -48,7 +48,7 @@ jobs:
       - name: Stage C driver (real staging core + schema on SQLite), mutation checks, workflow invariants
         env:
           S1_3_SOURCE_DIR: ${{ github.workspace }}/source
-          CI: "true"
+          S1_3_REQUIRE_SOURCE: "1"
         run: node --test test/s1-3-stagec.test.js test/s1-3-stagec-workflow-invariants.test.js
       - name: No deploy
         run: echo "S1-3 staging hardening + Stage C driver source tests only; no Cloudflare access, no secrets, no live acceptance"
