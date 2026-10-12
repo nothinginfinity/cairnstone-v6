@@ -1,0 +1,36 @@
+name: S1-3 staging hardening source gate (NO DEPLOY, NO SECRETS)
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/s1-3-*.yml'
+      - 'scripts/staging/**'
+      - 'deploy/s1-3-staging/**'
+      - 'test/s1-3-*.test.js'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  hardening-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Workflow YAML parses
+        run: |
+          python3 - <<'PY'
+          import glob, yaml
+          for f in sorted(glob.glob('.github/workflows/s1-3-*.yml')):
+              yaml.safe_load(open(f))
+              print('ok', f)
+          PY
+      - name: Compile staging preflight scripts
+        run: node --check scripts/staging/s1-3-preflight-lib.mjs && node --check scripts/staging/s1-3-preflight.mjs
+      - name: Preflight verifier failure-case tests and workflow invariants
+        run: node --test test/s1-3-staging-preflight.test.js test/s1-3-staging-workflow-invariants.test.js
+      - name: No deploy
+        run: echo "S1-3 staging hardening source tests only; no Cloudflare access, no secrets"
