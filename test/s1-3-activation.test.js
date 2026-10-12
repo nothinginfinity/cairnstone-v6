@@ -21,7 +21,14 @@ const AUTH_ID = "11111111-2222-4333-8444-555555555555";
 const ISSUER_HOST = "stage-harness.staging.cairnstone.dev";
 const EXP = Object.freeze({ ...ACTIVATION, auth: Object.freeze({ ...ACTIVATION.auth, dbId: AUTH_ID }) });
 const realHarnessToml = readFileSync(root("wrangler.stagec-harness.toml"), "utf8");
-const pinnedToml = realHarnessToml.replaceAll(ACTIVATION.zeroId, AUTH_ID);
+// Fixtures are derived from a CANONICAL template of the committed toml (placeholder id + example issuer), so they stay valid both before
+// and after the owner's reviewed pin PR replaces the real id and issuer (runbook steps 5-6). They never depend on the pinned values.
+const PLACEHOLDER_ORIGIN = "https://stage.cairnstone.example";
+const templateToml = realHarnessToml
+  .replace(/^database_id = "[0-9a-f-]{36}"$/m, `database_id = "${ACTIVATION.zeroId}"`)
+  .replace(/^STAGING_OAUTH_ISSUER = "https:\/\/[^"\s]+"$/m, `STAGING_OAUTH_ISSUER = "${PLACEHOLDER_ORIGIN}"`)
+  .replace(/^STAGING_OAUTH_RESOURCE = "https:\/\/[^"\s]+"$/m, `STAGING_OAUTH_RESOURCE = "${PLACEHOLDER_ORIGIN}/mcp/core-auth"`);
+const pinnedToml = templateToml.replaceAll(ACTIVATION.zeroId, AUTH_ID);
 const enableToml = pinnedToml.replace("https://stage.cairnstone.example/mcp/core-auth", `https://${ISSUER_HOST}/mcp/core-auth`).replace('"https://stage.cairnstone.example"', `"https://${ISSUER_HOST}"`);
 const authSql = readFileSync(root("migrations/staging-auth/0001_staging_auth.sql"), "utf8");
 
@@ -301,9 +308,11 @@ test("checkAuthD1: healthy passes; wrong name, unmigrated, stray rows fail; read
   assert.equal((await checkAuthD1Identity(fakeClient(world({ authName: "x" })), AUTH_ID, { expected: EXP })).ok, false);
 });
 test("harness flow: while the auth D1 id is not pinned nothing can pass (current default)", async () => {
-  for (const [mode, phase] of [["dormant", "preflight"], ["dormant", "readback"], ["enable", "preflight"], ["enable", "readback"]]) {
-    const r = await runHarnessChecks(fakeClient(world()), { mode, phase, harnessToml: pinnedToml });
-    if (ACTIVATION.auth.dbId === null) { assert.equal(r.ok, false, `${mode}/${phase}`); assert.equal(r.checks.find((c) => c.name === "auth_d1_pinned").ok, false); }
+  if (ACTIVATION.auth.dbId === null) { // once pinned, the pinned-flow tests below (explicit `expected`) cover the live behavior
+    for (const [mode, phase] of [["dormant", "preflight"], ["dormant", "readback"], ["enable", "preflight"], ["enable", "readback"]]) {
+      const r = await runHarnessChecks(fakeClient(world()), { mode, phase, harnessToml: pinnedToml });
+      assert.equal(r.ok, false, `${mode}/${phase}`); assert.equal(r.checks.find((c) => c.name === "auth_d1_pinned").ok, false);
+    }
   }
   await assert.rejects(runHarnessChecks(fakeClient(world()), { mode: "bogus", phase: "preflight", harnessToml: "" }), { code: "harness_mode_must_be_dormant_or_enable" });
 });
