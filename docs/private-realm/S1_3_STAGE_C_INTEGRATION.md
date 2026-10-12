@@ -29,7 +29,7 @@ Typed codes are recovered by value (`.code`, then `.message`, allowlisted) becau
 
 ## Remaining owner staging prerequisites
 1. Create `cairnstone-staging-auth` D1 and apply its migration; replace placeholder ids.
-2. Deploy `cairnstone-private-staging` (main d2c12cbc; see S1_3_STAGING_ACTIVATION.md) and the harness Worker; provision an access-restricted hostname for the harness.
+2. Deploy `cairnstone-private-staging` (reviewed merged main ce565ef97eb7; see S1_3_STAGING_ACTIVATION.md) and the harness Worker; provision an access-restricted hostname for the harness.
 3. Secrets: `STAGE_C_HARNESS_TOKEN`, `PRIVATE_GATEWAY_HMAC_KEY`, `STAGING_OAUTH_SIGNING_KEY`; optional `LEGACY_MCP_HEALTH_URL`, `LEGACY_MCP_TOOLS_URL`; set `STAGE_C_HARNESS_ENABLED="true"` only for the run, then back to false.
 4. Dispatch the PR #93 live workflow; review evidence; record it in a CairnStone Stone.
 Stop/rollback: set `STAGE_C_HARNESS_ENABLED` to "false" (or delete the harness Worker); the harness holds no state beyond synthetic rows.

@@ -41,7 +41,7 @@ jobs:
       cancel-in-progress: false
     env:
       SOURCE_SHA: ${{ github.event.inputs.source_sha }}
-      ALLOWED_SOURCE_SHA: d2c12cbc39f415b49b25d0eb4bad140327ff56e6
+      ALLOWED_SOURCE_SHA: ce565ef97eb7b5a6847679604e1abb42daaef700
     steps:
       - name: Validate inputs
         shell: bash

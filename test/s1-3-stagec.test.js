@@ -10,7 +10,7 @@ import {
   assertReadOnlySql, assertAbortProbeSql, ALL_PROBES, connectionIdOf, inboxIdOf
 } from "../scripts/staging/s1-3-stagec-lib.mjs";
 
-const SHA = "bec2e2e8f0287ac1ff84280344166f1f1d9b9fb0";
+const SHA = "ce565ef97eb7b5a6847679604e1abb42daaef700";
 const sourceDir = process.env.S1_3_SOURCE_DIR ? resolve(process.env.S1_3_SOURCE_DIR) : null;
 const haveSource = sourceDir && existsSync(resolve(sourceDir, "migrations/private-staging/0002_parity_role_and_authz_triggers.sql"));
 // The dedicated gates set S1_3_REQUIRE_SOURCE=1 so a missing checkout can never turn into a silent skip there.

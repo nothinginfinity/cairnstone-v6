@@ -91,11 +91,14 @@ test("plan workflow: read-only, no wrangler, no deploy", () => {
   assert.match(code, /RUN_S1_3_STAGING_ACTIVATION_PLAN_READ_ONLY/);
 });
 
-test("existing deploy workflows are pinned to a main-lineage SHA and no activation workflow auto-triggers", () => {
+test("existing deploy workflows pin the reviewed merged main source exactly, including the Stage C driver; activation is manual-only", () => {
+  const reviewedSourceSha = "ce565ef97eb7b5a6847679604e1abb42daaef700";
   for (const f of ["s1-3-staging-deploy-v2", "s1-3stagec-e2e".replace("s1-3stagec", "s1-3-stagec")]) {
     const t = read(`.github/workflows/${f}.yml`).toString("utf8");
     assert.match(t, /ALLOWED_SOURCE_SHA: [0-9a-f]{40}/);
+    assert.match(t, new RegExp(`ALLOWED_SOURCE_SHA: ${reviewedSourceSha}(?![0-9a-f])`));
   }
+  assert.match(read("test/s1-3-stagec.test.js").toString("utf8"), new RegExp(`const SHA = "${reviewedSourceSha}";`));
   for (const f of readdirSync(new URL("../.github/workflows/", import.meta.url)).filter((x) => NAMES.some((n) => x.startsWith(n)))) {
     assert.doesNotMatch(read(`.github/workflows/${f}`).toString("utf8").replace(/^[ \t]*#.*$/gm, ""), /^  (push|pull_request|schedule):/m);
   }
