@@ -2,6 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { ACTIVATION } from "../scripts/staging/s1-3-activation-lib.mjs";
 
 const read = (f) => readFileSync(new URL(`../${f}`, import.meta.url), "utf8");
 const code = (f) => read(f).replace(/^\s*#.*$/gm, "");
@@ -24,7 +25,11 @@ for (const f of FILES) {
     assert.equal(dbs.length, 1);
     assert.match(dbs[0], /binding\s*=\s*"STAGING_AUTH_DB"/);
     assert.match(dbs[0], /database_name\s*=\s*"cairnstone-staging-auth"/);
-    assert.ok(dbs[0].includes(ZERO), "placeholder id only; the owner supplies the real id");
+    // The gateway config always keeps the placeholder. The harness config keeps it until the owner's reviewed pin PR, after which it must
+    // equal the id pinned in ACTIVATION (verified exactly by the activation verifiers); the all-zero placeholder is then rejected.
+    const pinned = f === "wrangler.stagec-harness.toml" ? ACTIVATION.auth.dbId : null;
+    if (pinned) { assert.ok(dbs[0].includes(pinned), "harness auth D1 id must equal the reviewed pin"); assert.ok(!dbs[0].includes(ZERO)); }
+    else assert.ok(dbs[0].includes(ZERO), "placeholder id only; the owner supplies the real id");
     assert.doesNotMatch(c, /(HMAC_KEY|SIGNING_KEY|HARNESS_TOKEN)\s*=/);
     assert.doesNotMatch(c, /(token|secret|password)\s*=\s*"[^"]{12,}"/i);
   });
