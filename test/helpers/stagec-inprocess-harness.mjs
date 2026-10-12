@@ -48,7 +48,8 @@ export async function createInProcessHarness({ sourceDir, variant = {} } = {}) {
   const harness = {
     kind: "in-process-sqlite",
     async call(identity, method, args = []) { return invoke(await sign(identity, method, args)); },
-    async probe(name, { identity, method = "listInboxes" } = {}) {
+    async probe(name, params = {}) {
+      const { identity, method = "listInboxes" } = params;
       const now = Math.floor(Date.now() / 1000);
       switch (name) {
         case "bad_sig": { const e = await sign(identity, method, []); return invoke({ ...e, sig: (e.sig[0] === "0" ? "1" : "0") + e.sig.slice(1) }); }
@@ -68,11 +69,12 @@ export async function createInProcessHarness({ sourceDir, variant = {} } = {}) {
           isolateSeq += 2;
           return { ok: true, first, second, isolates: [`sim-${isolateSeq - 1}`, `sim-${isolateSeq}`], nonce: e.nonce, stub: true };
         }
+        case "replay_preseeded_nonce": return invoke(await sign(identity, method, [], { nonce: params.nonce }));
         case "caller_selector_injection": {
           const bad = { ...scopeOf(identity), home_id: "home_someone_else_0001", home_role: "admin" };
           return invoke(await signEnvelope({ key: KEY, caller: STAGEC.caller, method, args: [bad] }));
         }
-        case "wrong_audience_token": case "revoked_oauth": return { ok: false, code: "scope_not_authorized", stub: true };
+        case "wrong_audience_token": case "revoked_oauth": case "wrong_account_association": return { ok: false, code: "scope_not_authorized", stub: true };
         case "legacy_regression": return { ok: true, health: 200, private_tools_visible: false, stub: true };
         default: return { ok: false, code: "unknown_probe" };
       }
@@ -81,6 +83,9 @@ export async function createInProcessHarness({ sourceDir, variant = {} } = {}) {
   const d1 = {
     kind: "sqlite",
     async query(q, params = []) { assertReadOnlySql(q); return db.rows(q, ...params); },
+    async seedNonce(caller, nonce, issuedAt) {
+      await db.prepare("INSERT INTO priv_service_nonces (caller, nonce, issued_at) VALUES (?1, ?2, ?3)").bind(caller, nonce, issuedAt).run();
+    },
     async expectAbort(q, params = []) {
       assertAbortProbeSql(q);
       try { await db.prepare(q).bind(...params).run(); return { aborted: false, message: "" }; }

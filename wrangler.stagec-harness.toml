@@ -1,0 +1,39 @@
+# STAGING-ONLY STAGE C HARNESS WORKER. NEVER deploy without the owner (human-controlled release: issue #90).
+# Disabled by default (404 on every path). No routes, no workers.dev, no preview URLs, no cron, no KV/R2, no production binding.
+# Reachability is an owner decision: an access-restricted staging hostname must be provisioned by the owner; nothing here activates one.
+name = "cairnstone-stage-harness"
+main = "src/staging-gateway/stagec-harness-worker.js"
+compatibility_date = "2026-06-21"
+workers_dev = false
+preview_urls = false
+send_metrics = false
+
+[vars]
+STAGE_C_HARNESS_ENABLED = "false"
+STAGING_OAUTH_RESOURCE = "https://stage.cairnstone.example/mcp/core-auth"
+STAGING_OAUTH_ISSUER = "https://stage.cairnstone.example"
+# Secrets (Wrangler secret / owner only, never in this file): STAGE_C_HARNESS_TOKEN, PRIVATE_GATEWAY_HMAC_KEY,
+# STAGING_OAUTH_SIGNING_KEY. Optional vars set by the owner: LEGACY_MCP_HEALTH_URL, LEGACY_MCP_TOOLS_URL (https only).
+
+# Three bindings to the SAME private staging Worker differ only in the platform-attested props.
+[[services]]
+binding = "CAIRNSTONE_PRIVATE_STAGE"
+service = "cairnstone-private-staging"
+props = { caller = "cairnstone-stage-gateway" }
+
+[[services]]
+binding = "CAIRNSTONE_PRIVATE_STAGE_NOPROPS"
+service = "cairnstone-private-staging"
+
+[[services]]
+binding = "CAIRNSTONE_PRIVATE_STAGE_WRONGPROPS"
+service = "cairnstone-private-staging"
+props = { caller = "not-the-stage-gateway" }
+
+# Staging auth status/revocation DB (migrations/staging-auth). Placeholder id: the owner creates the DB and applies the
+# migration. All-zero id can never match a real database.
+[[d1_databases]]
+binding = "STAGING_AUTH_DB"
+database_name = "cairnstone-staging-auth"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations/staging-auth"

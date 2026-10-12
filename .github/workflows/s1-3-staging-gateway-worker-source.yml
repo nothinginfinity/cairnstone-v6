@@ -1,0 +1,28 @@
+name: S1-3 staging gateway Worker source gate (NO DEPLOY)
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gateway-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Compile sources
+        run: |
+          node --check src/staging-gateway/staging-gateway-worker.js
+          node --check src/staging-gateway/staging-oauth-verifier.js
+          node --check src/staging-gateway/private-staging-gateway-client.js
+      - name: Run gateway tests
+        run: node --test test/private-staging-gateway-client.test.js test/staging-gateway-worker.test.js
+      - name: Wrangler dry-run (no deploy)
+        run: npx wrangler deploy --dry-run --outdir /tmp/stage-gw --config wrangler.staging-gateway.toml
+      - name: No deploy
+        run: echo "source + dry-run only"
