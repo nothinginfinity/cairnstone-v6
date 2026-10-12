@@ -380,10 +380,11 @@ export async function runActivationPlan(client, { files = {}, expected = ACTIVAT
       add(`private_${c.name}`, c.name.replace(/_/g, " "), c.ok ? "GO" : "NO_GO", c.ok ? "ok" : c.errors.join("; "));
     }
   });
+  let authD1CreationNeeded = false;
   await guard("auth_d1", "staging auth D1 exists, migrated, pinned", async () => {
     const found = await listD1ByName(client, expected.auth.dbName);
     const pinned = expected.auth.dbId;
-    if (found.length === 0) { add("auth_d1", "staging auth D1 exists, migrated, pinned", "OWNER_ACTION", "does not exist; dispatch s1-3-staging-auth-d1 (create + migrate + verify)"); return; }
+    if (found.length === 0) { authD1CreationNeeded = true; add("auth_d1", "staging auth D1 exists, migrated, pinned", "OWNER_ACTION", "does not exist; dispatch s1-3-staging-auth-d1 (create + migrate + verify)"); return; }
     if (found.length > 1) { add("auth_d1", "staging auth D1 exists, migrated, pinned", "NO_GO", "more than one database with the pinned name"); return; }
     const id = found[0].id;
     const c = await checkAuthD1(client, id, { expected });
@@ -412,7 +413,7 @@ export async function runActivationPlan(client, { files = {}, expected = ACTIVAT
   const by = Object.fromEntries(items.map((i) => [i.id, i.status]));
   const go = (...ids) => ids.every((id) => by[id] === "GO");
   const ready = {
-    auth_d1_create: by.auth_d1 === "OWNER_ACTION" && !items.some((i) => i.status === "NO_GO"),
+    auth_d1_create: authD1CreationNeeded && !items.some((i) => i.status === "NO_GO"),
     private_rebind_deploy: go("private_d1_schema") && by.private_worker_bound_d1 !== "NO_GO",
     harness_dormant_deploy: go("private_d1_schema", "private_worker_bound_d1", "auth_d1", "harness_config"),
     harness_enable: go("private_d1_schema", "private_worker_bound_d1", "auth_d1", "harness_config", "harness_worker", "harness_secrets", "harness_restricted_hostname"),
