@@ -1,0 +1,52 @@
+# SAFETY: source/CI gate only (issue #94). NO credentials, NO secrets, NO deploy, NO Cloudflare API call, NO D1 migration.
+# `wrangler deploy --dry-run` bundles and validates config locally; it never contacts Cloudflare.
+name: S1-3 Stage C integration + auth store gate (NO DEPLOY)
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stagec-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LOCKFILE_SHA256: b131afd4a9e16c5d595162f742878e9904b87ec3f8df9f9e058132b61ece63b9
+      PACKAGE_JSON_SHA256: 29c0ce5c0e012a827b03c6486110309a7e314d6fa9d0e316f5e288c44b9db011
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Pin manifest and lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(sha256sum package.json | cut -d' ' -f1)" = "$PACKAGE_JSON_SHA256"
+          test "$(sha256sum deploy/s1-3-staging/package-lock.json | cut -d' ' -f1)" = "$LOCKFILE_SHA256"
+          test ! -e package-lock.json
+          cp deploy/s1-3-staging/package-lock.json package-lock.json
+      - name: Install from lockfile (no scripts)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in src/staging-gateway/*.js scripts/staging/s1-3-stagec-lib.mjs test/helpers/stagec-e2e-rig.mjs test/helpers/stagec-inprocess-harness.mjs; do node --check "$f"; done
+      - name: Tests (source required, real SQLite, no network)
+        env:
+          S1_3_REQUIRE_SOURCE: "1"
+          S1_3_SOURCE_DIR: ${{ github.workspace }}
+        run: >
+          node --test test/staging-auth-store.test.js test/staging-gateway-worker.test.js test/s1-3-stagec-integration.test.js
+          test/s1-3-stagec.test.js test/s1-3-stagec-workflow-invariants.test.js test/wrangler-stagec-config.test.js
+          test/private-staging-gateway-client.test.js test/private-staging-core.test.js test/private-staging-schema-parity.test.js
+          test/s1-3-staging-preflight.test.js test/s1-3-staging-workflow-invariants.test.js
+      - name: Wrangler dry-run, harness Worker (local bundle only)
+        run: npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wd-harness" -c wrangler.stagec-harness.toml
+      - name: Wrangler dry-run, gateway Worker (local bundle only)
+        run: npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wd-gateway" -c wrangler.staging-gateway.toml
+      - name: No deploy
+        run: echo "source tests and local dry-runs only; nothing deployed, migrated or provisioned"
