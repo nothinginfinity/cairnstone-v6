@@ -1,0 +1,7 @@
+# Generated local development artifacts (never commit these)
+.wrangler/
+node_modules/
+.env
+.env.*
+!.env.example
+*.local
