@@ -32,7 +32,7 @@ jobs:
     environment: s1-3-staging
     env:
       SOURCE_SHA: ${{ github.event.inputs.source_sha }}
-      ALLOWED_SOURCE_SHA: bec2e2e8f0287ac1ff84280344166f1f1d9b9fb0
+      ALLOWED_SOURCE_SHA: d2c12cbc39f415b49b25d0eb4bad140327ff56e6
       LOCKFILE_SHA256: b131afd4a9e16c5d595162f742878e9904b87ec3f8df9f9e058132b61ece63b9
       PACKAGE_JSON_SHA256: 29c0ce5c0e012a827b03c6486110309a7e314d6fa9d0e316f5e288c44b9db011
     steps:

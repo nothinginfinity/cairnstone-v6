@@ -110,12 +110,15 @@ export function verifyD1Schema({ roleColumn, connectionsSql, nonceColumns, trigg
 
 // ---- Worker settings / bindings ----
 
-export function verifyWorkerSettings(settingsResult, expected = EXPECTED) {
+// `allowedD1Ids` (default: only the replacement D1). The PRE-DEPLOY preflight of the rebind deploy alone also accepts the exact
+// old staging D1 id, because the live Worker is still bound to it until `wrangler deploy` swaps the binding (issue #97).
+// Readback and Stage C never pass it, so the end state must always be the replacement D1.
+export function verifyWorkerSettings(settingsResult, expected = EXPECTED, { allowedD1Ids = [expected.d1Id] } = {}) {
   const errors = [];
   const bindings = Array.isArray(settingsResult?.bindings) ? settingsResult.bindings : null;
   if (!bindings) return ["worker_bindings_unreadable"];
   const d1 = bindings.filter((b) => b.type === "d1");
-  if (d1.length !== 1 || d1[0].name !== expected.d1Binding || d1[0].id !== expected.d1Id) errors.push("worker_unexpected_d1_binding");
+  if (d1.length !== 1 || d1[0].name !== expected.d1Binding || !allowedD1Ids.includes(d1[0].id)) errors.push("worker_unexpected_d1_binding");
   const r2 = bindings.filter((b) => b.type === "r2_bucket");
   if (r2.length !== 1 || r2[0].name !== expected.r2Binding || r2[0].bucket_name !== expected.r2Bucket) errors.push("worker_unexpected_r2_binding");
   const plain = Object.fromEntries(bindings.filter((b) => b.type === "plain_text").map((b) => [b.name, b.text]));
@@ -218,7 +221,7 @@ export async function checkD1Schema(client, expected = EXPECTED) {
   return check("d1_schema", verifyD1Schema({ roleColumn, connectionsSql: connections[0]?.sql, nonceColumns, triggers }, expected));
 }
 
-export async function checkWorkerState(client, expected = EXPECTED) {
+export async function checkWorkerState(client, expected = EXPECTED, opts = {}) {
   const acct = client.accountId;
   const w = `/accounts/${acct}/workers/scripts/${expected.workerName}`;
   const settings = (await client.get(`${w}/settings`)).result;
@@ -227,7 +230,7 @@ export async function checkWorkerState(client, expected = EXPECTED) {
   const domains = (await client.get(`/accounts/${acct}/workers/domains?service=${expected.workerName}`)).result;
   const routes = await collectZoneRoutes(client);
   return [
-    check("worker_bindings", verifyWorkerSettings(settings, expected)),
+    check("worker_bindings", verifyWorkerSettings(settings, expected, opts)),
     check("hmac_key_presence", verifySecrets(secrets, expected)),
     check("no_public_exposure", verifyExposure({ subdomain, domains, routes }, expected))
   ];
@@ -235,7 +238,7 @@ export async function checkWorkerState(client, expected = EXPECTED) {
 
 /** Everything that must hold BEFORE `wrangler deploy` (the worker + HMAC secret must already be provisioned). */
 export async function runPreflight(client, expected = EXPECTED) {
-  const checks = [await checkD1Schema(client, expected), ...(await checkWorkerState(client, expected))];
+  const checks = [await checkD1Schema(client, expected), ...(await checkWorkerState(client, expected, { allowedD1Ids: [expected.d1Id, expected.oldD1Id] }))];
   return { phase: "preflight", ok: checks.every((c) => c.ok), checks };
 }
 

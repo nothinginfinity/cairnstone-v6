@@ -1,0 +1,136 @@
+# SAFETY: STAGING ONLY, manual dispatch only, from main, owner-reviewed environment `s1-3-staging`.
+# Creates ONLY the isolated staging auth D1 `cairnstone-staging-auth`, applies ONLY the reviewed migrations/staging-auth/0001, verifies it
+# read-only, and prints its id. It deploys no Worker, sets no secret, touches no route/domain, no production resource, and does NOT edit any
+# repo file: the owner pins the printed id in a reviewed PR (scripts/staging/s1-3-activation-lib.mjs + wrangler.stagec-harness.toml).
+# The Cloudflare token is step-scoped: never exposed to checkout, install, hash pinning or tests.
+# Resume: if a previous run created the database but failed before/while migrating, pass its id as existing_db_id (name is verified first).
+name: S1-3 staging auth D1 create + migrate (manual only, STAGING ONLY)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_stage_only:
+        description: "Enter CREATE_ISOLATED_S1_3_STAGING_AUTH_D1"
+        required: true
+        type: string
+      source_sha:
+        description: "Full 40-char SHA; must equal the commit this workflow runs from (main)"
+        required: true
+        type: string
+      existing_db_id:
+        description: "Leave empty. Resume only: id of an already-created cairnstone-staging-auth (name verified before any migration)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  staging-auth-d1:
+    if: ${{ github.event.inputs.confirm_stage_only == 'CREATE_ISOLATED_S1_3_STAGING_AUTH_D1' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: s1-3-staging
+    concurrency:
+      group: s1-3-staging-activation
+      cancel-in-progress: false
+    env:
+      SOURCE_SHA: ${{ github.event.inputs.source_sha }}
+      EXISTING_DB_ID: ${{ github.event.inputs.existing_db_id }}
+      LOCKFILE_SHA256: b131afd4a9e16c5d595162f742878e9904b87ec3f8df9f9e058132b61ece63b9
+      PACKAGE_JSON_SHA256: 29c0ce5c0e012a827b03c6486110309a7e314d6fa9d0e316f5e288c44b9db011
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::source_sha must be a full 40-char lowercase SHA"; exit 1; }
+          test "$SOURCE_SHA" = "$GITHUB_SHA" || { echo "::error::source_sha must equal the commit this workflow runs from"; exit 1; }
+          test "${GITHUB_REF_NAME}" = "main" || { echo "::error::must be dispatched from main"; exit 1; }
+          if [ -n "$EXISTING_DB_ID" ]; then [[ "$EXISTING_DB_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || { echo "::error::existing_db_id is not a UUID"; exit 1; }; fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Pin source, lockfile and package manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(sha256sum package.json | cut -d' ' -f1)" = "$PACKAGE_JSON_SHA256" || { echo "::error::package.json differs from the reviewed manifest"; exit 1; }
+          test "$(sha256sum deploy/s1-3-staging/package-lock.json | cut -d' ' -f1)" = "$LOCKFILE_SHA256" || { echo "::error::lockfile differs from the reviewed lockfile"; exit 1; }
+          test ! -e package-lock.json || { echo "::error::source tree unexpectedly carries its own lockfile; review and re-pin"; exit 1; }
+          cp deploy/s1-3-staging/package-lock.json package-lock.json
+      - name: Verify reviewed auth migration bytes (no credentials)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(ls migrations/staging-auth | wc -l)" = "1"
+          node scripts/staging/s1-3-activation.mjs verify-auth-migration migrations/staging-auth/0001_staging_auth.sql
+      - name: Install dependencies from lockfile (no scripts, no credentials)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Offline gates (no credentials)
+        run: |
+          node --check scripts/staging/s1-3-activation-lib.mjs
+          node --check scripts/staging/s1-3-activation.mjs
+          node --test test/staging-auth-store.test.js test/s1-3-activation.test.js test/s1-3-activation-workflow-invariants.test.js
+      - name: Create auth D1 (refuses if the name already exists)
+        id: create
+        if: ${{ github.event.inputs.existing_db_id == '' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/staging/s1-3-activation.mjs create-auth-d1 --out "$RUNNER_TEMP/s1-3-auth-d1-created.json"
+      - name: Resolve database id and write temporary migration config (no credentials)
+        id: resolve
+        shell: bash
+        env:
+          CREATED_DB_ID: ${{ steps.create.outputs.db_id }}
+        run: |
+          set -euo pipefail
+          DB_ID="${EXISTING_DB_ID:-$CREATED_DB_ID}"
+          test -n "$DB_ID" || { echo "::error::no database id"; exit 1; }
+          node scripts/staging/s1-3-activation.mjs write-auth-d1-config --db-id "$DB_ID" --migrations-dir "$GITHUB_WORKSPACE/migrations/staging-auth" --out "$RUNNER_TEMP/wrangler.auth-d1.toml"
+          echo "db_id=$DB_ID" >> "$GITHUB_OUTPUT"
+      - name: Verify the target database name before any migration
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DB_ID: ${{ steps.resolve.outputs.db_id }}
+        run: node scripts/staging/s1-3-activation.mjs verify-auth-d1 --db-id "$DB_ID" --name-only
+      - name: Apply reviewed auth migration to the auth D1 ONLY
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --no-install wrangler d1 migrations apply STAGING_AUTH_DB --remote --config "$RUNNER_TEMP/wrangler.auth-d1.toml"
+      - name: Read-only verification of the migrated auth D1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DB_ID: ${{ steps.resolve.outputs.db_id }}
+        run: node scripts/staging/s1-3-activation.mjs verify-auth-d1 --db-id "$DB_ID" --require-empty --receipt "$RUNNER_TEMP/s1-3-auth-d1-receipt.json"
+      - name: Write run summary (no secrets)
+        if: ${{ always() }}
+        shell: bash
+        env:
+          DB_ID: ${{ steps.resolve.outputs.db_id }}
+        run: |
+          {
+            echo "## S1-3 staging auth D1 (STAGING ONLY)"
+            echo "- database name: \`cairnstone-staging-auth\`"
+            if [ -n "${DB_ID:-}" ]; then echo "- database_id: \`$DB_ID\`"; else echo "- database_id: not created"; fi
+            if [ -f "$RUNNER_TEMP/s1-3-auth-d1-receipt.json" ]; then echo "- verification ok: $(jq -r .ok "$RUNNER_TEMP/s1-3-auth-d1-receipt.json")"; else echo "- verification: not produced (if the database exists, re-dispatch with existing_db_id)"; fi
+            echo "- source: \`$SOURCE_SHA\` (run $GITHUB_RUN_ID, attempt $GITHUB_RUN_ATTEMPT)"
+            echo "- NEXT (owner): reviewed PR pinning this id in scripts/staging/s1-3-activation-lib.mjs and wrangler.stagec-harness.toml. No Worker, secret, route or repo file was changed."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload receipt (no secrets)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: s1-3-auth-d1-receipt-${{ github.run_id }}
+          path: ${{ runner.temp }}/s1-3-auth-d1-receipt.json
+          if-no-files-found: warn

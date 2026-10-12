@@ -4,7 +4,7 @@ Status: draft planning and workflow hardening; **NOT DEPLOYED, NOT ACCEPTED**. S
 
 ## Source and resource pins
 
-- Staging Worker source: reviewed S1-3 PR #82 `bec2e2e8f0287ac1ff84280344166f1f1d9b9fb0` (immutable), stacked on draft PR #81.
+- Staging Worker source: reviewed S1-3 PR #82 `bec2e2e8f0287ac1ff84280344166f1f1d9b9fb0` (immutable), stacked on draft PR #81. **Superseded pin:** deploy workflows now pin merged main `d2c12cbc39f415b49b25d0eb4bad140327ff56e6` (bec2e2e is not an ancestor of main). See S1_3_STAGING_ACTIVATION.md.
 - Private staging D1: `cairnstone-private-staging-2`, ID `9420f645-4bdf-430f-a790-feb34d01f077` (synthetic data only).
 - Private staging R2: `cairnstone-private-staging` only. Preserve old staging D1 `26d4e786-2da7-47a4-a159-1ba206712b13` until E2E and owner deletion approval.
 - Staging Worker: `cairnstone-private-staging`; zero production routes, custom domains, workers.dev or preview URLs.
