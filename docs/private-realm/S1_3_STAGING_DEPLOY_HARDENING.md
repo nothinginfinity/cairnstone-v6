@@ -7,7 +7,7 @@ Nothing in this change dispatches a workflow, touches Cloudflare, or moves an ac
 
 | Control | Mechanism | Where it is tested |
 |---|---|---|
-| Only the reviewed source deploys | `ALLOWED_SOURCE_SHA` (PR #82 head `bec2e2e8f0287ac1ff84280344166f1f1d9b9fb0`) is compared before any checkout | `s1-3-staging-workflow-invariants.test.js` |
+| Only the reviewed source deploys | `ALLOWED_SOURCE_SHA` (PR #82 head `d2c12cbc39f415b49b25d0eb4bad140327ff56e6`, merged main after PR #96; formerly PR #82 head `bec2e2e`, which is not an ancestor of main) is compared before any checkout | `s1-3-staging-workflow-invariants.test.js` |
 | Deterministic dependencies | Committed `deploy/s1-3-staging/package-lock.json` (sha256 pinned in the workflow as `LOCKFILE_SHA256`) installed with `npm ci --ignore-scripts`; `package.json` of the source is pinned by `PACKAGE_JSON_SHA256`; wrangler runs via `npx --no-install` | invariants test (hash must equal the committed file) |
 | Tooling is not taken from the code being deployed | Two checkouts: `trusted/` = this workflow's commit (main), `source/` = the pinned SHA | invariants test |
 | Exact config identity | `verify-config` requires `wrangler.private-staging.toml` to equal the reviewed non-comment lines exactly. `[build]`, `[[services]]`, KV/DO bindings, routes, triggers, extra vars, any other D1/R2 ID, trailing-comment smuggling all fail | `s1-3-staging-preflight.test.js` (16 mutation cases) |

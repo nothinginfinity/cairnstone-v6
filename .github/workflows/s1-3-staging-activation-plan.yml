@@ -1,0 +1,63 @@
+# SAFETY: STAGING ONLY, READ-ONLY, manual dispatch only, from main, owner-reviewed environment `s1-3-staging`.
+# Produces the operator go/no-go board from LIVE Cloudflare state (private D1/Worker, auth D1, harness Worker, secret NAMES, hostname/Access).
+# It changes nothing: no deploy, no D1 write, no secret read or write, no route. Secret VALUES are never read; only names.
+name: S1-3 staging activation plan (read-only, manual only, STAGING ONLY)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_stage_only:
+        description: "Enter RUN_S1_3_STAGING_ACTIVATION_PLAN_READ_ONLY"
+        required: true
+        type: string
+      source_sha:
+        description: "Full 40-char SHA; must equal the commit this workflow runs from (main)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  activation-plan:
+    if: ${{ github.event.inputs.confirm_stage_only == 'RUN_S1_3_STAGING_ACTIVATION_PLAN_READ_ONLY' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: s1-3-staging
+    concurrency:
+      group: s1-3-staging-activation
+      cancel-in-progress: false
+    env:
+      SOURCE_SHA: ${{ github.event.inputs.source_sha }}
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::source_sha must be a full 40-char lowercase SHA"; exit 1; }
+          test "$SOURCE_SHA" = "$GITHUB_SHA" || { echo "::error::source_sha must equal the commit this workflow runs from"; exit 1; }
+          test "${GITHUB_REF_NAME}" = "main" || { echo "::error::must be dispatched from main"; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Read-only activation plan from live Cloudflare state
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/staging/s1-3-activation.mjs plan --root . --receipt "$RUNNER_TEMP/s1-3-activation-plan.json" --markdown "$RUNNER_TEMP/s1-3-activation-plan.md"
+      - name: Write run summary (no secrets)
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/s1-3-activation-plan.md" ]; then cat "$RUNNER_TEMP/s1-3-activation-plan.md" >> "$GITHUB_STEP_SUMMARY"; else echo "## S1-3 staging activation plan: not produced" >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Upload plan receipt (no secrets)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: s1-3-activation-plan-${{ github.run_id }}
+          path: ${{ runner.temp }}/s1-3-activation-plan.json
+          if-no-files-found: warn
