@@ -1,0 +1,127 @@
+# SAFETY: STAGING ONLY, manual dispatch only. Only the exact reviewed S1-3 candidate may be deployed.
+# To change ALLOWED_SOURCE_SHA / LOCKFILE_SHA256 / PACKAGE_JSON_SHA256, open a separately reviewed PR.
+# The Cloudflare token is step-scoped: never exposed to checkout, install, config verification or tests.
+# Dependencies come from a committed, hash-pinned lockfile via `npm ci --ignore-scripts` (never floating `npm install`).
+name: S1-3 isolated private staging deploy v2 (manual only, STAGING ONLY)
+
+# Deploys ONLY the Worker `cairnstone-private-staging` from a pinned, reviewed commit, bound to the
+# recreated staging D1 (cairnstone-private-staging-2). No routes, no workers.dev, no production resources.
+# Never sets or prints secrets. PRIVATE_GATEWAY_HMAC_KEY must ALREADY be provisioned on the staging Worker by the
+# owner (outside this workflow); preflight fails closed if it is absent. See docs/private-realm/S1_3_STAGING_DEPLOY_HARDENING.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_stage_only:
+        description: "Enter DEPLOY_ISOLATED_S1_3_STAGE_V2"
+        required: true
+        type: string
+      source_sha:
+        description: "Full 40-char commit SHA to deploy (must equal the pinned reviewed SHA)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-staging-v2:
+    if: ${{ github.event.inputs.confirm_stage_only == 'DEPLOY_ISOLATED_S1_3_STAGE_V2' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: s1-3-staging
+    env:
+      SOURCE_SHA: ${{ github.event.inputs.source_sha }}
+      ALLOWED_SOURCE_SHA: bec2e2e8f0287ac1ff84280344166f1f1d9b9fb0
+      LOCKFILE_SHA256: b131afd4a9e16c5d595162f742878e9904b87ec3f8df9f9e058132b61ece63b9
+      PACKAGE_JSON_SHA256: 29c0ce5c0e012a827b03c6486110309a7e314d6fa9d0e316f5e288c44b9db011
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::source_sha must be a full 40-char lowercase SHA"; exit 1; }
+          test "$SOURCE_SHA" = "$ALLOWED_SOURCE_SHA" || { echo "::error::Source commit is not the pinned reviewed S1-3 candidate"; exit 1; }
+          test "${GITHUB_REF_NAME}" = "main" || { echo "::error::must be dispatched from main"; exit 1; }
+      # Trusted tooling = the commit of THIS workflow run (main). Never taken from the source being deployed.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Pin source, lockfile and package manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(sha256sum source/package.json | cut -d' ' -f1)" = "$PACKAGE_JSON_SHA256" || { echo "::error::package.json differs from the reviewed manifest"; exit 1; }
+          test "$(sha256sum trusted/deploy/s1-3-staging/package-lock.json | cut -d' ' -f1)" = "$LOCKFILE_SHA256" || { echo "::error::lockfile differs from the reviewed lockfile"; exit 1; }
+          test ! -e source/package-lock.json || { echo "::error::source tree unexpectedly carries its own lockfile; review and re-pin"; exit 1; }
+          cp trusted/deploy/s1-3-staging/package-lock.json source/package-lock.json
+      - name: Verify staging config is exactly the reviewed identity (no credentials)
+        run: node trusted/scripts/staging/s1-3-preflight.mjs verify-config source/wrangler.private-staging.toml
+      - name: Verify migrations present (no credentials)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(ls source/migrations/private-staging | wc -l)" = "2"
+          test -f source/migrations/private-staging/0001_private_realm.sql
+          test -f source/migrations/private-staging/0002_parity_role_and_authz_triggers.sql
+      - name: Install dependencies from lockfile (no scripts, no credentials)
+        working-directory: source
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Staging gates (syntax, core, schema parity; no credentials)
+        working-directory: source
+        run: |
+          node --check src/private-realm/private-staging-core.js
+          node --check src/private-realm/private-staging-worker.js
+          node --test test/private-staging-core.test.js test/private-staging-schema-parity.test.js test/private-realm-worker.test.js
+      - name: Preflight live staging (D1 schema, HMAC key presence, bindings, exposure) BEFORE deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node trusted/scripts/staging/s1-3-preflight.mjs preflight --receipt "$RUNNER_TEMP/s1-3-preflight-receipt.json"
+      - name: Validate Cloudflare bundle (no deploy, no credentials)
+        working-directory: source
+        run: npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/s1-3-stage-build" --config wrangler.private-staging.toml
+      - name: Deploy isolated private staging Worker ONLY
+        working-directory: source
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --no-install wrangler deploy --config wrangler.private-staging.toml --tag "s1-3-${SOURCE_SHA:0:12}" --message "S1-3 staging ${SOURCE_SHA} run ${GITHUB_RUN_ID}"
+      - name: Live readback (bindings, key presence, no workers.dev/preview/routes/domains)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node trusted/scripts/staging/s1-3-preflight.mjs readback --receipt "$RUNNER_TEMP/s1-3-readback-receipt.json"
+      - name: Write run summary (no secrets)
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "## S1-3 staging deploy (STAGING ONLY)"
+            echo "- worker: \`cairnstone-private-staging\` @ \`$SOURCE_SHA\` (run $GITHUB_RUN_ID, attempt $GITHUB_RUN_ATTEMPT)"
+            echo "- lockfile sha256: \`$LOCKFILE_SHA256\`; package.json sha256: \`$PACKAGE_JSON_SHA256\`"
+            for f in s1-3-preflight-receipt s1-3-readback-receipt; do
+              if [ -f "$RUNNER_TEMP/$f.json" ]; then echo "- $f: ok=$(jq -r .ok "$RUNNER_TEMP/$f.json")"; else echo "- $f: not produced"; fi
+            done
+            echo "- gateway service binding must set props.caller = cairnstone-stage-gateway (verified by Stage C, not this workflow)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload receipts (no secrets)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: s1-3-staging-deploy-receipts-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/s1-3-preflight-receipt.json
+            ${{ runner.temp }}/s1-3-readback-receipt.json
+          if-no-files-found: warn

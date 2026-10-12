@@ -1,0 +1,53 @@
+name: S1-3 isolated private staging deploy (manual only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_stage_only:
+        description: "Enter DEPLOY_ISOLATED_S1_3_STAGE"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-staging:
+    if: ${{ github.event.inputs.confirm_stage_only == 'DEPLOY_ISOLATED_S1_3_STAGE' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: s1-3-staging
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 6941cd6af4ee2bec6d37d84a21648564909979da
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Pin exact reviewed source and prevent production targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "6941cd6af4ee2bec6d37d84a21648564909979da"
+          test "${GITHUB_REF_NAME}" = "main"
+          test -f wrangler.private-staging.toml
+          grep -Fxq 'name = "cairnstone-private-staging"' wrangler.private-staging.toml
+          grep -Fxq 'workers_dev = false' wrangler.private-staging.toml
+          grep -Fxq 'preview_urls = false' wrangler.private-staging.toml
+          grep -Fxq 'database_id = "26d4e786-2da7-47a4-a159-1ba206712b13"' wrangler.private-staging.toml
+          grep -Fxq 'bucket_name = "cairnstone-private-staging"' wrangler.private-staging.toml
+          ! grep -Eq '7c4ae99e-4ab0-44c3-afa3-3f1a2d64d319|fcd0437e-0b48-4f70-ac59-9d8f6a475aa2|cairnstone-v6-raw' wrangler.private-staging.toml
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Full staging and regression gate before deployment
+        run: npm run check
+      - name: Validate Cloudflare bundle (no deploy)
+        run: npx wrangler deploy --dry-run --outdir /tmp/s1-3-stage-build --config wrangler.private-staging.toml
+      - name: Deploy isolated private staging Worker ONLY
+        run: npx wrangler deploy --config wrangler.private-staging.toml
+      - name: Staging deployment receipt
+        run: echo "S1-3 STAGING ONLY deployed commit 6941cd6af4ee2bec6d37d84a21648564909979da; no public route, production Worker or auth changes."
