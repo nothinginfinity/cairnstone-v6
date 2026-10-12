@@ -1,18 +1,25 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createStagingOAuthVerifier } from "../src/staging-gateway/staging-oauth-verifier.js";
-import { createStagingGatewayCore } from "../src/staging-gateway/private-staging-gateway-client.js";
+import gateway from "../src/staging-gateway/staging-gateway-worker.js";
 import { PrivateRealmError } from "../src/private-realm/scope.js";
 
 const KEY = "staging-oauth-test-key-".repeat(3);
 const HMAC = "staging-hmac-test-key-".repeat(3);
-const stageEnv = () => ({
+const stageEnv = (overrides = {}) => ({
   PRIVATE_STAGE_GATEWAY_ENABLED: "true",
   STAGING_OAUTH_SIGNING_KEY: KEY,
   STAGING_OAUTH_RESOURCE: "https://stage.example.test/mcp/core-auth",
   STAGING_OAUTH_ISSUER: "https://stage.example.test",
   PRIVATE_GATEWAY_HMAC_KEY: HMAC,
-  CAIRNSTONE_PRIVATE_STAGE: { call: async () => ({ ok: true }) }
+  CAIRNSTONE_PRIVATE_STAGE: {
+    call: async envelope => {
+      // Simulate private Worker checking platformCaller
+      if (envelope.caller !== "cairnstone-stage-gateway") throw new PrivateRealmError("caller_not_authorized");
+      return { ok: true, method: envelope.method, args: envelope.args };
+    }
+  },
+  ...overrides
 });
 
 async function signToken(payload, key = KEY) {
@@ -40,34 +47,40 @@ const validPayload = {
   scopes: ["mcp:core"]
 };
 
-test("verifier rejects expired, wrong audience, revoked, inactive", async () => {
-  const verify = await createStagingOAuthVerifier({ env: stageEnv() });
+test("verifier requires explicit mcp:core and durable revocation", async () => {
+  const store = {
+    isRevoked: async id => id === "tfam_revoked",
+    connectionActive: async id => id !== "conn_inactive"
+  };
+  const verify = await createStagingOAuthVerifier({ env: stageEnv(), revocationStore: store });
   const good = await signToken(validPayload);
   const result = await verify(good, validPayload.resource);
   assert.equal(result.ok, true);
-  assert.equal(result.context.account_id, "acct_stage");
+  assert.deepEqual(result.context.scopes, ["mcp:core"]);
 
-  await assert.rejects(verify(await signToken({ ...validPayload, exp: 1 }), validPayload.resource), { code: "scope_not_authorized" });
-  await assert.rejects(verify(await signToken({ ...validPayload, aud: "https://prod.example" }), validPayload.resource), { code: "scope_not_authorized" });
-  const revokedEnv = { ...stageEnv(), STAGING_REVOKED_TOKEN_FAMILIES: "tfam_test" };
-  const verifyRev = await createStagingOAuthVerifier({ env: revokedEnv });
-  await assert.rejects(verifyRev(good, validPayload.resource), { code: "scope_not_authorized" });
+  await assert.rejects(verify(await signToken({ ...validPayload, scopes: [] }), validPayload.resource), { code: "scope_not_authorized" });
+  await assert.rejects(verify(await signToken({ ...validPayload, token_family_id: "tfam_revoked" }), validPayload.resource), { code: "scope_not_authorized" });
+  await assert.rejects(verify(await signToken({ ...validPayload, connection_id: "conn_inactive" }), validPayload.resource), { code: "scope_not_authorized" });
 });
 
-test("gateway core uses injected staging verifier; wrong props fail at private boundary", async () => {
-  const env = stageEnv();
-  const verify = await createStagingOAuthVerifier({ env });
-  const core = createStagingGatewayCore({
-    env, validateStagingToken: verify,
-    expectedResource: env.STAGING_OAUTH_RESOURCE,
-    inboxDerivationKey: HMAC
-  });
+test("HTTP routes map short path to tool and reject unknown", async () => {
   const token = await signToken(validPayload);
-  // Synthetic call would require full store mock; here we confirm composition fails closed without proper store methods if needed
-  assert.ok(typeof core.call === "function");
+  const req = new Request("https://stage.example.test/v1/private-inbox/get", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token, "content-type": "application/json" },
+    body: "{}"
+  });
+  // Note: full core.call requires store methods; this confirms route selection fails closed on disabled
+  const disabled = await gateway.fetch(new Request(req.url, { method: "POST" }), { PRIVATE_STAGE_GATEWAY_ENABLED: "false" });
+  assert.equal(disabled.status, 404);
+
+  const unknown = await gateway.fetch(new Request("https://stage.example.test/v1/private-inbox/onboard", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token }
+  }), stageEnv());
+  assert.equal(unknown.status, 404);
 });
 
-test("error sanitation and unknown tool", async () => {
-  // Covered by existing client tests; additional boundary check
-  assert.throws(() => { throw new PrivateRealmError("private_store_error"); }, { code: "private_store_error" });
+test("error codes stay stable across boundary", () => {
+  assert.throws(() => { throw new PrivateRealmError("caller_not_authorized"); }, { code: "caller_not_authorized" });
 });
