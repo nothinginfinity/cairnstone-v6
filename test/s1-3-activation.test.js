@@ -361,11 +361,13 @@ test("plan: today's state (old D1 binding, no auth D1, no harness) is not defect
   assert.equal(plan.ok, true);
   assert.equal(plan.ready.harness_enable, false); assert.equal(plan.ready.stagec_live_run, false); assert.equal(plan.ready.harness_dormant_deploy, false);
   assert.equal(plan.ready.private_rebind_deploy, true);
+  assert.equal(plan.ready.auth_d1_create, true); // The database is absent; creating it is a valid next action.
   assert.match(planMarkdown(plan), /OWNER ACTION/);
 });
 test("plan: the auth D1 exists but is unpinned -> owner action naming the id; a differing pin or wrong schema is NO-GO", async () => {
   const plan = await runActivationPlan(fakeClient(world({ harness: { exists: false } })), { files: { harnessToml: realHarnessToml } });
   if (ACTIVATION.auth.dbId === null) { const a = plan.items.find((i) => i.id === "auth_d1"); assert.equal(a.status, "OWNER_ACTION"); assert.ok(a.detail.includes(AUTH_ID)); }
+  assert.equal(plan.ready.auth_d1_create, false); // Already exists: pin it, never recommend duplicate creation.
   const wrongPin = await runActivationPlan(fakeClient(world({ harness: { exists: false }, authId: "99999999-2222-4333-8444-555555555555" })), { files: { harnessToml: pinnedToml }, expected: EXP });
   assert.equal(wrongPin.items.find((i) => i.id === "auth_d1").status, "NO_GO");
   assert.equal(wrongPin.ok, false);
@@ -387,6 +389,7 @@ test("plan: unreadable API state becomes NO-GO items, never a pass, and secret v
   const plan = await runActivationPlan(c, { files: { harnessToml: pinnedToml }, expected: EXP });
   assert.ok(plan.items.some((i) => i.status === "NO_GO" && /unreadable/.test(i.detail)));
   assert.equal(plan.ok, false);
+  assert.equal(plan.ready.auth_d1_create, false); // Unverifiable state must not authorize create.
   assert.ok(!JSON.stringify(plan).includes(TOKEN));
 });
 
