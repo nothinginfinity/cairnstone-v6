@@ -43,7 +43,7 @@ export class StageCError extends Error {
 // ---------------------------------------------------------------------------------------------
 // Redaction: receipts never carry signatures, nonces, tokens, keys or bodies.
 // ---------------------------------------------------------------------------------------------
-const SECRET_KEYS = /^(sig|signature|nonce|token|authorization|key|secret|hmac|body|body_text|bearer|password)$/i;
+const SECRET_KEYS = /^(sig|signature|nonce|token|authorization|key|secret|hmac|body|body_text|bearer|password|client[_-]?secret|cf-access-client-secret|access[_-]?client[_-]?secret)$/i;
 export function redact(value, depth = 0) {
   if (depth > 8) return "[depth]";
   if (typeof value === "string") {
@@ -70,20 +70,36 @@ export const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 // ---------------------------------------------------------------------------------------------
 // Transports
 // ---------------------------------------------------------------------------------------------
-export function createHttpHarness({ url, token, runId, fetchImpl = globalThis.fetch } = {}) {
+// Cloudflare Access service-token credentials (issue #101). OPTIONAL and additive: the bearer token is ALWAYS sent and is never
+// replaced. Both values or neither; header-safe characters only (no whitespace/CR/LF => no header injection); values never appear
+// in errors, evidence, or logs. Client IDs look like `<hex>.access`; secrets are 64 hex (legacy) or `cfast_...`.
+const ACCESS_ID_RE = /^[A-Za-z0-9._-]{16,128}$/;
+const ACCESS_SECRET_RE = /^[A-Za-z0-9._-]{20,256}$/;
+export function normalizeAccessCredentials({ accessClientId, accessClientSecret } = {}) {
+  const id = accessClientId === undefined || accessClientId === null || accessClientId === "" ? null : accessClientId;
+  const secret = accessClientSecret === undefined || accessClientSecret === null || accessClientSecret === "" ? null : accessClientSecret;
+  if (id === null && secret === null) return null;
+  if (id === null || secret === null) throw new StageCError("harness_access_credentials_incomplete");
+  if (typeof id !== "string" || typeof secret !== "string" || !ACCESS_ID_RE.test(id) || !ACCESS_SECRET_RE.test(secret)) throw new StageCError("harness_access_credentials_malformed");
+  return { id, secret };
+}
+
+export function createHttpHarness({ url, token, runId, accessClientId, accessClientSecret, fetchImpl = globalThis.fetch } = {}) {
   let base;
   try { base = new URL(url); } catch { throw new StageCError("harness_url_missing_or_invalid"); }
   if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new StageCError("harness_url_must_be_plain_https");
   if (base.hostname.includes(STAGEC.worker)) throw new StageCError("harness_url_must_not_be_the_private_worker");
   if (typeof token !== "string" || token.length < 20) throw new StageCError("harness_token_missing");
+  const access = normalizeAccessCredentials({ accessClientId, accessClientSecret });
   async function post(path, body) {
+    const target = new URL(path, base);
+    // Credentials only ever travel to the pinned harness origin.
+    if (target.origin !== base.origin) throw new StageCError("harness_request_origin_mismatch");
+    const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Stagec-Run": String(runId ?? "") };
+    if (access) { headers["CF-Access-Client-Id"] = access.id; headers["CF-Access-Client-Secret"] = access.secret; }
     let res;
     try {
-      res = await fetchImpl(new URL(path, base).toString(), {
-        method: "POST", redirect: "error",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Stagec-Run": String(runId ?? "") },
-        body: JSON.stringify(body)
-      });
+      res = await fetchImpl(target.toString(), { method: "POST", redirect: "error", headers, body: JSON.stringify(body) });
     } catch { throw new StageCError("harness_network_error"); }
     let json;
     try { json = await res.json(); } catch { throw new StageCError(`harness_non_json_response:${res.status}`); }
@@ -92,6 +108,8 @@ export function createHttpHarness({ url, token, runId, fetchImpl = globalThis.fe
   }
   return {
     kind: "http",
+    // Non-secret label only (never the values): which edge credential the run presented, recorded in evidence.
+    access_auth: access ? "service-token" : "none",
     // "injected" = a test double stood in for the network; evidence from such a run can never be labelled live.
     transport: fetchImpl === globalThis.fetch ? "network" : "injected",
     call: (identity, method, args = []) => post("/stagec/v1/call", { identity, method, args }),
@@ -478,7 +496,7 @@ export async function runStageC({ harness, d1, runId, sourceSha, extraCases = []
   const warnings = cases.flatMap((c) => c.warnings);
   const expectedIds = ["C00", "C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", ...requiredExtra];
   const ok = expectedIds.every((id) => cases.find((c) => c.id === id)?.ok === true) && cases.every((c) => c.ok);
-  const body = { schema: STAGEC.evidenceSchema, mode: ALLOW_STUBS || harness.transport === "injected" ? "simulated" : "live", harness_transport: harness.transport ?? "unknown", source_sha: sourceSha, run_id: runId, harness_kind: harness.kind ?? "unknown", d1_kind: d1.kind ?? "unknown", d1_id: STAGEC.d1Id, ok, cases, warnings, cleanup: cleanupResult, requests: rec.requests };
+  const body = { schema: STAGEC.evidenceSchema, mode: ALLOW_STUBS || harness.transport === "injected" ? "simulated" : "live", harness_transport: harness.transport ?? "unknown", source_sha: sourceSha, run_id: runId, harness_kind: harness.kind ?? "unknown", harness_access_auth: harness.access_auth ?? "none", d1_kind: d1.kind ?? "unknown", d1_id: STAGEC.d1Id, ok, cases, warnings, cleanup: cleanupResult, requests: rec.requests };
   return { ...body, evidence_sha256: sha256(canonical(body)) };
 }
 

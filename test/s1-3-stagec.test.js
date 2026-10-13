@@ -180,6 +180,70 @@ test("a harness that cannot answer fails the run closed (setup fails, nothing el
   assert.equal(await snapshot(d1).then((s) => s.m), 0);
 });
 
+// ---- Cloudflare Access service token (issue #101) ----
+const ACCESS_ID = "0123456789abcdef0123456789abcdef.access";
+const ACCESS_SECRET = "f".repeat(64);
+const okFetch = (seen) => async (u, init) => { seen.push({ u, init }); return { ok: true, status: 200, json: async () => ({ ok: true }) }; };
+
+test("access service token: both headers are sent IN ADDITION to the bearer token, redirects still error, evidence labelled", async () => {
+  const tok = "t".repeat(24), seen = [];
+  const h = createHttpHarness({ url: "https://h.example.com", token: tok, runId: "r1", accessClientId: ACCESS_ID, accessClientSecret: ACCESS_SECRET, fetchImpl: okFetch(seen) });
+  await h.call({ account: "alpha", provider: "grok" }, "listInboxes", []);
+  await h.probe("bad_sig", {});
+  assert.equal(seen.length, 2);
+  for (const { u, init } of seen) {
+    assert.equal(init.headers["CF-Access-Client-Id"], ACCESS_ID);
+    assert.equal(init.headers["CF-Access-Client-Secret"], ACCESS_SECRET);
+    assert.equal(init.headers.Authorization, `Bearer ${tok}`, "bearer authentication is never weakened or replaced");
+    assert.equal(init.redirect, "error");
+    assert.equal(new URL(u).origin, "https://h.example.com", "credentials only go to the pinned harness origin");
+    assert.ok(!String(init.body).includes(ACCESS_SECRET) && !u.includes(ACCESS_SECRET), "never in the body or URL");
+  }
+  assert.equal(h.access_auth, "service-token");
+});
+
+test("access service token: absent (or empty-string, as unset GitHub secrets arrive) sends NO Access headers", async () => {
+  const tok = "t".repeat(24);
+  for (const creds of [{}, { accessClientId: "", accessClientSecret: "" }, { accessClientId: undefined, accessClientSecret: null }]) {
+    const seen = [];
+    const h = createHttpHarness({ url: "https://h.example.com", token: tok, fetchImpl: okFetch(seen), ...creds });
+    await h.call({}, "x");
+    assert.equal("CF-Access-Client-Id" in seen[0].init.headers, false);
+    assert.equal("CF-Access-Client-Secret" in seen[0].init.headers, false);
+    assert.equal(seen[0].init.headers.Authorization, `Bearer ${tok}`);
+    assert.equal(h.access_auth, "none");
+  }
+});
+
+test("access service token: half-configured or malformed credentials fail closed, before any request, without echoing values", () => {
+  const tok = "t".repeat(24), url = "https://h.example.com";
+  const never = async () => { throw new Error("no network expected"); };
+  const mk = (accessClientId, accessClientSecret) => () => createHttpHarness({ url, token: tok, accessClientId, accessClientSecret, fetchImpl: never });
+  assert.throws(mk(ACCESS_ID, undefined), /harness_access_credentials_incomplete/);
+  assert.throws(mk(undefined, ACCESS_SECRET), /harness_access_credentials_incomplete/);
+  assert.throws(mk(ACCESS_ID, ""), /harness_access_credentials_incomplete/);
+  for (const [id, secret] of [
+    ["short", ACCESS_SECRET], [ACCESS_ID, "short"], [`${ACCESS_ID}\r\nX-Evil: 1`, ACCESS_SECRET], [ACCESS_ID, `${ACCESS_SECRET}\nX-Evil: 1`],
+    [`${ACCESS_ID} `, ACCESS_SECRET], [ACCESS_ID, `${ACCESS_SECRET} extra`], [12345678901234567890, ACCESS_SECRET], [ACCESS_ID, { toString: () => ACCESS_SECRET }]
+  ]) {
+    assert.throws(mk(id, secret), (e) => e.code === "harness_access_credentials_malformed" && !String(e.message).includes(ACCESS_SECRET) && !String(e.message).includes(ACCESS_ID));
+  }
+});
+
+test("access service token: a wrong identity (Access refuses or redirects) fails closed and the values never leak into the error", async () => {
+  const tok = "t".repeat(24);
+  const redirected = createHttpHarness({ url: "https://h.example.com", token: tok, accessClientId: ACCESS_ID, accessClientSecret: ACCESS_SECRET, fetchImpl: async () => { throw new TypeError(`redirect mode is set to error ${ACCESS_SECRET}`); } });
+  await assert.rejects(() => redirected.call({}, "x"), (e) => e.code === "harness_network_error" && !e.message.includes(ACCESS_SECRET));
+  const refused = createHttpHarness({ url: "https://h.example.com", token: tok, accessClientId: ACCESS_ID, accessClientSecret: ACCESS_SECRET, fetchImpl: async () => ({ ok: false, status: 403, json: async () => { throw new Error("<html>forbidden</html>"); } }) });
+  await assert.rejects(() => refused.call({}, "x"), /harness_non_json_response:403/);
+});
+
+test("access service token: redaction treats Access secret field names as secret", () => {
+  const out = redact({ client_secret: ACCESS_SECRET, "CF-Access-Client-Secret": ACCESS_SECRET, access_client_secret: ACCESS_SECRET, ok: true });
+  assert.ok(!JSON.stringify(out).includes(ACCESS_SECRET));
+  assert.equal(out.ok, true);
+});
+
 // ---- CLI + live readback (fake network) ----
 import { main } from "../scripts/staging/s1-3-stagec.mjs";
 import { liveReadbackCase, readDeploymentTag } from "../scripts/staging/s1-3-stagec-lib.mjs";
@@ -198,6 +262,32 @@ test("cli: usage error is exit 2; missing config fails closed with no network tr
   assert.equal(await main(["run", "--receipt", "r.json"], { ...goodEnv, STAGE_C_HARNESS_URL: "" }, { fetchImpl, write: c2.write }), 1);
   assert.equal(c2.out["r.json"].aborted, "harness_url_missing_or_invalid");
   assert.equal(net.length, 0);
+});
+
+test("cli: Access service token env is validated before any network call, and never lands in the receipt", async () => {
+  const net = []; const fetchImpl = async (...a) => { net.push(a); throw new Error("no network expected"); };
+  const half = capture();
+  assert.equal(await main(["run", "--receipt", "r.json"], { ...goodEnv, STAGE_C_ACCESS_CLIENT_ID: ACCESS_ID, STAGE_C_ACCESS_CLIENT_SECRET: "" }, { fetchImpl, write: half.write }), 1);
+  assert.equal(half.out["r.json"].aborted, "harness_access_credentials_incomplete");
+  const bad = capture();
+  assert.equal(await main(["run", "--receipt", "r.json"], { ...goodEnv, STAGE_C_ACCESS_CLIENT_ID: "x", STAGE_C_ACCESS_CLIENT_SECRET: ACCESS_SECRET }, { fetchImpl, write: bad.write }), 1);
+  assert.equal(bad.out["r.json"].aborted, "harness_access_credentials_malformed");
+  assert.ok(!JSON.stringify([half.out, bad.out]).includes(ACCESS_SECRET));
+  assert.equal(net.length, 0);
+});
+
+test("cli: with a service token configured the harness request carries it (after the D1 schema gate), and the receipt holds no secret", async () => {
+  const harnessCalls = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).startsWith("https://h.example.com")) { harnessCalls.push(init.headers); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
+    return { ok: true, status: 200, json: async () => ({ success: true, result: [{ results: [] }] }) }; // schema fails: nothing is sent to the harness
+  };
+  const c = capture();
+  const env = { ...goodEnv, STAGE_C_ACCESS_CLIENT_ID: ACCESS_ID, STAGE_C_ACCESS_CLIENT_SECRET: ACCESS_SECRET };
+  assert.equal(await main(["run", "--receipt", "r.json"], env, { fetchImpl, write: c.write }), 1);
+  assert.match(c.out["r.json"].aborted, /d1_schema_not_verified/);
+  assert.equal(harnessCalls.length, 0, "the Access token is never presented before the live D1 schema verifies");
+  assert.ok(!JSON.stringify(c.out).includes(ACCESS_SECRET));
 });
 
 test("cli: if the live D1 schema does not verify, NO harness call is made (trigger probes must never run on an unprotected DB)", async () => {

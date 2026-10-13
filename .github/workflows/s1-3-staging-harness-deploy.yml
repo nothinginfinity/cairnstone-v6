@@ -123,7 +123,12 @@ jobs:
             for f in s1-3-harness-preflight-receipt s1-3-harness-readback-receipt; do
               if [ -f "$RUNNER_TEMP/$f.json" ]; then echo "- $f: ok=$(jq -r .ok "$RUNNER_TEMP/$f.json")"; else echo "- $f: not produced"; fi
             done
-            if [ "$PHASE" = "dormant" ]; then echo "- harness is DISABLED (404 everywhere). Next: owner provisions the three secrets, an Access-restricted hostname, pins a non-placeholder issuer in a reviewed PR, then phase=enable."; else echo "- harness is ENABLED for the owner-dispatched Stage C run; redeploy phase=dormant to disable."; fi
+            if [ "$PHASE" = "dormant" ]; then
+              f="$RUNNER_TEMP/s1-3-harness-readback-receipt.json"
+              if [ -f "$f" ] && [ "$(jq -r .ok "$f")" = "true" ]; then echo "- harness is DISABLED and detached (404 everywhere). Next: owner provisions the three secrets, an Access-restricted hostname, pins a non-placeholder issuer in a reviewed PR, then phase=enable."
+              elif [ -f "$f" ]; then echo "- dormant readback NOT green. Failed checks: $(jq -r '[.checks[] | select(.ok == false) | .name] | join(", ")' "$f"). If only harness_no_public_exposure failed, the deploy DID disable the harness; the owner must now detach the custom domain, then re-run phase=dormant (runbook step 10)."
+              else echo "- dormant readback not produced; treat the harness as possibly enabled: remove the Worker or detach its domain per the owner runbook (step 10)."; fi
+            else echo "- harness is ENABLED for the owner-dispatched Stage C run; redeploy phase=dormant to disable."; fi
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload receipts (no secrets)
         if: ${{ always() }}

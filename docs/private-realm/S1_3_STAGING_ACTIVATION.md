@@ -20,13 +20,13 @@ Existing `s1-3-staging-deploy-v2` and `s1-3-stagec-e2e` keep fixed source-SHA pi
 4. Dispatch `s1-3-staging-auth-d1` (approval). Note the created D1 id from the verified summary.
 5. Reviewed PR: set `ACTIVATION.auth.dbId` in the activation lib and the same id in `wrangler.stagec-harness.toml`; set a real issuer host (and `STAGING_OAUTH_RESOURCE = <issuer>/mcp/core-auth`). The all-zero placeholder is rejected everywhere.
 6. Dispatch `harness-deploy phase=dormant` (approval).
-7. Owner provisions (outside CI, values never printed): secrets `STAGE_C_HARNESS_TOKEN` (>=32 chars), `PRIVATE_GATEWAY_HMAC_KEY`, `STAGING_OAUTH_SIGNING_KEY` on `cairnstone-stage-harness`; Access-protected custom hostname equal to the issuer host.
+7. Owner provisions (outside CI, values never printed): secrets `STAGE_C_HARNESS_TOKEN` (>=32 chars), `PRIVATE_GATEWAY_HMAC_KEY`, `STAGING_OAUTH_SIGNING_KEY` on `cairnstone-stage-harness`; Access-protected custom hostname equal to the issuer host, whose policy is Service Auth for ONE specific service token pinned in `ACTIVATION.access.serviceTokenId` (issue #101).
 8. Dispatch `harness-deploy phase=enable` with the owner phrase (approval).
-9. Set Stage C environment secrets `STAGE_C_HARNESS_URL`, `STAGE_C_HARNESS_TOKEN`; dispatch `s1-3-stagec-e2e` (approval).
-10. Record an evidence stone. Disable again with `phase=dormant`.
+9. Set Stage C environment secrets `STAGE_C_HARNESS_URL`, `STAGE_C_HARNESS_TOKEN`, `STAGE_C_ACCESS_CLIENT_ID`, `STAGE_C_ACCESS_CLIENT_SECRET`; dispatch `s1-3-stagec-e2e` (approval).
+10. Record an evidence stone. Disable with `phase=dormant`, then detach the custom domain, then `phase=dormant` again (see the owner runbook step 10; `harness-rollback-plan` is the read-only checker).
 
 ## Rollback
-Redeploy `harness-deploy phase=dormant` (harness returns 404 everywhere). The file never enables the harness; enable is a deploy-time `--var` only.
+Redeploy `harness-deploy phase=dormant` (harness returns 404 everywhere, even while the Access-protected domain is still attached); detach the domain afterwards. The file never enables the harness; enable is a deploy-time `--var` only.
 
 ## Stop gates (need distinct human authorization under #90)
 Merging, promoting CairnStone HEAD, deleting the old staging D1, production changes, route/domain changes.

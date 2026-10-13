@@ -435,3 +435,185 @@ test("cli: credentialed modes without valid credentials fail closed and never pr
     assert.ok(!(r.stdout + r.stderr).includes(TOKEN), args[0]);
   }
 });
+
+// ---------------------------------------------------------------- issue #101: Access service token policy + dormant rollback
+import { harnessRollbackPlan, runHarnessRollbackPlan } from "../scripts/staging/s1-3-activation-lib.mjs";
+
+const TOKEN_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const OTHER_TOKEN_ID = "11111111-2222-4333-8444-666666666666";
+const serviceAuthApp = (include, over = {}) => ({ domain: ISSUER_HOST, type: "self_hosted", policies: [{ decision: "non_identity", include, ...over }] });
+const pinnedToken = { allowedServiceTokenId: TOKEN_ID };
+const EXP_TOKEN = Object.freeze({ ...EXP, access: Object.freeze({ serviceTokenId: TOKEN_ID }) });
+
+test("access pin point: the service token id is unpinned by default and frozen, so Service Auth cannot be enabled by accident", () => {
+  assert.equal(ACTIVATION.access.serviceTokenId, null);
+  assert.ok(Object.isFrozen(ACTIVATION.access) && Object.isFrozen(ACTIVATION));
+  assert.throws(() => { "use strict"; ACTIVATION.access.serviceTokenId = TOKEN_ID; }, TypeError);
+});
+
+test("service auth policy: exactly the one pinned service token is accepted (alone, or next to an identity policy)", () => {
+  assert.deepEqual(verifyAccessApp([serviceAuthApp([{ service_token: { token_id: TOKEN_ID } }])], ISSUER_HOST, pinnedToken), []);
+  const both = { ...goodApp(), policies: [...goodApp().policies, { decision: "non_identity", include: [{ service_token: { token_id: TOKEN_ID } }] }] };
+  assert.deepEqual(verifyAccessApp([both], ISSUER_HOST, pinnedToken), []);
+  assert.deepEqual(verifyAccessApp([serviceAuthApp([{ service_token: { token_id: TOKEN_ID } }, { service_token: { token_id: TOKEN_ID } }])], ISSUER_HOST, pinnedToken), []);
+  // an extra `require`/`exclude` only narrows access and is tolerated
+  assert.deepEqual(verifyAccessApp([serviceAuthApp([{ service_token: { token_id: TOKEN_ID } }], { require: [{ ip: { ip: "192.0.2.0/24" } }], exclude: [{ email: { email: "x@example.com" } }] })], ISSUER_HOST, pinnedToken), []);
+});
+
+test("service auth policy: fails closed when unpinned, for the wrong token, any_valid_service_token, mixed rules, bypass and unknown shapes", () => {
+  const good = [{ service_token: { token_id: TOKEN_ID } }];
+  const bad = (apps, opts, code) => assert.ok(verifyAccessApp(apps, ISSUER_HOST, opts).includes(code), `${code}: ${JSON.stringify(verifyAccessApp(apps, ISSUER_HOST, opts))}`);
+  // unpinned (the default): ANY non_identity policy is rejected, even a perfectly specific one
+  bad([serviceAuthApp(good)], undefined, "access_service_token_not_pinned");
+  bad([serviceAuthApp(good)], { allowedServiceTokenId: null }, "access_service_token_not_pinned");
+  for (const unusable of [ACTIVATION.zeroId, "not-a-uuid", 42, "", undefined]) bad([serviceAuthApp(good)], { allowedServiceTokenId: unusable }, "access_service_token_not_pinned");
+  // wrong / unreadable token ids
+  bad([serviceAuthApp([{ service_token: { token_id: OTHER_TOKEN_ID } }])], pinnedToken, "access_service_token_not_the_pinned_token");
+  bad([serviceAuthApp([{ service_token: { token_id: TOKEN_ID } }, { service_token: { token_id: OTHER_TOKEN_ID } }])], pinnedToken, "access_service_token_not_the_pinned_token");
+  bad([serviceAuthApp([{ service_token: {} }])], pinnedToken, "access_service_token_id_unreadable");
+  bad([serviceAuthApp([{ service_token: { token_id: "x" } }])], pinnedToken, "access_service_token_id_unreadable");
+  bad([serviceAuthApp([{ service_token: null }])], pinnedToken, "access_service_token_id_unreadable");
+  // any valid service token (every token in the account) is never acceptable, in any decision
+  bad([serviceAuthApp([{ any_valid_service_token: {} }])], pinnedToken, "access_policy_any_valid_service_token");
+  bad([serviceAuthApp([{ any_valid_service_token: {} }])], pinnedToken, "access_service_auth_include_not_specific_service_token");
+  bad([serviceAuthApp([...good, { any_valid_service_token: {} }])], pinnedToken, "access_policy_any_valid_service_token");
+  bad([{ ...goodApp(), policies: [{ decision: "allow", include: [{ any_valid_service_token: {} }] }] }], pinnedToken, "access_policy_any_valid_service_token");
+  // Service Auth may not be widened with other selectors
+  bad([serviceAuthApp([...good, { email: { email: "owner@example.com" } }])], pinnedToken, "access_service_auth_include_not_specific_service_token");
+  bad([serviceAuthApp([...good, { everyone: {} }])], pinnedToken, "access_policy_allows_everyone");
+  bad([serviceAuthApp([{ ip: { ip: "0.0.0.0/0" } }])], pinnedToken, "access_policy_allows_every_ip");
+  bad([serviceAuthApp([{ ip: { ip: "::/0" } }])], pinnedToken, "access_policy_allows_every_ip");
+  bad([serviceAuthApp([{ ...good[0], extra: 1 }])], pinnedToken, "access_policy_include_unrecognized");
+  // service-token selectors belong to the Service Auth decision only
+  bad([{ ...goodApp(), policies: [{ decision: "allow", include: good }] }], pinnedToken, "access_service_token_requires_service_auth_decision");
+  // bypass, unknown decisions, unreadable includes (e.g. a reusable-policy reference without rules) all fail closed
+  bad([{ ...goodApp(), policies: [{ decision: "bypass", include: good }] }], pinnedToken, "access_policy_bypass");
+  bad([{ ...goodApp(), policies: [{ decision: "mystery", include: good }] }], pinnedToken, "access_policy_decision_unknown");
+  bad([{ ...goodApp(), policies: [{ include: good }] }], pinnedToken, "access_policy_decision_unknown");
+  bad([{ ...goodApp(), policies: [{ id: "reusable-policy-ref" }] }], pinnedToken, "access_policy_decision_unknown");
+  bad([serviceAuthApp(undefined)], pinnedToken, "access_policy_include_unreadable");
+  bad([serviceAuthApp([])], pinnedToken, "access_policy_include_unreadable");
+  bad([serviceAuthApp("service_token")], pinnedToken, "access_policy_include_unreadable");
+  bad([serviceAuthApp([null])], pinnedToken, "access_policy_include_unrecognized");
+  // one safe policy never excuses an unsafe sibling
+  bad([{ ...goodApp(), policies: [...goodApp().policies, { decision: "bypass", include: [] }] }], pinnedToken, "access_policy_bypass");
+  bad([{ ...goodApp(), policies: [...serviceAuthApp(good).policies, { decision: "non_identity", include: [{ any_valid_service_token: {} }] }] }], pinnedToken, "access_policy_any_valid_service_token");
+  // a deny policy narrows access and is not itself an error
+  assert.deepEqual(verifyAccessApp([{ ...goodApp(), policies: [...goodApp().policies, { decision: "deny", include: [{ email_domain: { domain: "x.example" } }] }] }], ISSUER_HOST), []);
+});
+
+test("harness exposure (enable): the pinned service-token policy passes only when pinned in `expected`", () => {
+  const live = { subdomain: { enabled: false, previews_enabled: false }, domains: [{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }], routes: [], accessApps: [serviceAuthApp([{ service_token: { token_id: TOKEN_ID } }])] };
+  assert.deepEqual(verifyHarnessExposure(live, { expected: EXP_TOKEN, mode: "enable", issuerHost: ISSUER_HOST }), []);
+  assert.ok(verifyHarnessExposure(live, { expected: EXP, mode: "enable", issuerHost: ISSUER_HOST }).includes("access_service_token_not_pinned"));
+  assert.ok(verifyHarnessExposure({ ...live, accessApps: [serviceAuthApp([{ any_valid_service_token: {} }])] }, { expected: EXP_TOKEN, mode: "enable", issuerHost: ISSUER_HOST }).includes("access_policy_any_valid_service_token"));
+});
+
+test("activation plan + enable preflight use the strict verifier (any_valid_service_token blocks harness enable)", async () => {
+  const unsafe = enableWorld(); unsafe.accessApps = [serviceAuthApp([{ any_valid_service_token: {} }])];
+  const r = await runHarnessChecks(fakeClient(unsafe), { mode: "enable", phase: "preflight", harnessToml: enableToml, expected: EXP_TOKEN });
+  assert.equal(r.ok, false);
+  assert.ok(r.checks.find((c) => c.name === "harness_exposure_restricted_hostname").errors.includes("access_policy_any_valid_service_token"));
+  const safe = enableWorld(); safe.accessApps = [serviceAuthApp([{ service_token: { token_id: TOKEN_ID } }])];
+  assert.equal((await runHarnessChecks(fakeClient(safe), { mode: "enable", phase: "preflight", harnessToml: enableToml, expected: EXP_TOKEN })).ok, true);
+  assert.equal((await runHarnessChecks(fakeClient(safe), { mode: "enable", phase: "readback", harnessToml: enableToml, expected: EXP_TOKEN })).ok, true);
+  assert.equal((await runHarnessChecks(fakeClient(safe), { mode: "enable", phase: "preflight", harnessToml: enableToml, expected: EXP })).ok, false, "unpinned token id blocks enable");
+});
+
+test("rollback with the domain attached: the dormant preflight is NOT blocked (it is the disabling deploy), only for the exact issuer-host domain", async () => {
+  const w = enableWorld(); // harness ENABLED, one Access-protected custom domain == issuer host
+  const pre = await runHarnessChecks(fakeClient(w), { mode: "dormant", phase: "preflight", harnessToml: enableToml, expected: EXP });
+  assert.equal(pre.ok, true, JSON.stringify(pre.checks.filter((c) => !c.ok)));
+  assert.ok(pre.notes.some((n) => n.startsWith("rollback_domain_still_attached")), "the owner is told the domain still has to be detached");
+  // even when the Access app has gone wrong: the disabling deploy must not be held hostage to it
+  const broken = enableWorld(); broken.accessApps = [];
+  assert.equal((await runHarnessChecks(fakeClient(broken), { mode: "dormant", phase: "preflight", harnessToml: enableToml, expected: EXP })).ok, true);
+});
+
+test("rollback with the domain attached: anything but exactly the issuer host still stops the preflight", async () => {
+  const mk = (domains, over = {}) => { const w = enableWorld(); w.harness.domains = domains; return Object.assign(w, over); };
+  const run = (w, toml = enableToml) => runHarnessChecks(fakeClient(w), { mode: "dormant", phase: "preflight", harnessToml: toml, expected: EXP });
+  const fail = async (w, why, toml) => { const r = await run(w, toml); assert.equal(r.ok, false, why); assert.ok(r.checks.find((c) => c.name === "harness_no_public_exposure").errors.some((e) => e.startsWith("harness_custom_domain_present_while_dormant")), why); };
+  await fail(mk([{ hostname: "other.example.com", service: "cairnstone-stage-harness" }]), "foreign host");
+  await fail(mk([{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }, { hostname: "second.example.com", service: "cairnstone-stage-harness" }]), "two domains");
+  await fail(mk([{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }, { hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }]), "duplicate attachment");
+  await fail(mk([{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }]), "unpinned/placeholder issuer in the toml", pinnedToml);
+  // zone routes and workers.dev are never tolerated, domain or not
+  const routed = mk([{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }], { routes: [{ pattern: "h.example.com/*", script: "cairnstone-stage-harness" }] });
+  const r = await run(routed); assert.equal(r.ok, false);
+  assert.ok(r.checks.find((c) => c.name === "harness_no_public_exposure").errors.some((e) => e.startsWith("harness_zone_route")));
+  const devOn = mk([{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }]); devOn.harness.subdomain = { enabled: true, previews_enabled: false };
+  assert.equal((await run(devOn)).ok, false);
+  // the exposure helper itself never tolerates the domain unless explicitly asked
+  const state = { subdomain: { enabled: false, previews_enabled: false }, domains: [{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }], routes: [] };
+  assert.ok(verifyHarnessExposure(state, { expected: EXP, mode: "dormant", issuerHost: ISSUER_HOST }).length > 0);
+  assert.deepEqual(verifyHarnessExposure(state, { expected: EXP, mode: "dormant", issuerHost: ISSUER_HOST, allowAttachedIssuerDomain: true }), []);
+  assert.ok(verifyHarnessExposure(state, { expected: EXP, mode: "dormant", issuerHost: null, allowAttachedIssuerDomain: true }).length > 0);
+  assert.ok(verifyHarnessExposure(state, { expected: EXP, mode: "dormant", issuerHost: "", allowAttachedIssuerDomain: "yes" }).length > 0);
+});
+
+test("rollback with the domain attached: readback is NEVER green until the domain is detached, even though the harness is already disabled", async () => {
+  const disabledButAttached = world({ harness: { exists: true, bindings: goodBindings(), secrets: ACTIVATION.harness.secrets.map((name) => ({ name })), subdomain: { enabled: false, previews_enabled: false }, domains: [{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }] }, accessApps: [goodApp()] });
+  const r = await runHarnessChecks(fakeClient(disabledButAttached), { mode: "dormant", phase: "readback", harnessToml: enableToml, expected: EXP });
+  assert.equal(r.ok, false);
+  assert.equal(r.checks.find((c) => c.name === "harness_bindings").ok, true, "the flag is false: the deploy did disable the harness");
+  assert.equal(r.checks.find((c) => c.name === "harness_no_public_exposure").ok, false);
+  assert.equal(r.notes, undefined, "readback has no tolerance note");
+  disabledButAttached.harness.domains = [];
+  assert.equal((await runHarnessChecks(fakeClient(disabledButAttached), { mode: "dormant", phase: "readback", harnessToml: enableToml, expected: EXP })).ok, true);
+  // an ENABLED harness can never pass a dormant readback
+  assert.equal((await runHarnessChecks(fakeClient(enableWorld()), { mode: "dormant", phase: "readback", harnessToml: enableToml, expected: EXP })).ok, false);
+});
+
+test("rollback plan: ordered, read-only verdicts; detach only after disable; unknown state falls back to removing the Worker", () => {
+  const bindings = (enabled) => { const b = goodBindings(); b[4].text = enabled ? "true" : "false"; return b; };
+  const dom = (hostname) => ({ hostname, service: "cairnstone-stage-harness" });
+  const base = { routes: [], subdomain: { enabled: false, previews_enabled: false } };
+  const plan = (o, issuerHost = ISSUER_HOST) => harnessRollbackPlan({ ...base, ...o }, { expected: EXP, issuerHost });
+
+  const enabledAttached = plan({ bindings: bindings(true), domains: [dom(ISSUER_HOST)] });
+  assert.equal(enabledAttached.verdict, "ENABLED_DOMAIN_ATTACHED"); assert.equal(enabledAttached.ok, false);
+  assert.match(enabledAttached.steps[0], /^1\. .*phase=dormant/);
+  assert.match(enabledAttached.steps[1], /^2\. Detach the custom domain .*pinned issuer host.*Do NOT detach before the harness is disabled/);
+  assert.match(enabledAttached.steps[2], /^3\. .*phase=dormant again/);
+
+  const disabledAttached = plan({ bindings: bindings(false), domains: [dom(ISSUER_HOST)] });
+  assert.equal(disabledAttached.verdict, "DISABLED_DOMAIN_ATTACHED"); assert.equal(disabledAttached.ok, false);
+  assert.match(disabledAttached.steps[0], /^1\. Detach/); assert.match(disabledAttached.steps[1], /^2\. .*dormant again/);
+
+  const enabledBare = plan({ bindings: bindings(true), domains: [] });
+  assert.equal(enabledBare.verdict, "ENABLED_NO_DOMAIN"); assert.equal(enabledBare.ok, false);
+  const done = plan({ bindings: bindings(false), domains: [] });
+  assert.deepEqual(done, { verdict: "DORMANT_AND_DETACHED", ok: true, steps: [] });
+
+  const foreign = plan({ bindings: bindings(false), domains: [dom("elsewhere.example.com")] });
+  assert.equal(foreign.ok, false); assert.match(foreign.steps[0], /delete the Worker/); assert.ok(foreign.steps.some((s) => s.includes("UNEXPECTED: elsewhere.example.com")));
+  // domains of other Workers are not ours
+  assert.equal(plan({ bindings: bindings(false), domains: [{ hostname: "x.example.com", service: "someone-else" }] }).verdict, "DORMANT_AND_DETACHED");
+  // unreadable / ambiguous / extra exposure: fail closed to the unconditional disable
+  for (const o of [{ bindings: undefined, domains: [] }, { bindings: [], domains: [] }, { bindings: bindings(false), domains: undefined }, { bindings: bindings(false), domains: [], subdomain: { enabled: true } }, { bindings: bindings(false), domains: [], subdomain: undefined }, { bindings: bindings(false), domains: [], routes: [{ pattern: "h/*", script: "cairnstone-stage-harness" }] }]) {
+    const r = plan(o); assert.equal(r.verdict, "UNKNOWN_STATE_FAIL_CLOSED", JSON.stringify(o)); assert.equal(r.ok, false); assert.match(r.steps[0], /delete the Worker/);
+  }
+});
+
+test("rollback plan runner: reads live state read-only; absent Worker is nothing-enabled; never writes", async () => {
+  const w = enableWorld(); const c = fakeClient(w);
+  const live = await runHarnessRollbackPlan(c, { harnessToml: enableToml, expected: EXP });
+  assert.equal(live.verdict, "ENABLED_DOMAIN_ATTACHED");
+  assert.ok(c.calls.every((p) => typeof p === "string") && c.calls.length > 0);
+  w.harness.bindings = goodBindings(); w.harness.domains = [];
+  assert.equal((await runHarnessRollbackPlan(fakeClient(w), { harnessToml: enableToml, expected: EXP })).verdict, "DORMANT_AND_DETACHED");
+  const absent = await runHarnessRollbackPlan(fakeClient(world({ harness: { exists: false } })), { harnessToml: enableToml, expected: EXP });
+  assert.equal(absent.verdict, "WORKER_ABSENT"); assert.equal(absent.ok, true);
+  // an API failure is not swallowed into a green verdict
+  const broken = { accountId: ACCT, async get() { throw new CloudflareApiError("cloudflare_api_failed:GET:/x:500:"); } };
+  await assert.rejects(runHarnessRollbackPlan(broken, { harnessToml: enableToml, expected: EXP }), { code: "cloudflare_api_failed:GET:/x:500:" });
+});
+
+test("cli: harness-rollback-plan fails closed without credentials and never prints the token", () => {
+  const dir = mkdtempSync(join(tmpdir(), "s13d-")); const tomlPath = join(dir, "h.toml"); writeFileSync(tomlPath, enableToml);
+  const env = { SOURCE_SHA: "a".repeat(40), CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_ACCOUNT_ID: "bad" };
+  const r = run(["harness-rollback-plan", "--harness-toml", tomlPath], env);
+  assert.equal(r.status, 1); assert.ok(!(r.stdout + r.stderr).includes(TOKEN));
+  assert.equal(run(["harness-rollback-plan"], env).status, 1);
+});
