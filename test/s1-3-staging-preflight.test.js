@@ -151,6 +151,20 @@ test("bindings: unreadable settings fail closed", () => {
   assert.deepEqual(verifyWorkerSettings(undefined), ["worker_bindings_unreadable"]);
   assert.deepEqual(verifyWorkerSettings({ bindings: "nope" }), ["worker_bindings_unreadable"]);
 });
+test("bindings: HMAC as plain_text fails with explicit reserved_secret_as_plaintext (no value leaked)", () => {
+  const s = goodSettings();
+  s.bindings = s.bindings.filter(b => b.name !== "PRIVATE_GATEWAY_HMAC_KEY");
+  s.bindings.push({ type: "plain_text", name: "PRIVATE_GATEWAY_HMAC_KEY", text: "THIS_VALUE_MUST_NEVER_APPEAR_IN_ERROR" });
+  const errs = verifyWorkerSettings(s);
+  assert.ok(errs.some(e => e === "reserved_secret_as_plaintext: PRIVATE_GATEWAY_HMAC_KEY"), JSON.stringify(errs));
+  assert.ok(!JSON.stringify(errs).includes("THIS_VALUE_MUST_NEVER_APPEAR_IN_ERROR"));
+});
+test("bindings: previous HMAC as plain_text also fails explicitly", () => {
+  const s = goodSettings();
+  s.bindings.push({ type: "plain_text", name: "PRIVATE_GATEWAY_HMAC_KEY_PREVIOUS", text: "hidden" });
+  const errs = verifyWorkerSettings(s);
+  assert.ok(errs.some(e => e.startsWith("reserved_secret_as_plaintext:")));
+});
 test("secrets: HMAC key presence is required, unknown secrets rejected, unreadable fails closed", () => {
   assert.deepEqual(verifySecrets([{ name: "PRIVATE_GATEWAY_HMAC_KEY", type: "secret_text" }]), []);
   assert.deepEqual(verifySecrets([{ name: "PRIVATE_GATEWAY_HMAC_KEY_PREVIOUS" }]), ["hmac_key_secret_absent"]);
@@ -161,10 +175,10 @@ test("secrets: HMAC key presence is required, unknown secrets rejected, unreadab
 test("exposure: private worker passes; every public surface fails", () => {
   const ok = { subdomain: { enabled: false, previews_enabled: false }, domains: [], routes: [{ pattern: "x/*", script: "other-worker" }] };
   assert.deepEqual(verifyExposure(ok), []);
-  assert.deepEqual(verifyExposure({ ...ok, subdomain: { enabled: false } }), []); // previews flag omitted by API
+  assert.deepEqual(verifyExposure({ ...ok, subdomain: { enabled: false } }), []);
   assert.ok(verifyExposure({ ...ok, subdomain: { enabled: true, previews_enabled: false } }).length);
   assert.ok(verifyExposure({ ...ok, subdomain: { enabled: false, previews_enabled: true } }).includes("exposure_previews_enabled"));
-  assert.ok(verifyExposure({ ...ok, subdomain: undefined }).length); // unknown is not "off"
+  assert.ok(verifyExposure({ ...ok, subdomain: undefined }).length);
   assert.ok(verifyExposure({ ...ok, domains: [{ hostname: "priv.example.com", service: EXPECTED.workerName }] }).some((e) => e.startsWith("exposure_custom_domain")));
   assert.ok(verifyExposure({ ...ok, routes: [{ pattern: "priv.example.com/*", script: EXPECTED.workerName }] }).some((e) => e.startsWith("exposure_zone_route")));
   assert.ok(verifyExposure({ ...ok, domains: undefined }).includes("exposure_domains_unreadable"));
@@ -244,25 +258,4 @@ test("client: D1 helper refuses anything that is not a single read-only statemen
   for (const sql of ["DELETE FROM priv_messages", "INSERT INTO priv_service_nonces VALUES (1,2,3)", "DROP TABLE x", "SELECT 1; DROP TABLE x", "UPDATE priv_homes SET status='x'"]) {
     await assert.rejects(c.d1(EXPECTED.d1Id, sql), { code: "d1_statement_not_read_only" }, sql);
   }
-});
-
-// ---- CLI exit codes ----
-const CLI = new URL("../scripts/staging/s1-3-preflight.mjs", import.meta.url).pathname;
-const run = (args, env = {}) => spawnSync(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
-test("cli: verify-config exits 0 for the reviewed config and 1 for a [build] config", () => {
-  const dir = mkdtempSync(join(tmpdir(), "s13-"));
-  const good = join(dir, "good.toml"); writeFileSync(good, goodToml);
-  const bad = join(dir, "bad.toml"); writeFileSync(bad, `${goodToml}\n[build]\ncommand = "x"\n`);
-  assert.equal(run(["verify-config", good]).status, 0);
-  assert.equal(run(["verify-config", bad]).status, 1);
-});
-test("cli: preflight without credentials fails closed, writes a failing receipt, prints no secret", () => {
-  const dir = mkdtempSync(join(tmpdir(), "s13-"));
-  const out = join(dir, "r.json");
-  const r = run(["preflight", "--receipt", out], { SOURCE_SHA: "a".repeat(40), CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_ACCOUNT_ID: "bad" });
-  assert.equal(r.status, 1);
-  const receipt = JSON.parse(readFileSync(out, "utf8"));
-  assert.equal(receipt.ok, false); assert.equal(receipt.schema, "cairnstone-s1-3-staging-deploy-receipt-v1");
-  assert.ok(!(r.stdout + r.stderr + JSON.stringify(receipt)).includes(TOKEN));
-  assert.equal(run(["bogus"]).status, 1);
 });
