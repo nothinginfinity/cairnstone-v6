@@ -16,7 +16,11 @@ export async function main(argv, env, { fetchImpl = globalThis.fetch, write = (f
     const sourceSha = env.SOURCE_SHA, runId = env.STAGE_C_RUN_ID;
     const cf = pre.createCloudflareClient({ token: env.CLOUDFLARE_API_TOKEN, accountId: env.CLOUDFLARE_ACCOUNT_ID, fetchImpl });
     const d1 = createD1Http({ token: env.CLOUDFLARE_API_TOKEN, accountId: env.CLOUDFLARE_ACCOUNT_ID, fetchImpl });
-    const harness = createHttpHarness({ url: env.STAGE_C_HARNESS_URL, token: env.STAGE_C_HARNESS_TOKEN, runId, fetchImpl });
+    const harness = createHttpHarness({
+      url: env.STAGE_C_HARNESS_URL, token: env.STAGE_C_HARNESS_TOKEN, runId, fetchImpl,
+      // Optional Cloudflare Access service token (issue #101). Unset environment secrets arrive as "" and mean "not configured".
+      accessClientId: env.STAGE_C_ACCESS_CLIENT_ID, accessClientSecret: env.STAGE_C_ACCESS_CLIENT_SECRET
+    });
     const schema = await pre.checkD1Schema(cf);
     if (!schema.ok) {
       emit({ schema: STAGEC.evidenceSchema, mode: "live", ok: false, aborted: "d1_schema_not_verified_no_harness_call_made", source_sha: sourceSha, run_id: runId, schema_check: schema });

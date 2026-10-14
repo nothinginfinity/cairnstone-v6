@@ -75,7 +75,7 @@ POST {STAGE_C_HARNESS_URL}/stagec/v1/probe  {name, params}
 
 1. #87 deployment has been run and passed (Worker deployed from the pinned SHA, HMAC key provisioned, readback green).
 2. Staging gateway harness deployed with the contract above, with its service bindings (valid, none, wrong `props.caller`) and a staging OAuth verifier.
-3. Environment `s1-3-staging` secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `STAGE_C_HARNESS_URL`, `STAGE_C_HARNESS_TOKEN`; variable `STAGE_C_GATEWAY_WORKER`. Reviewers and branch restriction are GitHub settings, not enforced by YAML.
+3. Environment `s1-3-staging` secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `STAGE_C_HARNESS_URL`, `STAGE_C_HARNESS_TOKEN`, and (when the harness hostname is protected by Cloudflare Access Service Auth) `STAGE_C_ACCESS_CLIENT_ID` + `STAGE_C_ACCESS_CLIENT_SECRET`; variable `STAGE_C_GATEWAY_WORKER`. Reviewers and branch restriction are GitHub settings, not enforced by YAML.
 4. The D1 REST token must allow `SELECT`/`PRAGMA` and the two trigger-probe `INSERT`s on the staging database. The driver's SQL guards allow nothing else.
 
 ## Fixtures and cleanup

@@ -70,3 +70,16 @@ test("evidence is always uploaded, and the summary prints that this is not accep
   assert.match(steps[idx("actions/upload-artifact")], /s1-3-stagec-evidence\.json/);
   assert.match(steps[idx("Write run summary")], /NOT acceptance by itself/);
 });
+
+test("optional Cloudflare Access service token (issue #101): environment secrets on the live step only, never in a command line", () => {
+  const live = steps[idx("s1-3-stagec.mjs run")];
+  for (const k of ["STAGE_C_ACCESS_CLIENT_ID", "STAGE_C_ACCESS_CLIENT_SECRET"]) {
+    assert.match(live, new RegExp(`${k}: \\$\\{\\{ secrets\\.${k} \\}\\}`));
+    assert.equal(steps.filter((s) => s.includes(k)).length, 1, `${k} appears in exactly one step`);
+    assert.doesNotMatch(code, new RegExp(`\\$\\{?${k}\\}?`), `${k} is never expanded by the shell`);
+  }
+  assert.doesNotMatch(head, /STAGE_C_ACCESS/, "never workflow- or job-level");
+  assert.doesNotMatch(code, /run: [^\n]*\$\{\{ secrets\./, "no secret is interpolated into a shell command");
+  assert.deepEqual(steps.filter((s) => /secrets\./.test(s)).map(nameOf), ["Live Stage C E2E (staging harness + read-only Cloudflare readback)"]);
+  for (const frag of ["node --test", "actions/checkout", "Pin check", "Write run summary", "actions/upload-artifact"]) assert.doesNotMatch(steps[idx(frag)], /STAGE_C_ACCESS/, frag);
+});

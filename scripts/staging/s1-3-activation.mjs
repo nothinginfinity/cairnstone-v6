@@ -6,6 +6,7 @@
 //   create-auth-d1 --out <file>                                                        (CLOUDFLARE_*; creates ONLY the pinned auth D1, refuses if it exists)
 //   verify-auth-d1 --db-id <id> [--name-only] [--require-empty] [--receipt <file>]                   (CLOUDFLARE_*; read-only)
 //   harness-preflight|harness-readback --mode dormant|enable --harness-toml <file> [--receipt <file>]   (CLOUDFLARE_*; read-only)
+//   harness-rollback-plan --harness-toml <file> [--receipt <file>]                    (CLOUDFLARE_*; read-only; exits non-zero until dormant AND detached)
 //   plan --root <repo dir> [--receipt <file>] [--markdown <file>]                      (CLOUDFLARE_*; read-only go/no-go board)
 // Exits non-zero on ANY failed or unverifiable check (plan exits 0 unless the API itself is unusable). Never prints token/secret values.
 import { createHash } from "node:crypto";
@@ -14,7 +15,7 @@ import { join } from "node:path";
 import { CloudflareApiError } from "./s1-3-preflight-lib.mjs";
 import {
   ACTIVATION, verifyHarnessConfig, verifyAuthMigrationSha, verifyNewAuthD1Id, createActivationClient,
-  checkAuthD1, checkAuthD1Identity, runHarnessChecks, runActivationPlan, planMarkdown
+  checkAuthD1, checkAuthD1Identity, runHarnessChecks, runHarnessRollbackPlan, runActivationPlan, planMarkdown
 } from "./s1-3-activation-lib.mjs";
 
 const [mode, ...rest] = process.argv.slice(2);
@@ -22,9 +23,9 @@ const flag = (name) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 
 const has = (name) => rest.includes(name);
 const fail = (msg) => { console.error(`::error::${msg}`); process.exit(1); };
 const client = () => createActivationClient({ token: process.env.CLOUDFLARE_API_TOKEN, accountId: process.env.CLOUDFLARE_ACCOUNT_ID });
-const summarize = (r) => { for (const c of r.checks) console.log(`${c.ok ? "PASS" : "FAIL"} ${c.name}${c.ok ? "" : ` -> ${c.errors.join("; ")}`}`); };
+const summarize = (r) => { for (const c of r.checks) console.log(`${c.ok ? "PASS" : "FAIL"} ${c.name}${c.ok ? "" : ` -> ${c.errors.join("; ")}`}`); for (const n of r.notes ?? []) console.log(`NOTE ${n}`); };
 const receipt = (phase, result, extra = {}) => ({
-  schema: "cairnstone-s1-3-staging-activation-receipt-v1", phase, ok: result.ok,
+  schema: "cairnstone-s1-3-staging-activation-receipt-v1", phase, ok: result.ok, ...(result.notes ? { notes: result.notes } : {}),
   source_sha: process.env.SOURCE_SHA ?? null, github_run_id: process.env.GITHUB_RUN_ID ?? null,
   github_run_attempt: process.env.GITHUB_RUN_ATTEMPT ?? null, generated_at: new Date().toISOString(), ...extra, checks: result.checks
 });
@@ -90,6 +91,15 @@ try {
     write(flag("--receipt"), receipt(mode, result, { harness_mode: m }));
     if (!result.ok) fail(`${mode} failed closed; nothing was deployed by this step`);
     console.log(`PASS ${mode} (${m})`);
+  } else if (mode === "harness-rollback-plan") {
+    const tomlPath = flag("--harness-toml");
+    if (!tomlPath) fail("--harness-toml is required");
+    const plan = await runHarnessRollbackPlan(client(), { harnessToml: readFileSync(tomlPath, "utf8") });
+    console.log(`ROLLBACK_VERDICT ${plan.verdict}`);
+    for (const step of plan.steps) console.log(`  ${step}`);
+    write(flag("--receipt"), { schema: "cairnstone-s1-3-harness-rollback-plan-v1", source_sha: process.env.SOURCE_SHA ?? null, generated_at: new Date().toISOString(), ...plan });
+    if (!plan.ok) fail("harness is not yet dormant and detached; follow the listed steps in order");
+    console.log("PASS harness dormant and detached");
   } else if (mode === "plan") {
     const root = flag("--root") ?? ".";
     const files = {

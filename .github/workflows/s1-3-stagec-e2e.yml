@@ -81,6 +81,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           STAGE_C_HARNESS_URL: ${{ secrets.STAGE_C_HARNESS_URL }}
           STAGE_C_HARNESS_TOKEN: ${{ secrets.STAGE_C_HARNESS_TOKEN }}
+          # Optional Cloudflare Access service token for the Access-protected harness hostname (issue #101). Unset = not sent.
+          STAGE_C_ACCESS_CLIENT_ID: ${{ secrets.STAGE_C_ACCESS_CLIENT_ID }}
+          STAGE_C_ACCESS_CLIENT_SECRET: ${{ secrets.STAGE_C_ACCESS_CLIENT_SECRET }}
           STAGE_C_GATEWAY_WORKER: ${{ vars.STAGE_C_GATEWAY_WORKER }}
           STAGE_C_CLEANUP_APPROVAL: ${{ github.event.inputs.cleanup_approval }}
           STAGE_C_CLEANUP_APPROVAL_ID: ${{ github.event.inputs.cleanup_approval_id }}

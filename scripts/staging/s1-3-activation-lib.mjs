@@ -27,6 +27,12 @@ export const ACTIVATION = Object.freeze({
       "staging_token_families_no_delete", "staging_token_families_same_account"
     ])
   }),
+  access: Object.freeze({
+    // PIN POINT (issue #101). null until the owner creates the Cloudflare Access SERVICE TOKEN for the GitHub-hosted Stage C
+    // runner and a reviewed PR pins its token id (a UUID identifier, NOT a credential) here. While null, every Access policy with
+    // decision `non_identity` (Service Auth) is rejected, so the runner path cannot be enabled by accident.
+    serviceTokenId: null
+  }),
   harness: Object.freeze({
     workerName: "cairnstone-stage-harness",
     privateWorker: PRIVATE.workerName,
@@ -192,24 +198,56 @@ export function missingHarnessSecrets(list, expected = ACTIVATION) {
   return expected.harness.secrets.filter((n) => !have.has(n));
 }
 
-/** Cloudflare Access app protecting the hostname: exactly one self-hosted app, >=1 policy, no bypass, no "everyone". */
-export function verifyAccessApp(apps, host) {
+/**
+ * Cloudflare Access app protecting the hostname: exactly one self-hosted app, >=1 policy, no bypass, no "everyone".
+ *
+ * Service Auth (issue #101): Access expresses it as decision `non_identity` with `service_token` include selectors
+ * (`{ service_token: { token_id } }`, per the Access API schema). It is accepted ONLY when every include is exactly one
+ * `service_token` rule whose token_id equals the single PINNED id (`allowedServiceTokenId`). `any_valid_service_token`
+ * (any token in the account), `bypass`, `everyone`, a world-open IP rule, unknown decisions, and any policy whose include list
+ * cannot be read (for example a reusable-policy reference without its rules) all fail closed. Unpinned (null) = every
+ * `non_identity` policy is rejected.
+ */
+export function verifyAccessApp(apps, host, { allowedServiceTokenId = null } = {}) {
   if (!Array.isArray(apps)) return ["access_apps_unreadable"];
   const hits = apps.filter((a) => a?.domain === host || (Array.isArray(a?.destinations) && a.destinations.some((d) => d?.uri === host)));
   if (hits.length !== 1) return [`access_app_count_for_host_${hits.length}`];
   const app = hits[0];
-  const errors = [];
-  if (app.type !== "self_hosted") errors.push("access_app_not_self_hosted");
+  const errors = new Set();
+  if (app.type !== "self_hosted") errors.add("access_app_not_self_hosted");
   if (!Array.isArray(app.policies) || app.policies.length === 0) return [...errors, "access_policies_missing_or_unreadable"];
+  const pinned = typeof allowedServiceTokenId === "string" && UUID.test(allowedServiceTokenId) && allowedServiceTokenId !== ZERO_ID ? allowedServiceTokenId : null;
   for (const p of app.policies) {
-    if (p?.decision === "bypass" || p?.decision === "non_identity") errors.push("access_policy_bypass");
-    if (Array.isArray(p?.include) && p.include.some((i) => i && typeof i === "object" && "everyone" in i)) errors.push("access_policy_allows_everyone");
+    const decision = p?.decision;
+    if (decision === "bypass") { errors.add("access_policy_bypass"); continue; }
+    if (decision === "deny") continue; // narrows access; nothing to verify
+    if (decision !== "allow" && decision !== "non_identity") { errors.add("access_policy_decision_unknown"); continue; }
+    if (!Array.isArray(p.include) || p.include.length === 0) { errors.add("access_policy_include_unreadable"); continue; }
+    const rules = p.include;
+    const isRule = (r) => r && typeof r === "object" && !Array.isArray(r);
+    if (rules.some((r) => !isRule(r) || Object.keys(r).length !== 1)) errors.add("access_policy_include_unrecognized");
+    if (rules.some((r) => isRule(r) && "everyone" in r)) errors.add("access_policy_allows_everyone");
+    if (rules.some((r) => isRule(r) && "any_valid_service_token" in r)) errors.add("access_policy_any_valid_service_token");
+    if (rules.some((r) => isRule(r) && r.ip && typeof r.ip === "object" && /\/0$/.test(String(r.ip.ip ?? "")))) errors.add("access_policy_allows_every_ip");
+    if (decision === "non_identity") {
+      // Service Auth: every include must be exactly the one pinned service token.
+      const tokenRules = rules.filter((r) => isRule(r) && "service_token" in r);
+      if (tokenRules.length !== rules.length) errors.add("access_service_auth_include_not_specific_service_token");
+      if (!pinned) { errors.add("access_service_token_not_pinned"); continue; }
+      for (const r of tokenRules) {
+        const id = r.service_token && typeof r.service_token === "object" ? r.service_token.token_id : undefined;
+        if (typeof id !== "string" || !UUID.test(id)) errors.add("access_service_token_id_unreadable");
+        else if (id !== pinned) errors.add("access_service_token_not_the_pinned_token");
+      }
+    } else if (rules.some((r) => isRule(r) && "service_token" in r)) {
+      errors.add("access_service_token_requires_service_auth_decision");
+    }
   }
-  return errors;
+  return [...errors];
 }
 
 /** Exposure of the HARNESS Worker. dormant: none at all. enable: exactly one custom domain == issuer host, no zone routes, Access app verified. */
-export function verifyHarnessExposure({ subdomain, domains, routes, accessApps }, { expected = ACTIVATION, mode = "dormant", issuerHost = null } = {}) {
+export function verifyHarnessExposure({ subdomain, domains, routes, accessApps }, { expected = ACTIVATION, mode = "dormant", issuerHost = null, allowAttachedIssuerDomain = false } = {}) {
   const errors = [];
   if (!subdomain || subdomain.enabled !== false) errors.push("harness_workers_dev_enabled_or_unknown");
   if (subdomain && subdomain.previews_enabled !== undefined && subdomain.previews_enabled !== false) errors.push("harness_previews_enabled");
@@ -218,13 +256,49 @@ export function verifyHarnessExposure({ subdomain, domains, routes, accessApps }
   if (!Array.isArray(domains)) { errors.push("harness_domains_unreadable"); return errors; }
   const mine = domains.filter((d) => d?.service === expected.harness.workerName);
   if (mode === "dormant") {
-    for (const d of mine) errors.push(`harness_custom_domain_present_while_dormant: ${d?.hostname ?? "unknown"}`);
+    // ROLLBACK (issue #101, runbook D2): the dormant deploy is the action that DISABLES an enabled harness (404 on every path), so
+    // its preflight must not be blocked by the one domain the enable phase itself required. Only the exact expected end state of an
+    // enabled harness is tolerated, and only before the deploy: exactly one custom domain whose hostname equals the pinned issuer
+    // host. Anything else (another host, several domains, unknown issuer) still stops. Readback never sets this flag, so the run
+    // is NOT green until the owner has detached the domain.
+    const attachedIssuerOnly = allowAttachedIssuerDomain === true && typeof issuerHost === "string" && issuerHost.length > 0 && mine.length === 1 && mine[0]?.hostname === issuerHost;
+    if (!attachedIssuerOnly) for (const d of mine) errors.push(`harness_custom_domain_present_while_dormant: ${d?.hostname ?? "unknown"}`);
     return errors;
   }
   if (!issuerHost) { errors.push("harness_issuer_host_unknown"); return errors; }
   if (mine.length !== 1 || mine[0].hostname !== issuerHost) errors.push("harness_domain_must_be_exactly_the_issuer_host");
-  errors.push(...verifyAccessApp(accessApps, issuerHost));
+  errors.push(...verifyAccessApp(accessApps, issuerHost, { allowedServiceTokenId: expected?.access?.serviceTokenId ?? null }));
   return errors;
+}
+
+/**
+ * Owner-executable rollback verdict from READ-ONLY state (issue #101). Never mutates anything. Ordered so that no step can leave
+ * the harness enabled or newly exposed: (1) disable by redeploying phase=dormant, (2) only then detach the custom domain, (3)
+ * re-run dormant for a green readback. Unknown or unexpected state falls back to the one action that is always safe: delete the Worker.
+ */
+export function harnessRollbackPlan({ bindings, domains, routes, subdomain }, { expected = ACTIVATION, issuerHost = null } = {}) {
+  const flag = Array.isArray(bindings) ? bindings.find((b) => b?.name === "STAGE_C_HARNESS_ENABLED") : undefined;
+  const enabled = flag ? String(flag.text).toLowerCase() === "true" : null; // null = unreadable/absent
+  const mine = Array.isArray(domains) ? domains.filter((d) => d?.service === expected.harness.workerName) : null;
+  const deleteWorker = "Fastest unconditional disable: delete the Worker `cairnstone-stage-harness` (Cloudflare dashboard > Workers & Pages), then re-run this check.";
+  // Anything beyond "the one expected custom domain" (workers.dev on, previews on, a zone route) or any unreadable surface is unknown.
+  const unexpectedExposure = !subdomain || subdomain.enabled !== false || (subdomain.previews_enabled !== undefined && subdomain.previews_enabled !== false)
+    || !Array.isArray(routes) || routes.some((r) => r?.script === expected.harness.workerName);
+  if (enabled === null || mine === null || unexpectedExposure) {
+    return { verdict: "UNKNOWN_STATE_FAIL_CLOSED", ok: false, steps: [deleteWorker] };
+  }
+  const attachedHosts = mine.map((d) => d?.hostname ?? "unknown");
+  const steps = [];
+  if (enabled) steps.push("1. Dispatch s1-3-staging-harness-deploy with phase=dormant (confirm phrase DEPLOY_ISOLATED_S1_3_STAGE_HARNESS). This disables the harness (404 everywhere) even while the Access-protected domain is attached.");
+  if (attachedHosts.length > 0) {
+    const expectedOnly = attachedHosts.length === 1 && issuerHost && attachedHosts[0] === issuerHost;
+    steps.push(`${enabled ? "2" : "1"}. Detach the custom domain ${expectedOnly ? "(the pinned issuer host)" : `(UNEXPECTED: ${attachedHosts.join(", ")})`} from cairnstone-stage-harness: dashboard Workers & Pages > cairnstone-stage-harness > Settings > Domains & Routes. Do NOT detach before the harness is disabled.`);
+    steps.push(`${enabled ? "3" : "2"}. Dispatch phase=dormant again; its readback must be ok:true (no domain, flag false).`);
+    if (!expectedOnly) steps.unshift(deleteWorker);
+  }
+  const verdict = enabled ? (attachedHosts.length ? "ENABLED_DOMAIN_ATTACHED" : "ENABLED_NO_DOMAIN") : attachedHosts.length ? "DISABLED_DOMAIN_ATTACHED" : "DORMANT_AND_DETACHED";
+  if (verdict === "ENABLED_NO_DOMAIN") steps.push("Dispatch phase=dormant to disable.");
+  return { verdict, ok: verdict === "DORMANT_AND_DETACHED", steps };
 }
 
 // ---- Fail-closed client: read-only, plus ONE pinned write (create the auth D1) ----
@@ -325,6 +399,7 @@ export async function runHarnessChecks(client, { mode, phase, harnessToml, expec
   const priv = { checkD1Schema, checkWorkerState, ...deps };
   if (mode !== "dormant" && mode !== "enable") throw new CloudflareApiError("harness_mode_must_be_dormant_or_enable");
   const checks = [];
+  const notes = [];
   const pinned = expected.auth.dbId;
   checks.push(check("auth_d1_pinned", pinned ? [] : ["auth_d1_id_not_pinned"]));
   if (pinned) checks.push(await checkAuthD1(client, pinned, { expected }));
@@ -347,9 +422,29 @@ export async function runHarnessChecks(client, { mode, phase, harnessToml, expec
     try { accessApps = (await client.get(`/accounts/${client.accountId}/access/apps?per_page=100`)).result; } catch { accessApps = null; }
     checks.push(check("harness_exposure_restricted_hostname", verifyHarnessExposure({ subdomain: h.subdomain, domains: h.domains, routes: h.routes, accessApps }, { expected, mode, issuerHost: host })));
   } else {
-    checks.push(check("harness_no_public_exposure", verifyHarnessExposure({ subdomain: h.subdomain, domains: h.domains, routes: h.routes }, { expected, mode })));
+    const host = issuerHostOf(harnessToml);
+    const rollbackPreflight = phase === "preflight";
+    checks.push(check("harness_no_public_exposure", verifyHarnessExposure({ subdomain: h.subdomain, domains: h.domains, routes: h.routes }, { expected, mode, issuerHost: host, allowAttachedIssuerDomain: rollbackPreflight })));
+    const attached = Array.isArray(h.domains) ? h.domains.filter((d) => d?.service === expected.harness.workerName) : [];
+    if (rollbackPreflight && attached.length === 1 && host && attached[0]?.hostname === host) {
+      notes.push("rollback_domain_still_attached: the dormant deploy will DISABLE the harness; the readback stays red until the owner detaches the custom domain (runbook step 10)");
+    }
   }
-  return { phase, mode, ok: checks.every((c) => c.ok), checks };
+  return { phase, mode, ok: checks.every((c) => c.ok), checks, ...(notes.length ? { notes } : {}) };
+}
+
+/**
+ * Read-only live rollback status (issue #101): reads the harness Worker's flag, custom domains, zone routes and workers.dev state
+ * and returns harnessRollbackPlan(). A missing Worker is "DORMANT_AND_DETACHED" only if nothing is routed to it.
+ */
+export async function runHarnessRollbackPlan(client, { harnessToml, expected = ACTIVATION } = {}) {
+  const h = await readHarness(client, expected);
+  const issuerHost = issuerHostOf(harnessToml);
+  if (!h.exists) {
+    return { verdict: "WORKER_ABSENT", ok: true, steps: ["Harness Worker is absent: nothing is enabled. Verify no custom domain still points at the former Worker."] };
+  }
+  const bindings = h.settings && Array.isArray(h.settings.bindings) ? h.settings.bindings : undefined;
+  return harnessRollbackPlan({ bindings, domains: h.domains, routes: h.routes, subdomain: h.subdomain }, { expected, issuerHost });
 }
 
 /**
