@@ -59,7 +59,9 @@ test("pin surface: real git repo, diff of the surface between BASE and head", ()
   assert.deepEqual(bad.unexpected, ["src/a.ts"]);
 });
 
-test("pin surface CLI on this repository: BASE is the reviewed pin and the verdict is green on the current head", () => {
+const hasBase = (() => { try { execFileSync("git", ["cat-file", "-e", `${BASE}^{commit}`], { stdio: "ignore" }); return true; } catch { return false; } })();
+// CI checkouts are shallow; the activation-plan workflow uses fetch-depth: 0 and runs this guard for real.
+test("pin surface CLI on this repository: BASE is the reviewed pin and the verdict is green on the current head", { skip: !hasBase && "reviewed base commit not in this shallow checkout" }, () => {
   const out = execFileSync(process.execPath, ["scripts/staging/s1-3-pin-surface.mjs", "--base", BASE, "--head", "HEAD"], { encoding: "utf8" });
   assert.equal(JSON.parse(out).ok, true);
 });
