@@ -7,7 +7,7 @@
 **Fabric plan (10d authority):** `4ccf169f4fd6e94109c1ac66e3492069beade5206c73f2ce1b3ad6d061eabfaf`  
 **START HERE gate (10d COMPLETE):** `7a9fb4b06a4ba9879e3f431cc906a2994f65028a6cac7b278072c103bd5c4d4d`  
 **10d.1 trigger AC1:** `msg:v7710d-native-executor-context-followup-20260915-chatgpt` · stone `811dd6519ae7e24dab49a332def0e055dce34408c8cedbbba7d84b2f59f6ed17`  
-**Runtime:** worker **0.5.43** live; **10d.2** host-satisfied `stone.read` for compiled_context (amendment on tip `9270d703a52206698a8674ce8962077ec0f555e1`; version bump on deploy)
+**Runtime:** worker **0.5.44** source (10d.3 gated coding-agent adapters); prior live **0.5.43** until deploy. **10d.2** host-satisfied `stone.read` for compiled_context. **10d.3** Copilot Agent Tasks + Cursor Cloud Agents API v1 — stub/blocked until Worker secrets + live probe evidence.
 
 ## What this plane is
 
@@ -63,8 +63,8 @@ Route preference: all else equal, prefer CairnStone-native. Does **not** overrid
 | `exec:deterministic-mcp` | deterministic MCP/tool | `cairnstone_native` | bounded allowlisted read on dispatch |
 | `exec:cairnstone-delegate` | delegated model/profile | `cairnstone_native` | points at existing delegate; does not auto-run |
 | `exec:afo-specialist` | AFO specialist | `compiled_context` | adapter contract + stub |
-| `exec:github-copilot` | coding agent | `compiled_context` | contract + dry-run stub |
-| `exec:cursor-cloud` | coding agent | `cairnstone_native` | contract + dry-run stub; MCP-capable |
+| `exec:github-copilot` | coding agent | `compiled_context` | 10d.3 gated live (Agent Tasks API); seed stub until secrets+probe |
+| `exec:cursor-cloud` | coding agent | `cairnstone_native` | 10d.3 gated live (Cloud Agents API v1); seed stub until secrets+probe |
 
 ## Surfaces
 
@@ -104,7 +104,8 @@ Child `attachment_refs` / `object_refs` / `required_capabilities` must be ⊆ pa
 ### Adapters
 
 - **deterministic-mcp:** may execute one allowlisted read (`cairnstone_executor_list|get|health`, `cairnstone_health`) and attach receipt; **reference_only_native** envelope.
-- **coding / AFO / cursor / copilot / delegate:** record async stub job with `adapter_live=false` / `dry_run=true`; native executors omit compiled pack; compiled executors attach bounded pack receipt.
+- **coding Copilot/Cursor:** dry-run stub when token absent; gated live launch when Worker secrets + allowlist + immutable base SHA present (mocked in unit tests). Health never claims stub as live.
+- **AFO / delegate:** record async stub job with `adapter_live=false` / `dry_run=true`; native executors omit compiled pack; compiled executors attach bounded pack receipt.
 
 ## Migration
 
@@ -123,17 +124,19 @@ Registry **87 → 94** (+7 in 10d). **10d.1/10d.2 add no new MCP tools** (extend
 - Console Dispatch/Approve cards (10e) — **held**
 - Live Durable Objects / WebSocket agent tree (10f)
 - Real wallet/x402 settlement
-- Live Copilot/Cursor launch requiring secrets
 - Intent-router auto-dispatch
+- Provisioning Worker secrets / running paid Copilot or Cursor jobs (operator-only)
 
 ## Files
 
 - `src/executor-profile.js`, `src/executor-adapters.js`, `src/task-run.js`
-- `src/index.js` (VERSION `0.5.43`), `src/model-router.js`
+- `src/coding-agent-common.js`, `src/github-copilot-adapter.js`, `src/cursor-cloud-adapter.js`
+- `src/index.js` (VERSION `0.5.44`), `src/model-router.js`
 - `migrations/0023_v7710d_task_run_dispatch.sql`
-- `test/v7710d-executor-routing.test.js`
+- `test/v7710d-executor-routing.test.js`, `test/v7710d3-coding-agent-adapters.test.js`
 - `project-memory/v7710d-execution-routing-implementation-note.md`
 - `project-memory/v7710d1-native-context-implementation-note.md`
+- `project-memory/v7710d3-coding-agent-adapters-implementation-note.md`
 
 ## V7.7.10d.2 — compiled host-satisfied `stone.read`
 
