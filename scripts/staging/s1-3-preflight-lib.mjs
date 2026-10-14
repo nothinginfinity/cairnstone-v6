@@ -20,6 +20,7 @@ export const EXPECTED = Object.freeze({
   }),
   // The ONLY non-comment, non-blank lines wrangler.private-staging.toml may contain. Anything else
   // ([build], [[services]], [[kv_namespaces]], routes, triggers, extra vars, a different ID...) fails closed.
+  // Reserved secret names (HMAC current/previous) are the only staging signing keys in scope for this private Worker preflight.
   configLines: Object.freeze([
     'name = "cairnstone-private-staging"',
     'main = "src/private-realm/private-staging-worker.js"',
@@ -68,8 +69,6 @@ export function verifyConfig(text, expected = EXPECTED) {
 // Keep a short, secret-free hint of an offending line; never echo long values.
 const redactLine = (l) => (l.length > 80 ? `${l.slice(0, 80)}…` : l);
 
-// ---- D1 schema (rows are what D1's /query returns in result[0].results) ----
-
 export function verifyD1Schema({ roleColumn, connectionsSql, nonceColumns, triggers }, expected = EXPECTED) {
   void expected;
   const errors = [];
@@ -83,7 +82,6 @@ export function verifyD1Schema({ roleColumn, connectionsSql, nonceColumns, trigg
   if (!/role\s+TEXT\s+NOT\s+NULL[^,]*CHECK\s*\(\s*role\s+IN\s*\(\s*'admin'\s*,\s*'member'\s*\)\s*\)/i.test(String(connectionsSql ?? ""))) {
     errors.push("d1_role_check_constraint_missing");
   }
-  // Durable replay barrier: composite PRIMARY KEY (caller, nonce), in that order.
   const cols = new Map((nonceColumns ?? []).map((c) => [c.name, c]));
   if (!cols.has("caller") || !cols.has("nonce") || !cols.has("issued_at")) errors.push("d1_nonce_columns_missing");
   else {
@@ -108,11 +106,6 @@ export function verifyD1Schema({ roleColumn, connectionsSql, nonceColumns, trigg
   return errors;
 }
 
-// ---- Worker settings / bindings ----
-
-// `allowedD1Ids` (default: only the replacement D1). The PRE-DEPLOY preflight of the rebind deploy alone also accepts the exact
-// old staging D1 id, because the live Worker is still bound to it until `wrangler deploy` swaps the binding (issue #97).
-// Readback and Stage C never pass it, so the end state must always be the replacement D1.
 export function verifyWorkerSettings(settingsResult, expected = EXPECTED, { allowedD1Ids = [expected.d1Id] } = {}) {
   const errors = [];
   const bindings = Array.isArray(settingsResult?.bindings) ? settingsResult.bindings : null;
@@ -122,6 +115,14 @@ export function verifyWorkerSettings(settingsResult, expected = EXPECTED, { allo
   const r2 = bindings.filter((b) => b.type === "r2_bucket");
   if (r2.length !== 1 || r2[0].name !== expected.r2Binding || r2[0].bucket_name !== expected.r2Bucket) errors.push("worker_unexpected_r2_binding");
   const plain = Object.fromEntries(bindings.filter((b) => b.type === "plain_text").map((b) => [b.name, b.text]));
+  // Fail-closed: reserved secret names must never appear as plain_text (name/type only; never echo values).
+  // allowedSecrets currently covers the HMAC signing keys (current + previous) used by the private staging Worker.
+  // Other staging bearer/signing keys (STAGE_C_HARNESS_TOKEN, STAGING_OAUTH_SIGNING_KEY) belong to gateway/harness Workers, not this preflight scope.
+  for (const name of expected.allowedSecrets) {
+    if (Object.prototype.hasOwnProperty.call(plain, name)) {
+      errors.push(`reserved_secret_as_plaintext: ${name}`);
+    }
+  }
   const wantVars = Object.keys(expected.vars).sort().join(",");
   if (Object.keys(plain).sort().join(",") !== wantVars) errors.push("worker_unexpected_vars");
   for (const [k, v] of Object.entries(expected.vars)) if (plain[k] !== v) errors.push(`worker_var_mismatch: ${k}`);
@@ -143,7 +144,6 @@ export function verifySecrets(secretsResult, expected = EXPECTED) {
 }
 
 // ---- Exposure: workers.dev, previews, custom domains, zone routes ----
-
 export function verifyExposure({ subdomain, domains, routes }, expected = EXPECTED) {
   const errors = [];
   if (!subdomain || subdomain.enabled !== false) errors.push("exposure_workers_dev_enabled_or_unknown");
@@ -155,8 +155,6 @@ export function verifyExposure({ subdomain, domains, routes }, expected = EXPECT
   else for (const r of routes) if (r?.script === expected.workerName) errors.push(`exposure_zone_route: ${r.pattern ?? "unknown"}`);
   return errors;
 }
-
-// ---- Fail-closed Cloudflare API client (read-only GET + D1 read queries) ----
 
 export class CloudflareApiError extends Error {
   constructor(code) { super(code); this.name = "CloudflareApiError"; this.code = code; }
@@ -178,7 +176,6 @@ export function createCloudflareClient({ token, accountId, fetchImpl = globalThi
     } catch { throw new CloudflareApiError("cloudflare_network_error"); }
     let json;
     try { json = await res.json(); } catch { throw new CloudflareApiError("cloudflare_non_json_response"); }
-    // Fail closed: an API that cannot answer (including insufficient token scope) is never "no exposure".
     if (!res.ok || json?.success !== true) {
       const codes = Array.isArray(json?.errors) ? json.errors.map((e) => e?.code).filter((c) => Number.isInteger(c)).join(",") : "";
       throw new CloudflareApiError(`cloudflare_api_failed:${method}:${path.split("?")[0].replace(accountId, "<acct>")}:${res.status}:${codes}`);
@@ -187,7 +184,6 @@ export function createCloudflareClient({ token, accountId, fetchImpl = globalThi
   }
   return {
     get: (path) => call("GET", path),
-    // Statements are READ-ONLY queries only (SELECT / PRAGMA); asserted here so a typo cannot mutate staging.
     async d1(dbId, sql) {
       if (!/^\s*(SELECT|PRAGMA)\s/i.test(sql) || /;\s*\S/.test(sql)) throw new CloudflareApiError("d1_statement_not_read_only");
       const json = await call("POST", `/accounts/${accountId}/d1/database/${dbId}/query`, { sql });
@@ -208,7 +204,7 @@ async function collectZoneRoutes(client) {
     const info = zones.result_info;
     if (!info || page >= (info.total_pages ?? 1)) return routes;
   }
-  throw new CloudflareApiError("cloudflare_zone_pagination_exceeded"); // cannot prove no routes: fail closed
+  throw new CloudflareApiError("cloudflare_zone_pagination_exceeded");
 }
 
 const check = (name, errors) => ({ name, ok: errors.length === 0, errors });
@@ -236,13 +232,11 @@ export async function checkWorkerState(client, expected = EXPECTED, opts = {}) {
   ];
 }
 
-/** Everything that must hold BEFORE `wrangler deploy` (the worker + HMAC secret must already be provisioned). */
 export async function runPreflight(client, expected = EXPECTED) {
   const checks = [await checkD1Schema(client, expected), ...(await checkWorkerState(client, expected, { allowedD1Ids: [expected.d1Id, expected.oldD1Id] }))];
   return { phase: "preflight", ok: checks.every((c) => c.ok), checks };
 }
 
-/** Post-deploy: same live state must still hold. */
 export async function runReadback(client, expected = EXPECTED) {
   const checks = [await checkD1Schema(client, expected), ...(await checkWorkerState(client, expected))];
   return { phase: "readback", ok: checks.every((c) => c.ok), checks };

@@ -151,6 +151,29 @@ test("bindings: unreadable settings fail closed", () => {
   assert.deepEqual(verifyWorkerSettings(undefined), ["worker_bindings_unreadable"]);
   assert.deepEqual(verifyWorkerSettings({ bindings: "nope" }), ["worker_bindings_unreadable"]);
 });
+test("bindings: HMAC as plain_text fails with explicit reserved_secret_as_plaintext (no value leaked)", () => {
+  const s = goodSettings();
+  s.bindings = s.bindings.filter(b => b.name !== "PRIVATE_GATEWAY_HMAC_KEY");
+  s.bindings.push({ type: "plain_text", name: "PRIVATE_GATEWAY_HMAC_KEY", text: "THIS_VALUE_MUST_NEVER_APPEAR_IN_ERROR" });
+  const errs = verifyWorkerSettings(s);
+  assert.ok(errs.some(e => e === "reserved_secret_as_plaintext: PRIVATE_GATEWAY_HMAC_KEY"), JSON.stringify(errs));
+  assert.ok(!JSON.stringify(errs).includes("THIS_VALUE_MUST_NEVER_APPEAR_IN_ERROR"));
+});
+test("bindings: previous HMAC as plain_text also fails explicitly", () => {
+  const s = goodSettings();
+  s.bindings.push({ type: "plain_text", name: "PRIVATE_GATEWAY_HMAC_KEY_PREVIOUS", text: "hidden" });
+  const errs = verifyWorkerSettings(s);
+  assert.ok(errs.some(e => e.startsWith("reserved_secret_as_plaintext:")));
+});
+test("bindings: exact duplicate HMAC (secret_text + plain_text same name) fails explicitly with no sentinel leak", () => {
+  const sentinel = "SENTINEL_HMAC_PLAINTEXT_VALUE_MUST_NEVER_LEAK";
+  const s = goodSettings();
+  // Keep the secret_text entry and also add the plain_text twin
+  s.bindings.push({ type: "plain_text", name: "PRIVATE_GATEWAY_HMAC_KEY", text: sentinel });
+  const errs = verifyWorkerSettings(s);
+  assert.ok(errs.some(e => e === "reserved_secret_as_plaintext: PRIVATE_GATEWAY_HMAC_KEY"), JSON.stringify(errs));
+  assert.ok(!JSON.stringify(errs).includes(sentinel), "sentinel leaked into binding errors");
+});
 test("secrets: HMAC key presence is required, unknown secrets rejected, unreadable fails closed", () => {
   assert.deepEqual(verifySecrets([{ name: "PRIVATE_GATEWAY_HMAC_KEY", type: "secret_text" }]), []);
   assert.deepEqual(verifySecrets([{ name: "PRIVATE_GATEWAY_HMAC_KEY_PREVIOUS" }]), ["hmac_key_secret_absent"]);
@@ -161,10 +184,10 @@ test("secrets: HMAC key presence is required, unknown secrets rejected, unreadab
 test("exposure: private worker passes; every public surface fails", () => {
   const ok = { subdomain: { enabled: false, previews_enabled: false }, domains: [], routes: [{ pattern: "x/*", script: "other-worker" }] };
   assert.deepEqual(verifyExposure(ok), []);
-  assert.deepEqual(verifyExposure({ ...ok, subdomain: { enabled: false } }), []); // previews flag omitted by API
+  assert.deepEqual(verifyExposure({ ...ok, subdomain: { enabled: false } }), []);
   assert.ok(verifyExposure({ ...ok, subdomain: { enabled: true, previews_enabled: false } }).length);
   assert.ok(verifyExposure({ ...ok, subdomain: { enabled: false, previews_enabled: true } }).includes("exposure_previews_enabled"));
-  assert.ok(verifyExposure({ ...ok, subdomain: undefined }).length); // unknown is not "off"
+  assert.ok(verifyExposure({ ...ok, subdomain: undefined }).length);
   assert.ok(verifyExposure({ ...ok, domains: [{ hostname: "priv.example.com", service: EXPECTED.workerName }] }).some((e) => e.startsWith("exposure_custom_domain")));
   assert.ok(verifyExposure({ ...ok, routes: [{ pattern: "priv.example.com/*", script: EXPECTED.workerName }] }).some((e) => e.startsWith("exposure_zone_route")));
   assert.ok(verifyExposure({ ...ok, domains: undefined }).includes("exposure_domains_unreadable"));
@@ -246,7 +269,7 @@ test("client: D1 helper refuses anything that is not a single read-only statemen
   }
 });
 
-// ---- CLI exit codes ----
+// ---- CLI exit codes (restored) ----
 const CLI = new URL("../scripts/staging/s1-3-preflight.mjs", import.meta.url).pathname;
 const run = (args, env = {}) => spawnSync(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
 test("cli: verify-config exits 0 for the reviewed config and 1 for a [build] config", () => {
@@ -265,4 +288,19 @@ test("cli: preflight without credentials fails closed, writes a failing receipt,
   assert.equal(receipt.ok, false); assert.equal(receipt.schema, "cairnstone-s1-3-staging-deploy-receipt-v1");
   assert.ok(!(r.stdout + r.stderr + JSON.stringify(receipt)).includes(TOKEN));
   assert.equal(run(["bogus"]).status, 1);
+});
+
+// End-to-end style: preflight/readback with duplicate HMAC binding never emits the sentinel
+test("run: duplicate HMAC binding (secret_text + plain_text) fails preflight/readback with no sentinel in diagnostics", async () => {
+  const sentinel = "SENTINEL_HMAC_PLAINTEXT_VALUE_MUST_NEVER_LEAK";
+  const s = goodSettings();
+  s.bindings.push({ type: "plain_text", name: "PRIVATE_GATEWAY_HMAC_KEY", text: sentinel });
+  const m = mockFetch({ settings: s });
+  const pre = await runPreflight(client(m));
+  const post = await runReadback(client(m));
+  assert.equal(pre.ok, false);
+  assert.equal(post.ok, false);
+  const all = JSON.stringify({ pre, post });
+  assert.ok(all.includes("reserved_secret_as_plaintext: PRIVATE_GATEWAY_HMAC_KEY"));
+  assert.ok(!all.includes(sentinel), "sentinel leaked into run diagnostics");
 });
