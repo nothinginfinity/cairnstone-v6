@@ -40,10 +40,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Pin surface guard (git only, no credentials)
+        shell: bash
+        run: node scripts/staging/s1-3-pin-surface.mjs --base ce565ef97eb7b5a6847679604e1abb42daaef700 --head "$GITHUB_SHA"
       - name: Read-only activation plan from live Cloudflare state
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
