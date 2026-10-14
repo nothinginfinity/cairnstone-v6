@@ -18,6 +18,9 @@ export const EXPECTED = Object.freeze({
     PRIVATE_STAGE_CALLER: "cairnstone-stage-gateway",
     PRIVATE_ALLOWED_CALLERS: "cairnstone-stage-gateway"
   }),
+  // The ONLY non-comment, non-blank lines wrangler.private-staging.toml may contain. Anything else
+  // ([build], [[services]], [[kv_namespaces]], routes, triggers, extra vars, a different ID...) fails closed.
+  // Reserved secret names (HMAC current/previous) are the only staging signing keys in scope for this private Worker preflight.
   configLines: Object.freeze([
     'name = "cairnstone-private-staging"',
     'main = "src/private-realm/private-staging-worker.js"',
@@ -40,6 +43,7 @@ export const EXPECTED = Object.freeze({
   ])
 });
 
+/** Strip comments/blank lines. A trailing `# comment` is NOT stripped: it will not match and fails closed. */
 export function normalizeConfig(text) {
   return String(text).replace(/\r/g, "").split("\n").map((l) => l.trim()).filter((l) => l !== "" && !l.startsWith("#"));
 }
@@ -62,6 +66,7 @@ export function verifyConfig(text, expected = EXPECTED) {
   return errors;
 }
 
+// Keep a short, secret-free hint of an offending line; never echo long values.
 const redactLine = (l) => (l.length > 80 ? `${l.slice(0, 80)}…` : l);
 
 export function verifyD1Schema({ roleColumn, connectionsSql, nonceColumns, triggers }, expected = EXPECTED) {
@@ -111,6 +116,8 @@ export function verifyWorkerSettings(settingsResult, expected = EXPECTED, { allo
   if (r2.length !== 1 || r2[0].name !== expected.r2Binding || r2[0].bucket_name !== expected.r2Bucket) errors.push("worker_unexpected_r2_binding");
   const plain = Object.fromEntries(bindings.filter((b) => b.type === "plain_text").map((b) => [b.name, b.text]));
   // Fail-closed: reserved secret names must never appear as plain_text (name/type only; never echo values).
+  // allowedSecrets currently covers the HMAC signing keys (current + previous) used by the private staging Worker.
+  // Other staging bearer/signing keys (STAGE_C_HARNESS_TOKEN, STAGING_OAUTH_SIGNING_KEY) belong to gateway/harness Workers, not this preflight scope.
   for (const name of expected.allowedSecrets) {
     if (Object.prototype.hasOwnProperty.call(plain, name)) {
       errors.push(`reserved_secret_as_plaintext: ${name}`);
@@ -122,7 +129,7 @@ export function verifyWorkerSettings(settingsResult, expected = EXPECTED, { allo
   for (const b of bindings) {
     if (["d1", "r2_bucket", "plain_text"].includes(b.type)) continue;
     if (b.type === "secret_text" && expected.allowedSecrets.includes(b.name)) continue;
-    errors.push(`worker_unexpected_binding: ${b.type}:${b.name}`);
+    errors.push(`worker_unexpected_binding: ${b.type}:${b.name}`); // service, kv, durable_object, ai, queue, ...
   }
   return errors;
 }
@@ -136,9 +143,11 @@ export function verifySecrets(secretsResult, expected = EXPECTED) {
   return errors;
 }
 
+// ---- Exposure: workers.dev, previews, custom domains, zone routes ----
 export function verifyExposure({ subdomain, domains, routes }, expected = EXPECTED) {
   const errors = [];
   if (!subdomain || subdomain.enabled !== false) errors.push("exposure_workers_dev_enabled_or_unknown");
+  // previews_enabled may be omitted by the API when never configured; anything other than false/omitted fails.
   if (subdomain && subdomain.previews_enabled !== undefined && subdomain.previews_enabled !== false) errors.push("exposure_previews_enabled");
   if (!Array.isArray(domains)) errors.push("exposure_domains_unreadable");
   else for (const d of domains) if (!d?.service || d.service === expected.workerName) errors.push(`exposure_custom_domain: ${d?.hostname ?? "unknown"}`);

@@ -165,6 +165,15 @@ test("bindings: previous HMAC as plain_text also fails explicitly", () => {
   const errs = verifyWorkerSettings(s);
   assert.ok(errs.some(e => e.startsWith("reserved_secret_as_plaintext:")));
 });
+test("bindings: exact duplicate HMAC (secret_text + plain_text same name) fails explicitly with no sentinel leak", () => {
+  const sentinel = "SENTINEL_HMAC_PLAINTEXT_VALUE_MUST_NEVER_LEAK";
+  const s = goodSettings();
+  // Keep the secret_text entry and also add the plain_text twin
+  s.bindings.push({ type: "plain_text", name: "PRIVATE_GATEWAY_HMAC_KEY", text: sentinel });
+  const errs = verifyWorkerSettings(s);
+  assert.ok(errs.some(e => e === "reserved_secret_as_plaintext: PRIVATE_GATEWAY_HMAC_KEY"), JSON.stringify(errs));
+  assert.ok(!JSON.stringify(errs).includes(sentinel), "sentinel leaked into binding errors");
+});
 test("secrets: HMAC key presence is required, unknown secrets rejected, unreadable fails closed", () => {
   assert.deepEqual(verifySecrets([{ name: "PRIVATE_GATEWAY_HMAC_KEY", type: "secret_text" }]), []);
   assert.deepEqual(verifySecrets([{ name: "PRIVATE_GATEWAY_HMAC_KEY_PREVIOUS" }]), ["hmac_key_secret_absent"]);
@@ -258,4 +267,40 @@ test("client: D1 helper refuses anything that is not a single read-only statemen
   for (const sql of ["DELETE FROM priv_messages", "INSERT INTO priv_service_nonces VALUES (1,2,3)", "DROP TABLE x", "SELECT 1; DROP TABLE x", "UPDATE priv_homes SET status='x'"]) {
     await assert.rejects(c.d1(EXPECTED.d1Id, sql), { code: "d1_statement_not_read_only" }, sql);
   }
+});
+
+// ---- CLI exit codes (restored) ----
+const CLI = new URL("../scripts/staging/s1-3-preflight.mjs", import.meta.url).pathname;
+const run = (args, env = {}) => spawnSync(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
+test("cli: verify-config exits 0 for the reviewed config and 1 for a [build] config", () => {
+  const dir = mkdtempSync(join(tmpdir(), "s13-"));
+  const good = join(dir, "good.toml"); writeFileSync(good, goodToml);
+  const bad = join(dir, "bad.toml"); writeFileSync(bad, `${goodToml}\n[build]\ncommand = "x"\n`);
+  assert.equal(run(["verify-config", good]).status, 0);
+  assert.equal(run(["verify-config", bad]).status, 1);
+});
+test("cli: preflight without credentials fails closed, writes a failing receipt, prints no secret", () => {
+  const dir = mkdtempSync(join(tmpdir(), "s13-"));
+  const out = join(dir, "r.json");
+  const r = run(["preflight", "--receipt", out], { SOURCE_SHA: "a".repeat(40), CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_ACCOUNT_ID: "bad" });
+  assert.equal(r.status, 1);
+  const receipt = JSON.parse(readFileSync(out, "utf8"));
+  assert.equal(receipt.ok, false); assert.equal(receipt.schema, "cairnstone-s1-3-staging-deploy-receipt-v1");
+  assert.ok(!(r.stdout + r.stderr + JSON.stringify(receipt)).includes(TOKEN));
+  assert.equal(run(["bogus"]).status, 1);
+});
+
+// End-to-end style: preflight/readback with duplicate HMAC binding never emits the sentinel
+test("run: duplicate HMAC binding (secret_text + plain_text) fails preflight/readback with no sentinel in diagnostics", async () => {
+  const sentinel = "SENTINEL_HMAC_PLAINTEXT_VALUE_MUST_NEVER_LEAK";
+  const s = goodSettings();
+  s.bindings.push({ type: "plain_text", name: "PRIVATE_GATEWAY_HMAC_KEY", text: sentinel });
+  const m = mockFetch({ settings: s });
+  const pre = await runPreflight(client(m));
+  const post = await runReadback(client(m));
+  assert.equal(pre.ok, false);
+  assert.equal(post.ok, false);
+  const all = JSON.stringify({ pre, post });
+  assert.ok(all.includes("reserved_secret_as_plaintext: PRIVATE_GATEWAY_HMAC_KEY"));
+  assert.ok(!all.includes(sentinel), "sentinel leaked into run diagnostics");
 });
