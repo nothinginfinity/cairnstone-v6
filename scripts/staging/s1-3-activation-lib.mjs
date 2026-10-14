@@ -208,7 +208,7 @@ export function missingHarnessSecrets(list, expected = ACTIVATION) {
  * cannot be read (for example a reusable-policy reference without its rules) all fail closed. Unpinned (null) = every
  * `non_identity` policy is rejected.
  */
-export function verifyAccessApp(apps, host, { allowedServiceTokenId = null } = {}) {
+export function verifyAccessApp(apps, host, { allowedServiceTokenId = null, requireServiceAuth = false } = {}) {
   if (!Array.isArray(apps)) return ["access_apps_unreadable"];
   const hits = apps.filter((a) => a?.domain === host || (Array.isArray(a?.destinations) && a.destinations.some((d) => d?.uri === host)));
   if (hits.length !== 1) return [`access_app_count_for_host_${hits.length}`];
@@ -217,6 +217,7 @@ export function verifyAccessApp(apps, host, { allowedServiceTokenId = null } = {
   if (app.type !== "self_hosted") errors.add("access_app_not_self_hosted");
   if (!Array.isArray(app.policies) || app.policies.length === 0) return [...errors, "access_policies_missing_or_unreadable"];
   const pinned = typeof allowedServiceTokenId === "string" && UUID.test(allowedServiceTokenId) && allowedServiceTokenId !== ZERO_ID ? allowedServiceTokenId : null;
+  let pinnedServiceAuthPolicies = 0;
   for (const p of app.policies) {
     const decision = p?.decision;
     if (decision === "bypass") { errors.add("access_policy_bypass"); continue; }
@@ -239,9 +240,16 @@ export function verifyAccessApp(apps, host, { allowedServiceTokenId = null } = {
         if (typeof id !== "string" || !UUID.test(id)) errors.add("access_service_token_id_unreadable");
         else if (id !== pinned) errors.add("access_service_token_not_the_pinned_token");
       }
+      if (tokenRules.length === rules.length && tokenRules.length > 0 && tokenRules.every((r) => r.service_token?.token_id === pinned)) pinnedServiceAuthPolicies += 1;
     } else if (rules.some((r) => isRule(r) && "service_token" in r)) {
       errors.add("access_service_token_requires_service_auth_decision");
     }
+  }
+  // The runner is a machine client: an identity-only app would block it (and a green board would be a false GO), so the enable
+  // path requires at least one Service Auth policy limited to the pinned token.
+  if (requireServiceAuth) {
+    if (!pinned) errors.add("access_service_token_not_pinned");
+    else if (pinnedServiceAuthPolicies === 0) errors.add("access_service_auth_policy_for_pinned_token_missing");
   }
   return [...errors];
 }
@@ -267,7 +275,7 @@ export function verifyHarnessExposure({ subdomain, domains, routes, accessApps }
   }
   if (!issuerHost) { errors.push("harness_issuer_host_unknown"); return errors; }
   if (mine.length !== 1 || mine[0].hostname !== issuerHost) errors.push("harness_domain_must_be_exactly_the_issuer_host");
-  errors.push(...verifyAccessApp(accessApps, issuerHost, { allowedServiceTokenId: expected?.access?.serviceTokenId ?? null }));
+  errors.push(...verifyAccessApp(accessApps, issuerHost, { allowedServiceTokenId: expected?.access?.serviceTokenId ?? null, requireServiceAuth: true }));
   return errors;
 }
 
@@ -505,14 +513,19 @@ export async function runActivationPlan(client, { files = {}, expected = ACTIVAT
     const x = verifyHarnessExposure({ subdomain: h.subdomain, domains: h.domains, routes: h.routes, accessApps: apps }, { expected, mode: "enable", issuerHost: host });
     add("harness_restricted_hostname", "Access-restricted staging hostname for the harness", x.length ? "OWNER_ACTION" : "GO", x.length ? x.slice(0, 4).join("; ") : host);
   });
+  {
+    const pin = expected?.access?.serviceTokenId;
+    const ok = typeof pin === "string" && UUID.test(pin) && pin !== ZERO_ID;
+    add("access_service_token_pin", "Access service token id pinned (ACTIVATION.access.serviceTokenId)", ok ? "GO" : "OWNER_ACTION", ok ? "pinned (id only; the credential is never read)" : "not pinned; owner creates ONE Access service token, then a reviewed pin PR sets ACTIVATION.access.serviceTokenId to its token id (a UUID, not the Client ID or secret)");
+  }
   const by = Object.fromEntries(items.map((i) => [i.id, i.status]));
   const go = (...ids) => ids.every((id) => by[id] === "GO");
   const ready = {
     auth_d1_create: authD1CreationNeeded && !items.some((i) => i.status === "NO_GO"),
     private_rebind_deploy: go("private_d1_schema") && by.private_worker_bound_d1 !== "NO_GO",
     harness_dormant_deploy: go("private_d1_schema", "private_worker_bound_d1", "auth_d1", "harness_config"),
-    harness_enable: go("private_d1_schema", "private_worker_bound_d1", "auth_d1", "harness_config", "harness_worker", "harness_secrets", "harness_restricted_hostname"),
-    stagec_live_run: go("private_d1_schema", "private_worker_bound_d1", "auth_d1", "harness_config", "harness_worker", "harness_secrets", "harness_restricted_hostname")
+    harness_enable: go("private_d1_schema", "private_worker_bound_d1", "auth_d1", "harness_config", "harness_worker", "harness_secrets", "access_service_token_pin", "harness_restricted_hostname"),
+    stagec_live_run: go("private_d1_schema", "private_worker_bound_d1", "auth_d1", "harness_config", "harness_worker", "harness_secrets", "access_service_token_pin", "harness_restricted_hostname")
   };
   return { phase: "plan", ok: !items.some((i) => i.status === "NO_GO"), items, ready };
 }

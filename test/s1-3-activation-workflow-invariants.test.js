@@ -103,3 +103,13 @@ test("existing deploy workflows pin the reviewed merged main source exactly, inc
     assert.doesNotMatch(read(`.github/workflows/${f}`).toString("utf8").replace(/^[ \t]*#.*$/gm, ""), /^  (push|pull_request|schedule):/m);
   }
 });
+
+test("plan workflow: pin-surface guard runs first, with full history, the full reviewed base, and no Cloudflare credentials", () => {
+  const code = wfs["s1-3-staging-activation-plan"];
+  assert.match(code, /fetch-depth: 0/);
+  const guard = code.indexOf("s1-3-pin-surface.mjs --base ce565ef97eb7b5a6847679604e1abb42daaef700");
+  const plan = code.indexOf("s1-3-activation.mjs plan");
+  assert.ok(guard > 0 && plan > guard, "guard precedes the live read-only plan");
+  const guardStep = code.slice(code.lastIndexOf("- name:", guard), code.indexOf("- name:", guard));
+  assert.doesNotMatch(guardStep, /CLOUDFLARE|secrets\./);
+});

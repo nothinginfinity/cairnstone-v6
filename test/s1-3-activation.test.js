@@ -19,7 +19,9 @@ const TOKEN = "t".repeat(40);
 const ACCT = "a".repeat(32);
 const AUTH_ID = "11111111-2222-4333-8444-555555555555";
 const ISSUER_HOST = "stage-harness.staging.cairnstone.dev";
-const EXP = Object.freeze({ ...ACTIVATION, auth: Object.freeze({ ...ACTIVATION.auth, dbId: AUTH_ID }) });
+const TOKEN_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const OTHER_TOKEN_ID = "11111111-2222-4333-8444-666666666666";
+const EXP = Object.freeze({ ...ACTIVATION, auth: Object.freeze({ ...ACTIVATION.auth, dbId: AUTH_ID }), access: Object.freeze({ serviceTokenId: TOKEN_ID }) });
 const realHarnessToml = readFileSync(root("wrangler.stagec-harness.toml"), "utf8");
 // Fixtures are derived from a CANONICAL template of the committed toml (placeholder id + example issuer), so they stay valid both before
 // and after the owner's reviewed pin PR replaces the real id and issuer (runbook steps 5-6). They never depend on the pinned values.
@@ -200,7 +202,7 @@ test("harness exposure: dormant = nothing public at all; enable = exactly the Ac
   assert.ok(verifyHarnessExposure({ ...quiet, domains: [{ hostname: "h.example.com", service: "cairnstone-stage-harness" }] }, { mode: "dormant" }).some((e) => e.startsWith("harness_custom_domain_present_while_dormant")));
   assert.ok(verifyHarnessExposure({ ...quiet, routes: [{ pattern: "h/*", script: "cairnstone-stage-harness" }] }, { mode: "dormant" }).some((e) => e.startsWith("harness_zone_route")));
   assert.ok(verifyHarnessExposure({ ...quiet, domains: undefined }, { mode: "dormant" }).includes("harness_domains_unreadable"));
-  const live = { ...quiet, domains: [{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }], accessApps: [goodApp()] };
+  const live = { ...quiet, domains: [{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }], accessApps: [pinnedApp()] };
   assert.deepEqual(verifyHarnessExposure(live, { expected: EXP, mode: "enable", issuerHost: ISSUER_HOST }), []);
   assert.ok(verifyHarnessExposure({ ...live, domains: [] }, { mode: "enable", issuerHost: ISSUER_HOST }).includes("harness_domain_must_be_exactly_the_issuer_host"));
   assert.ok(verifyHarnessExposure({ ...live, domains: [{ hostname: "other.example.com", service: "cairnstone-stage-harness" }] }, { mode: "enable", issuerHost: ISSUER_HOST }).includes("harness_domain_must_be_exactly_the_issuer_host"));
@@ -280,9 +282,10 @@ function fakeClient(w) {
     }
   };
 }
+const pinnedApp = () => ({ domain: ISSUER_HOST, type: "self_hosted", policies: [{ decision: "allow", include: [{ email: { email: "owner@example.com" } }] }, { decision: "non_identity", include: [{ service_token: { token_id: TOKEN_ID } }] }] });
 const enableWorld = () => {
   const b = goodBindings(); b[4].text = "true";
-  return world({ harness: { exists: true, bindings: b, secrets: ACTIVATION.harness.secrets.map((name) => ({ name })), subdomain: { enabled: false, previews_enabled: false }, domains: [{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }] }, accessApps: [goodApp()] });
+  return world({ harness: { exists: true, bindings: b, secrets: ACTIVATION.harness.secrets.map((name) => ({ name })), subdomain: { enabled: false, previews_enabled: false }, domains: [{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }] }, accessApps: [pinnedApp()] });
 };
 
 test("rebind: preflight tolerates the live Worker still bound to the OLD D1; readback and the default never do", async () => {
@@ -439,11 +442,10 @@ test("cli: credentialed modes without valid credentials fail closed and never pr
 // ---------------------------------------------------------------- issue #101: Access service token policy + dormant rollback
 import { harnessRollbackPlan, runHarnessRollbackPlan } from "../scripts/staging/s1-3-activation-lib.mjs";
 
-const TOKEN_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-const OTHER_TOKEN_ID = "11111111-2222-4333-8444-666666666666";
 const serviceAuthApp = (include, over = {}) => ({ domain: ISSUER_HOST, type: "self_hosted", policies: [{ decision: "non_identity", include, ...over }] });
 const pinnedToken = { allowedServiceTokenId: TOKEN_ID };
-const EXP_TOKEN = Object.freeze({ ...EXP, access: Object.freeze({ serviceTokenId: TOKEN_ID }) });
+const EXP_TOKEN = EXP;
+const EXP_UNPINNED = Object.freeze({ ...EXP, access: Object.freeze({ serviceTokenId: null }) });
 
 test("access pin point: the service token id is unpinned by default and frozen, so Service Auth cannot be enabled by accident", () => {
   assert.equal(ACTIVATION.access.serviceTokenId, null);
@@ -505,7 +507,7 @@ test("service auth policy: fails closed when unpinned, for the wrong token, any_
 test("harness exposure (enable): the pinned service-token policy passes only when pinned in `expected`", () => {
   const live = { subdomain: { enabled: false, previews_enabled: false }, domains: [{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }], routes: [], accessApps: [serviceAuthApp([{ service_token: { token_id: TOKEN_ID } }])] };
   assert.deepEqual(verifyHarnessExposure(live, { expected: EXP_TOKEN, mode: "enable", issuerHost: ISSUER_HOST }), []);
-  assert.ok(verifyHarnessExposure(live, { expected: EXP, mode: "enable", issuerHost: ISSUER_HOST }).includes("access_service_token_not_pinned"));
+  assert.ok(verifyHarnessExposure(live, { expected: EXP_UNPINNED, mode: "enable", issuerHost: ISSUER_HOST }).includes("access_service_token_not_pinned"));
   assert.ok(verifyHarnessExposure({ ...live, accessApps: [serviceAuthApp([{ any_valid_service_token: {} }])] }, { expected: EXP_TOKEN, mode: "enable", issuerHost: ISSUER_HOST }).includes("access_policy_any_valid_service_token"));
 });
 
@@ -517,7 +519,7 @@ test("activation plan + enable preflight use the strict verifier (any_valid_serv
   const safe = enableWorld(); safe.accessApps = [serviceAuthApp([{ service_token: { token_id: TOKEN_ID } }])];
   assert.equal((await runHarnessChecks(fakeClient(safe), { mode: "enable", phase: "preflight", harnessToml: enableToml, expected: EXP_TOKEN })).ok, true);
   assert.equal((await runHarnessChecks(fakeClient(safe), { mode: "enable", phase: "readback", harnessToml: enableToml, expected: EXP_TOKEN })).ok, true);
-  assert.equal((await runHarnessChecks(fakeClient(safe), { mode: "enable", phase: "preflight", harnessToml: enableToml, expected: EXP })).ok, false, "unpinned token id blocks enable");
+  assert.equal((await runHarnessChecks(fakeClient(safe), { mode: "enable", phase: "preflight", harnessToml: enableToml, expected: EXP_UNPINNED })).ok, false, "unpinned token id blocks enable");
 });
 
 test("rollback with the domain attached: the dormant preflight is NOT blocked (it is the disabling deploy), only for the exact issuer-host domain", async () => {
@@ -616,4 +618,28 @@ test("cli: harness-rollback-plan fails closed without credentials and never prin
   const r = run(["harness-rollback-plan", "--harness-toml", tomlPath], env);
   assert.equal(r.status, 1); assert.ok(!(r.stdout + r.stderr).includes(TOKEN));
   assert.equal(run(["harness-rollback-plan"], env).status, 1);
+});
+
+test("enable requires a Service Auth policy for the pinned token: an identity-only Access app is not enough (false-GO guard)", async () => {
+  const identityOnly = { subdomain: { enabled: false, previews_enabled: false }, domains: [{ hostname: ISSUER_HOST, service: "cairnstone-stage-harness" }], routes: [], accessApps: [goodApp()] };
+  assert.ok(verifyHarnessExposure(identityOnly, { expected: EXP, mode: "enable", issuerHost: ISSUER_HOST }).includes("access_service_auth_policy_for_pinned_token_missing"));
+  assert.deepEqual(verifyHarnessExposure({ ...identityOnly, accessApps: [pinnedApp()] }, { expected: EXP, mode: "enable", issuerHost: ISSUER_HOST }), []);
+  assert.deepEqual(verifyAccessApp([goodApp()], ISSUER_HOST), [], "the standalone verifier is unchanged unless requireServiceAuth is set");
+  assert.ok(verifyAccessApp([goodApp()], ISSUER_HOST, { allowedServiceTokenId: TOKEN_ID, requireServiceAuth: true }).includes("access_service_auth_policy_for_pinned_token_missing"));
+  assert.ok(verifyAccessApp([pinnedApp()], ISSUER_HOST, { requireServiceAuth: true }).includes("access_service_token_not_pinned"));
+  const w = enableWorld(); w.accessApps = [goodApp()];
+  const r = await runHarnessChecks(fakeClient(w), { mode: "enable", phase: "preflight", harnessToml: enableToml, expected: EXP });
+  assert.equal(r.ok, false);
+});
+
+test("plan: access_service_token_pin is an owner action until pinned and gates harness_enable / stagec_live_run", async () => {
+  const unpinnedPlan = await runActivationPlan(fakeClient(enableWorld()), { files: { harnessToml: enableToml }, expected: EXP_UNPINNED });
+  const item = unpinnedPlan.items.find((i) => i.id === "access_service_token_pin");
+  assert.equal(item.status, "OWNER_ACTION");
+  assert.equal(unpinnedPlan.ready.harness_enable, false);
+  assert.equal(unpinnedPlan.ready.stagec_live_run, false);
+  const pinnedPlan = await runActivationPlan(fakeClient(enableWorld()), { files: { harnessToml: enableToml }, expected: EXP });
+  assert.equal(pinnedPlan.items.find((i) => i.id === "access_service_token_pin").status, "GO");
+  assert.equal(pinnedPlan.ready.harness_enable, true);
+  assert.doesNotMatch(JSON.stringify(unpinnedPlan), /CF-Access-Client|client_secret/i);
 });
