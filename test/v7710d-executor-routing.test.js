@@ -153,7 +153,8 @@ function makeDb() {
             const [
               status, dispatchState, selectedExecutorId, executorRouteReason,
               capsJson, policy, budgetJson, routeReceiptId, routeReceiptJson,
-              adapterJobId, receiptRefsJson, resultSummary, failureReason,
+              adapterJobId, receiptRefsJson, artifactRefsJson, prRefsJson,
+              resultSummary, failureReason,
               humanCommittedBy, humanCommittedAt, startedAt, completedAt, updatedAt,
               taskRunId
             ] = args;
@@ -172,12 +173,34 @@ function makeDb() {
               route_receipt_json: routeReceiptJson,
               adapter_job_id: adapterJobId,
               receipt_refs_json: receiptRefsJson,
+              artifact_refs_json: artifactRefsJson || row.artifact_refs_json || "[]",
+              pr_refs_json: prRefsJson || row.pr_refs_json || "[]",
               result_summary: resultSummary,
               failure_reason: failureReason,
               human_committed_by: humanCommittedBy,
               human_committed_at: humanCommittedAt,
               started_at: startedAt,
               completed_at: completedAt,
+              updated_at: updatedAt
+            });
+            return { success: true, meta: { changes: 1 } };
+          }
+          if (sql.includes("UPDATE task_runs SET") && sql.includes("pr_refs_json") && !sql.includes("human_committed_by")) {
+            const [
+              status, dispatchState, resultSummary, failureReason,
+              prRefsJson, artifactRefsJson, _terminalFlag, completedAt, updatedAt, taskRunId
+            ] = args;
+            const row = db.taskRuns.get(taskRunId);
+            if (!row) return { success: true, meta: { changes: 0 } };
+            db.taskRuns.set(taskRunId, {
+              ...row,
+              status,
+              dispatch_state: dispatchState,
+              result_summary: resultSummary,
+              failure_reason: failureReason,
+              pr_refs_json: prRefsJson,
+              artifact_refs_json: artifactRefsJson,
+              completed_at: completedAt || row.completed_at,
               updated_at: updatedAt
             });
             return { success: true, meta: { changes: 1 } };
@@ -330,13 +353,16 @@ test("inferRequiredCapabilities from refs and work hints", () => {
   assert.ok(caps.includes("repo.test"));
 });
 
-test("adapter contracts: Copilot/Cursor/AFO stubs present", () => {
-  assert.equal(COPILOT_ADAPTER_CONTRACT.live_path, false);
-  assert.equal(CURSOR_ADAPTER_CONTRACT.live_path, false);
+test("adapter contracts: Copilot/Cursor gated live_path; AFO stub; seed health not live", () => {
+  assert.equal(COPILOT_ADAPTER_CONTRACT.live_path, true);
+  assert.equal(CURSOR_ADAPTER_CONTRACT.live_path, true);
   assert.equal(AFO_ADAPTER_CONTRACT.live_path, false);
+  assert.ok(COPILOT_ADAPTER_CONTRACT.live_path_gated_by.length >= 1);
+  assert.ok(CURSOR_ADAPTER_CONTRACT.live_path_gated_by.length >= 1);
   assert.ok(DETERMINISTIC_MCP_ALLOWLIST.includes("cairnstone_executor_list"));
   const contract = getAdapterContract("exec:github-copilot");
   assert.equal(contract.ok, true);
+  // Seed profile remains stub until secrets + live evidence
   assert.equal(contract.adapter_live, false);
 });
 

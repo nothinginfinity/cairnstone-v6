@@ -269,7 +269,7 @@ export const SEED_EXECUTOR_PROFILES = Object.freeze([
       dry_run_default: true,
       requires_immutable_base_sha: true
     }),
-    notes: "GitHub Copilot coding-agent adapter contract + dry-run stub. No API keys invented. Compiled context required."
+    notes: "GitHub Copilot coding-agent adapter (10d.3 gated live path). Seed availability=stub until GITHUB_COPILOT_AGENT_TOKEN + allowlist + live probe evidence. Compiled context required."
   }),
   Object.freeze({
     schema: EXECUTOR_PROFILE_SCHEMA,
@@ -307,7 +307,7 @@ export const SEED_EXECUTOR_PROFILES = Object.freeze([
       dry_run_default: true,
       requires_immutable_base_sha: true
     }),
-    notes: "Cursor/cloud coding-agent adapter contract + dry-run stub. CairnStone-native context capable."
+    notes: "Cursor Cloud coding-agent adapter (10d.3 gated live path). Seed availability=stub until CURSOR_CLOUD_API_KEY + allowlist + live probe evidence. CairnStone-native context."
   })
 ]);
 
@@ -370,6 +370,68 @@ export function getExecutorProfile(executor_id) {
   };
 }
 
+/**
+ * Resolve dynamic health for coding-agent executors from Worker env.
+ * Without token → stub. With token but no live evidence → blocked.
+ * Never claims stub as live. Probe is optional (opts.probe !== false when env passed).
+ */
+export async function resolveCodingAgentHealthOverlay(executor_id, env = null, {
+  probe = true,
+  fetchImpl = null,
+  sleepFn = null
+} = {}) {
+  if (!env) return null;
+  if (executor_id !== "exec:github-copilot" && executor_id !== "exec:cursor-cloud") return null;
+
+  const { probeGitHubCopilotHealth } = await import("./github-copilot-adapter.js");
+  const { probeCursorCloudHealth } = await import("./cursor-cloud-adapter.js");
+  const impl = fetchImpl || env.__coding_agent_fetch || null;
+  const sleep = sleepFn || env.__coding_agent_sleep || null;
+
+  if (!probe) {
+    // Token presence only — still not live without evidence
+    const { resolveGitHubCopilotConfig } = await import("./github-copilot-adapter.js");
+    const { resolveCursorCloudConfig } = await import("./cursor-cloud-adapter.js");
+    const cfg = executor_id === "exec:github-copilot"
+      ? resolveGitHubCopilotConfig(env)
+      : resolveCursorCloudConfig(env);
+    const checkedAt = new Date().toISOString();
+    if (!cfg.token_configured) {
+      return {
+        availability: "stub",
+        health: {
+          status: "stub",
+          adapter_live: false,
+          dry_run: true,
+          token_configured: false,
+          live_evidence: false,
+          checked_at: checkedAt
+        }
+      };
+    }
+    return {
+      availability: "blocked",
+      health: {
+        status: "blocked",
+        adapter_live: false,
+        dry_run: true,
+        token_configured: true,
+        live_evidence: false,
+        blocker: "live_probe_skipped",
+        checked_at: checkedAt
+      }
+    };
+  }
+
+  const probed = executor_id === "exec:github-copilot"
+    ? await probeGitHubCopilotHealth(env, { fetchImpl: impl, sleepFn: sleep })
+    : await probeCursorCloudHealth(env, { fetchImpl: impl, sleepFn: sleep });
+  return {
+    availability: probed.availability,
+    health: probed.health
+  };
+}
+
 export function executorHealth(executor_id = null) {
   const now = new Date().toISOString();
   if (executor_id) {
@@ -400,6 +462,41 @@ export function executorHealth(executor_id = null) {
     executors: items,
     ...authorityClosedFields()
   };
+}
+
+/** Async health with optional live probe for coding agents. */
+export async function executorHealthAsync(executor_id = null, env = null, opts = {}) {
+  const base = executorHealth(executor_id);
+  if (!base.ok) return base;
+  if (!env) return base;
+
+  if (executor_id) {
+    const overlay = await resolveCodingAgentHealthOverlay(executor_id, env, opts);
+    if (!overlay) return base;
+    return {
+      ...base,
+      availability: overlay.availability,
+      health: { ...overlay.health },
+      seed_availability: base.availability,
+      seed_health: base.health
+    };
+  }
+
+  const items = [];
+  for (const item of base.executors) {
+    const overlay = await resolveCodingAgentHealthOverlay(item.executor_id, env, opts);
+    if (overlay) {
+      items.push({
+        ...item,
+        availability: overlay.availability,
+        health: { ...overlay.health },
+        seed_availability: item.availability
+      });
+    } else {
+      items.push(item);
+    }
+  }
+  return { ...base, executors: items, total: items.length };
 }
 
 function normalizeCapabilityList(input, field = "required_capabilities") {
@@ -845,21 +942,32 @@ export function routeExecutor({
   };
 }
 
-export function listExecutorsFromBody(body = {}) {
+export function listExecutorsFromBody(body = {}, env = null) {
+  // Sync list remains seed-based; use health endpoint for live overlay.
+  void env;
   return listExecutorProfiles({
     executor_class: body.executor_class || null,
     availability: body.availability || null
   });
 }
 
-export function getExecutorFromBody(body = {}) {
+export function getExecutorFromBody(body = {}, env = null) {
+  void env;
   if (!isNonEmptyString(body.executor_id)) {
     return { ok: false, error: "executor_id_required", ...authorityClosedFields() };
   }
   return getExecutorProfile(body.executor_id);
 }
 
-export function executorHealthFromBody(body = {}) {
+export async function executorHealthFromBody(body = {}, env = null) {
+  const probe = body.probe !== false;
+  if (env) {
+    return executorHealthAsync(body.executor_id || null, env, {
+      probe,
+      fetchImpl: env.__coding_agent_fetch || null,
+      sleepFn: env.__coding_agent_sleep || null
+    });
+  }
   return executorHealth(body.executor_id || null);
 }
 
@@ -905,11 +1013,12 @@ export const EXECUTOR_GET_TOOL_DEFINITION = Object.freeze({
 
 export const EXECUTOR_HEALTH_TOOL_DEFINITION = Object.freeze({
   name: EXECUTOR_BROKER_TOOL_IDS.health,
-  description: "V7.7.10d: cheap executor health snapshot (seed registry). Never dispatches.",
+  description: "V7.7.10d/d.3: executor health snapshot. Coding agents overlay Worker secret presence + optional live probe (never claims stub as live). Never dispatches.",
   inputSchema: {
     type: "object",
     properties: {
-      executor_id: { type: "string" }
+      executor_id: { type: "string" },
+      probe: { type: "boolean", description: "When env is present, probe provider auth (default true). Never starts a coding job." }
     },
     additionalProperties: false
   }

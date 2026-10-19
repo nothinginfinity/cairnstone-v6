@@ -57,7 +57,7 @@ jobs:
           const healthRes = await fetch(`${base}/health`);
           assert(healthRes.status === 200, "health_status");
           const health = await readJson(healthRes, "health_json");
-          assert(health.version === "0.5.43", "runtime_version");
+          assert(health.version === "0.5.44", "runtime_version");
           assert(health.core_auth_enforcement === "shadow", "shadow_enforcement");
 
           const unauth = await protectedHealth(null);
