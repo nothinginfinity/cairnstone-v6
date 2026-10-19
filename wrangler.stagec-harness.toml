@@ -30,10 +30,10 @@ binding = "CAIRNSTONE_PRIVATE_STAGE_WRONGPROPS"
 service = "cairnstone-private-staging"
 props = { caller = "not-the-stage-gateway" }
 
-# Staging auth status/revocation DB (migrations/staging-auth). Placeholder id: the owner creates the DB and applies the
-# migration. All-zero id can never match a real database.
+# Isolated staging auth D1 created/migrated under owner gate (run 38661509482).
+# ID must match ACTIVATION.auth.dbId; service-token and issuer enable gates remain independent.
 [[d1_databases]]
 binding = "STAGING_AUTH_DB"
 database_name = "cairnstone-staging-auth"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "91743673-6b3e-4f29-ab21-ac791d5ec20c"
 migrations_dir = "migrations/staging-auth"
