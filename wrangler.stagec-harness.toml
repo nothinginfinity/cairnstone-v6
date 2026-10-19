@@ -10,8 +10,8 @@ send_metrics = false
 
 [vars]
 STAGE_C_HARNESS_ENABLED = "false"
-STAGING_OAUTH_RESOURCE = "https://stage.cairnstone.example/mcp/core-auth"
-STAGING_OAUTH_ISSUER = "https://stage.cairnstone.example"
+STAGING_OAUTH_RESOURCE = "https://stagec.agentfeedoptimization.com/mcp/core-auth"
+STAGING_OAUTH_ISSUER = "https://stagec.agentfeedoptimization.com"
 # Secrets (Wrangler secret / owner only, never in this file): STAGE_C_HARNESS_TOKEN, PRIVATE_GATEWAY_HMAC_KEY,
 # STAGING_OAUTH_SIGNING_KEY. Optional vars set by the owner: LEGACY_MCP_HEALTH_URL, LEGACY_MCP_TOOLS_URL (https only).
 
