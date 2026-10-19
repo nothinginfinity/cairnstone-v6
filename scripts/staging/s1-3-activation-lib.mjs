@@ -12,9 +12,9 @@ export const ACTIVATION = Object.freeze({
   zeroId: ZERO_ID,
   auth: Object.freeze({
     dbName: "cairnstone-staging-auth",
-    // PIN POINT. null until the owner-approved create workflow has run and a reviewed PR pins the printed id here AND in
-    // wrangler.stagec-harness.toml. While null, every harness deploy/enable path fails closed ("auth_d1_id_not_pinned").
-    dbId: null,
+    // PINNED to the owner-approved isolated staging auth D1 created in GitHub Actions run 38661509482.
+    // Must match STAGING_AUTH_DB in wrangler.stagec-harness.toml; other enable gates remain fail-closed.
+    dbId: "91743673-6b3e-4f29-ab21-ac791d5ec20c",
     binding: "STAGING_AUTH_DB",
     migrationsDir: "migrations/staging-auth",
     migrationFile: "0001_staging_auth.sql",
