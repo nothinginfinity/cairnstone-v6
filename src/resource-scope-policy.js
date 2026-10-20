@@ -63,14 +63,33 @@ export function messagesResourcesEquivalent(a, b) {
   return left !== null && left === right;
 }
 
-export function isCanonicalCoreResource(value, env, url) {
+/**
+ * Collapse the connect-time transport twin `/mcp/core-auth-b` onto the
+ * canonical Core audience `/mcp/core-auth` for the same origin.
+ * Returns null for non-Core resources. Does not admit foreign origins.
+ */
+export function canonicalizeCoreTransportResource(value) {
   const resource = normalizeRegisteredResource(value);
+  if (!resource) return null;
+  if (resource.endsWith("/mcp/core-auth-b")) return resource.slice(0, -2);
+  if (resource.endsWith("/mcp/core-auth")) return resource;
+  return null;
+}
+
+export function coreTransportResourcesEquivalent(a, b) {
+  const left = canonicalizeCoreTransportResource(a);
+  const right = canonicalizeCoreTransportResource(b);
+  return left !== null && left === right;
+}
+
+export function isCanonicalCoreResource(value, env, url) {
+  const resource = canonicalizeCoreTransportResource(value);
   if (!resource) return false;
   const allowed = new Set();
   const configured = typeof env?.CORE_AUTH_RESOURCE === "string"
     ? normalizeRegisteredResource(env.CORE_AUTH_RESOURCE)
     : "";
-  if (configured) allowed.add(configured);
+  if (configured) allowed.add(canonicalizeCoreTransportResource(configured) || configured);
   allowed.add(CANONICAL_CORE_RESOURCE);
   const origin = url?.origin ? normalizeRegisteredResource(url.origin) : "";
   if (origin) allowed.add(`${origin}/mcp/core-auth`);
