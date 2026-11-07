@@ -1,0 +1,93 @@
+name: Copilot advisory ship gate
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+
+jobs:
+  advisory-receipt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Classify PR and optionally request Copilot review once
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request;
+            const pull_number = pr.number;
+            const sha = pr.head.sha;
+            const event = context.payload.action;
+            const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number, per_page: 100 });
+            const paths = files.map(f => f.filename);
+            const high = paths.some(p =>
+              /(^|\/)(auth|oauth|security|secrets?|credentials?|wallet|x402|payments?|migrations?|production|deploy|wrangler|terraform|infra)(\/|\.|-|_)/i.test(p) ||
+              /(^|\/)(\.github\/workflows|migrations)(\/|$)/i.test(p) ||
+              /(send[_-]?message|transfer|settle|signer)/i.test(p)
+            );
+            const codeFiles = paths.filter(p => /\.(?:[cm]?js|[cm]?ts|tsx|jsx|py|go|rs|java|swift)$/i.test(p));
+            const risk = high ? 'HIGH' : codeFiles.length ? 'MEDIUM' : 'LOW';
+            const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number, per_page: 100 });
+            const existingCopilotReview = reviews.some(r => /copilot-pull-request-reviewer/i.test(r.user?.login || ''));
+            const requested = await github.rest.pulls.listRequestedReviewers({ owner, repo, pull_number });
+            const requestedCopilot = (requested.data.users || []).some(u => /copilot-pull-request-reviewer/i.test(u.login));
+            let requestOutcome = 'not attempted: existing review or event policy';
+            const trigger = event === 'opened' || event === 'ready_for_review';
+            const eligible = trigger && !pr.draft && risk !== 'HIGH' && codeFiles.length > 0 &&
+              !existingCopilotReview && !requestedCopilot;
+            if (eligible) {
+              try {
+                await github.rest.pulls.requestReviewers({
+                  owner, repo, pull_number, reviewers: ['copilot-pull-request-reviewer[bot]']
+                });
+                requestOutcome = 'requested once (advisory)';
+              } catch (err) {
+                requestOutcome = 'unavailable / not requested (' + (err.status || 'unknown') + ')';
+                core.warning('Copilot review request was unavailable: ' + (err.status || 'unknown'));
+              }
+            } else if (existingCopilotReview || requestedCopilot) {
+              requestOutcome = 'skipped: already reviewed or requested';
+            } else if (pr.draft) {
+              requestOutcome = 'skipped: draft PR';
+            } else if (risk === 'HIGH') {
+              requestOutcome = 'skipped: high-risk path needs deliberate review';
+            } else if (!codeFiles.length) {
+              requestOutcome = 'skipped: documentation/non-code-only';
+            } else if (!trigger) {
+              requestOutcome = 'skipped: no re-request on later push/reopen';
+            }
+            const checksResp = await github.rest.checks.listForRef({ owner, repo, ref: sha, per_page: 100 });
+            const checks = checksResp.data.check_runs || [];
+            const counts = {};
+            for (const c of checks) {
+              if (c.name === 'advisory-receipt') continue;
+              const label = c.status === 'completed' ? (c.conclusion || 'unknown') : (c.status || 'pending');
+              counts[label] = (counts[label] || 0) + 1;
+            }
+            const checkText = Object.keys(counts).length
+              ? Object.entries(counts).map(([k,v]) => k + ': ' + v).join(', ')
+              : 'none observed at snapshot time';
+            const next = risk === 'HIGH'
+              ? 'Targeted security review + explicit human release authorization'
+              : 'Finish deterministic CI and required checks; prepare authorized preview/human test';
+            const rows = [
+              '## CairnStone ship-gate receipt (advisory)',
+              '',
+              '| Field | Snapshot |', '|---|---|',
+              '| PR | #' + pull_number + ' |',
+              '| Head SHA | \`' + sha + '\` |',
+              '| Event | ' + event + ' |',
+              '| Risk (filenames only) | **' + risk + '** |',
+              '| Changed files | ' + paths.length + ' (' + codeFiles.length + ' code) |',
+              '| GitHub check runs | ' + checkText + ' |',
+              '| Copilot reviews recorded | ' + reviews.filter(r => /copilot-pull-request-reviewer/i.test(r.user?.login || '')).length + ' |',
+              '| Copilot review request | ' + requestOutcome + ' |',
+              '| Next action | ' + next + ' |',
+              '',
+              'This receipt is **not** approval to merge, deploy, or promote CairnStone accepted state.',
+              'Status is a point-in-time snapshot, not live-verified proof.'
+            ];
+            await core.summary.addRaw(rows.join('\n')).write();
