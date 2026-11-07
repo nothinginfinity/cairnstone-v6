@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 20
     env:
       LOCKFILE_SHA256: b131afd4a9e16c5d595162f742878e9904b87ec3f8df9f9e058132b61ece63b9
-      PACKAGE_JSON_SHA256: 29c0ce5c0e012a827b03c6486110309a7e314d6fa9d0e316f5e288c44b9db011
+      PACKAGE_JSON_SHA256: 8705ba1ad3914ac526c64acd37f48e9b9af34caf5dd5279d76e8607dbb8e2593
     steps:
       - uses: actions/checkout@v4
         with:

@@ -13,7 +13,11 @@ import {
   resolveContextResolution,
   EXECUTOR_ROUTE_RECEIPT_SCHEMA
 } from "./executor-profile.js";
-import { invokeExecutorAdapter } from "./executor-adapters.js";
+import {
+  invokeExecutorAdapter,
+  pollCodingAgentStatus,
+  cancelCodingAgentJob
+} from "./executor-adapters.js";
 
 function enrichRouteReceiptContext(routeReceipt) {
   if (!routeReceipt || !routeReceipt.selected_executor_id) return routeReceipt;
@@ -813,6 +817,20 @@ export async function dispatchTaskRun(db, {
   const receiptRefs = adapterResult.receipt?.receipt_id ? [adapterResult.receipt.receipt_id] : [];
   const completedAt = ["completed", "failed", "cancelled"].includes(nextStatus) ? createdAt : null;
   const startedAt = createdAt;
+  const prRefs = Array.isArray(adapterResult.pr_refs)
+    ? adapterResult.pr_refs
+    : (Array.isArray(adapterResult.receipt?.pr_refs) ? adapterResult.receipt.pr_refs : []);
+  const artifactRefs = [
+    ...(Array.isArray(adapterResult.artifact_refs) ? adapterResult.artifact_refs : []),
+    ...(Array.isArray(adapterResult.receipt?.artifact_refs) ? adapterResult.receipt.artifact_refs : [])
+  ];
+  const externalJob = adapterResult.job?.external_job || adapterResult.receipt?.external_job || null;
+  const externalJobRef = encodeExternalJobRef(externalJob);
+  if (externalJobRef) {
+    artifactRefs.push(externalJobRef);
+  }
+  const uniqueArtifacts = [...new Set(artifactRefs.map(a => String(a).slice(0, MAX_REF_LEN)))].slice(0, MAX_REFS);
+  const uniquePrs = [...new Set(prRefs.map(a => String(a).slice(0, MAX_REF_LEN)))].slice(0, MAX_REFS);
 
   try {
     await db.prepare(
@@ -828,6 +846,8 @@ export async function dispatchTaskRun(db, {
          route_receipt_json = ?,
          adapter_job_id = ?,
          receipt_refs_json = ?,
+         artifact_refs_json = ?,
+         pr_refs_json = ?,
          result_summary = ?,
          failure_reason = ?,
          human_committed_by = ?,
@@ -848,6 +868,8 @@ export async function dispatchTaskRun(db, {
       JSON.stringify(route.route_receipt),
       adapterResult.job?.job_id || null,
       JSON.stringify(receiptRefs),
+      JSON.stringify(uniqueArtifacts),
+      JSON.stringify(uniquePrs),
       adapterResult.receipt?.result_summary || null,
       adapterResult.receipt?.failure_reason || null,
       committer,
@@ -887,11 +909,93 @@ export async function dispatchTaskRun(db, {
   };
 }
 
+/**
+ * Compact external job identity refs (fit under MAX_REF_LEN):
+ *   extjob:github_agent_task:owner/repo:taskId
+ *   extjob:cursor_cloud_agent_run:agentId:runId
+ */
+export function encodeExternalJobRef(externalJob) {
+  if (!isObject(externalJob)) return null;
+  if (externalJob.kind === "github_agent_task" || externalJob.external_task_id || externalJob.task_id) {
+    const owner = externalJob.owner || "";
+    const repo = externalJob.repo || "";
+    const taskId = externalJob.external_task_id || externalJob.task_id || "";
+    if (!owner || !repo || !taskId) return null;
+    return `extjob:github_agent_task:${owner}/${repo}:${taskId}`.slice(0, MAX_REF_LEN);
+  }
+  if (externalJob.kind === "cursor_cloud_agent_run" || externalJob.external_agent_id || externalJob.agent_id) {
+    const agentId = externalJob.external_agent_id || externalJob.agent_id || "";
+    const runId = externalJob.external_run_id || externalJob.run_id || "";
+    if (!agentId || !runId) return null;
+    return `extjob:cursor_cloud_agent_run:${agentId}:${runId}`.slice(0, MAX_REF_LEN);
+  }
+  return null;
+}
+
+export function extractExternalJobFromTaskRun(taskRun) {
+  const refs = Array.isArray(taskRun?.artifact_refs) ? taskRun.artifact_refs : [];
+  for (const ref of refs) {
+    const s = String(ref || "");
+    if (s.startsWith("extjob:github_agent_task:")) {
+      const rest = s.slice("extjob:github_agent_task:".length);
+      const colon = rest.lastIndexOf(":");
+      if (colon <= 0) continue;
+      const fullName = rest.slice(0, colon);
+      const taskId = rest.slice(colon + 1);
+      const slash = fullName.indexOf("/");
+      if (slash <= 0 || !taskId) continue;
+      return {
+        kind: "github_agent_task",
+        owner: fullName.slice(0, slash),
+        repo: fullName.slice(slash + 1),
+        external_task_id: taskId,
+        task_id: taskId
+      };
+    }
+    if (s.startsWith("extjob:cursor_cloud_agent_run:")) {
+      const rest = s.slice("extjob:cursor_cloud_agent_run:".length);
+      // agent ids look like bc-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+      // run ids look like run-...
+      const runMarker = rest.lastIndexOf(":run-");
+      let agentId;
+      let runId;
+      if (runMarker > 0) {
+        agentId = rest.slice(0, runMarker);
+        runId = rest.slice(runMarker + 1);
+      } else {
+        const colon = rest.indexOf(":");
+        if (colon <= 0) continue;
+        agentId = rest.slice(0, colon);
+        runId = rest.slice(colon + 1);
+      }
+      if (!agentId || !runId) continue;
+      return {
+        kind: "cursor_cloud_agent_run",
+        external_agent_id: agentId,
+        agent_id: agentId,
+        external_run_id: runId,
+        run_id: runId
+      };
+    }
+    // Legacy / test fallback
+    if (s.startsWith("external_job_json:")) {
+      try {
+        const parsed = JSON.parse(s.slice("external_job_json:".length));
+        if (isObject(parsed)) return parsed;
+      } catch {
+        // ignore malformed
+      }
+    }
+  }
+  return null;
+}
+
 export async function cancelTaskRun(db, {
   task_run_id,
   actor_id,
   reason = null,
-  now = null
+  now = null,
+  env = null
 } = {}) {
   let id;
   let actor;
@@ -921,6 +1025,24 @@ export async function cancelTaskRun(db, {
   const cancelledAt = now || new Date().toISOString();
   const failureReason = reason ? String(reason).trim().slice(0, MAX_NOTE) : "cancelled_by_actor";
 
+  let providerCancel = null;
+  const externalJob = extractExternalJobFromTaskRun(taskRun);
+  if (externalJob && taskRun.selected_executor_id) {
+    try {
+      providerCancel = await cancelCodingAgentJob({
+        executor_id: taskRun.selected_executor_id,
+        external_job: externalJob,
+        env
+      });
+    } catch (error) {
+      providerCancel = {
+        ok: false,
+        error: "provider_cancel_exception",
+        detail: String(error?.message || error)
+      };
+    }
+  }
+
   await db.prepare(
     `UPDATE task_runs SET
        status = 'cancelled',
@@ -939,6 +1061,7 @@ export async function cancelTaskRun(db, {
   return {
     ok: true,
     task_run: rowToTaskRun(fresh),
+    provider_cancel: providerCancel,
     ...authorityClosedFields({
       dispatched: fresh.dispatch_state !== "not_dispatched",
       executor_invoked: Boolean(fresh.selected_executor_id)
@@ -946,10 +1069,76 @@ export async function cancelTaskRun(db, {
   };
 }
 
-export async function taskRunStatus(db, task_run_id, actor_id) {
+export async function taskRunStatus(db, task_run_id, actor_id, {
+  env = null,
+  poll_provider = true
+} = {}) {
   const got = await getTaskRun(db, task_run_id, actor_id);
   if (!got.ok) return got;
-  const tr = got.task_run;
+  let tr = got.task_run;
+  let providerStatus = null;
+
+  const externalJob = extractExternalJobFromTaskRun(tr);
+  const canPoll = poll_provider
+    && env
+    && externalJob
+    && tr.selected_executor_id
+    && !["completed", "failed", "cancelled", "proposed"].includes(tr.status);
+
+  if (canPoll) {
+    providerStatus = await pollCodingAgentStatus({
+      executor_id: tr.selected_executor_id,
+      external_job: externalJob,
+      env
+    });
+    // Only advance Task Run state from authoritative provider state — never invent complete.
+    if (providerStatus?.ok && providerStatus.task_status && providerStatus.provider_state) {
+      const nextStatus = providerStatus.task_status;
+      const nextDispatch = providerStatus.dispatch_state || tr.dispatch_state;
+      const terminal = ["completed", "failed", "cancelled"].includes(nextStatus);
+      if (nextStatus !== tr.status || nextDispatch !== tr.dispatch_state) {
+        const now = new Date().toISOString();
+        const prRefs = [
+          ...(Array.isArray(tr.pr_refs) ? tr.pr_refs : []),
+          ...(Array.isArray(providerStatus.pr_refs) ? providerStatus.pr_refs : [])
+        ];
+        const artifactRefs = [
+          ...(Array.isArray(tr.artifact_refs) ? tr.artifact_refs : []),
+          ...(Array.isArray(providerStatus.artifact_refs) ? providerStatus.artifact_refs : [])
+        ];
+        try {
+          await db.prepare(
+            `UPDATE task_runs SET
+               status = ?,
+               dispatch_state = ?,
+               result_summary = ?,
+               failure_reason = ?,
+               pr_refs_json = ?,
+               artifact_refs_json = ?,
+               completed_at = CASE WHEN ? = 1 THEN ? ELSE completed_at END,
+               updated_at = ?
+             WHERE task_run_id = ?`
+          ).bind(
+            nextStatus,
+            nextDispatch,
+            providerStatus.result_summary || tr.result_summary,
+            providerStatus.failure_reason || tr.failure_reason,
+            JSON.stringify([...new Set(prRefs)].slice(0, MAX_REFS)),
+            JSON.stringify([...new Set(artifactRefs)].slice(0, MAX_REFS)),
+            terminal ? 1 : 0,
+            terminal ? now : null,
+            now,
+            tr.task_run_id
+          ).run();
+          const fresh = await selectTaskRun(db, tr.task_run_id);
+          if (fresh) tr = rowToTaskRun(fresh);
+        } catch {
+          // status poll persistence is best-effort; still return provider snapshot
+        }
+      }
+    }
+  }
+
   return {
     ok: true,
     schema: TASK_RUN_SCHEMA,
@@ -964,6 +1153,9 @@ export async function taskRunStatus(db, task_run_id, actor_id) {
     completed_at: tr.completed_at,
     parent_task_run_id: tr.parent_task_run_id,
     child_task_run_ids: tr.child_task_run_ids,
+    pr_refs: tr.pr_refs,
+    artifact_refs: tr.artifact_refs,
+    provider_status: providerStatus,
     progress: {
       proposed: tr.status === "proposed",
       queued: tr.status === "queued",
@@ -1068,7 +1260,8 @@ export async function cancelTaskRunFromBody(body = {}, env = {}) {
   return cancelTaskRun(bindings.db, {
     task_run_id: body.task_run_id,
     actor_id: actor.value,
-    reason: body.reason || null
+    reason: body.reason || null,
+    env
   });
 }
 
@@ -1078,7 +1271,10 @@ export async function taskRunStatusFromBody(body = {}, env = {}) {
   const actor = requireActorField(body, "actor_id");
   if (!actor.ok) return actor;
   if (!isNonEmptyString(body.task_run_id)) return { ok: false, error: "task_run_id_required" };
-  return taskRunStatus(bindings.db, body.task_run_id, actor.value);
+  return taskRunStatus(bindings.db, body.task_run_id, actor.value, {
+    env,
+    poll_provider: body.poll_provider !== false
+  });
 }
 
 export const TASK_RUN_PROPOSE_TOOL_DEFINITION = Object.freeze({

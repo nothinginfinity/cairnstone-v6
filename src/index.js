@@ -283,7 +283,7 @@ import {
   verifyRegistrationForSession
 } from "./oauth-user-auth.js";
 
-const VERSION = "0.5.43";
+const VERSION = "0.5.44";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_LINES_PER_REF = 80;
 const DEFAULT_GITHUB_REF = "main";
@@ -928,7 +928,7 @@ export default {
         return json(getExecutorFromBody(await request.json(), env));
       }
       if (request.method === "POST" && url.pathname === "/v1/executors/health") {
-        return json(executorHealthFromBody(await request.json(), env));
+        return json(await executorHealthFromBody(await request.json(), env));
       }
       if (request.method === "POST" && url.pathname === "/v1/executors/route") {
         return json(routeExecutorFromBody(await request.json(), env));
@@ -1881,7 +1881,7 @@ async function callMcpTool(name, args, env, options = {}) {
   if (name === "cairnstone_agent_tree") return agentTreeFromBody(args, env);
   if (name === "cairnstone_executor_list") return listExecutorsFromBody(args, env);
   if (name === "cairnstone_executor_get") return getExecutorFromBody(args, env);
-  if (name === "cairnstone_executor_health") return executorHealthFromBody(args, env);
+  if (name === "cairnstone_executor_health") return await executorHealthFromBody(args, env);
   if (name === "cairnstone_executor_route") return routeExecutorFromBody(args, env);
   if (name === "cairnstone_forward_with_note") {
     return forwardWithNoteFromBody(args, env, { createStone: body => createStoneFromBody(body, env) });

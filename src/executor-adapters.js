@@ -1,14 +1,15 @@
-// V7.7.10d / 10d.1 — Executor adapter contracts + stubs / dry-run
+// V7.7.10d / 10d.1 / 10d.3 — Executor adapter contracts + stubs / live hooks
 //
 // Adapters are invoked ONLY after human_commit dispatch. Coding / AFO /
 // Copilot / Cursor paths record async stub jobs (adapter_live=false,
-// dry_run=true) unless a safe live hook already exists. Deterministic MCP
-// may run one bounded allowlisted read and attach a receipt.
-// Never stores raw API keys. Never moves HEADs.
+// dry_run=true) unless Worker secrets + allowlists enable a gated live path.
+// Deterministic MCP may run one bounded allowlisted read and attach a receipt.
+// Never stores raw API keys. Never moves HEADs. Never claims stub as live.
 //
 // V7.7.10d.1: never dump large compiled context into a CairnStone-native
 // executor prompt — dispatch min task envelope + refs only. External
 // executors get a bounded provenance-preserving compiled pack + receipts.
+// V7.7.10d.3: GitHub Copilot Agent Tasks + Cursor Cloud Agents API v1 adapters.
 
 import {
   getExecutorProfile,
@@ -17,6 +18,22 @@ import {
   COMPILED_CONTEXT_BUDGET,
   resolveContextResolution
 } from "./executor-profile.js";
+import {
+  dispatchGitHubCopilotTask,
+  getGitHubCopilotTaskStatus,
+  cancelGitHubCopilotTask,
+  probeGitHubCopilotHealth
+} from "./github-copilot-adapter.js";
+import {
+  dispatchCursorCloudAgent,
+  getCursorCloudRunStatus,
+  cancelCursorCloudRun,
+  probeCursorCloudHealth
+} from "./cursor-cloud-adapter.js";
+import {
+  normalizeFullSha,
+  CODING_AGENT_SECRET_NAMES
+} from "./coding-agent-common.js";
 
 export const ADAPTER_JOB_SCHEMA = "cairnstone-executor-adapter-job-v1";
 export const ADAPTER_RECEIPT_SCHEMA = "cairnstone-executor-adapter-receipt-v1";
@@ -33,6 +50,36 @@ export const DETERMINISTIC_MCP_ALLOWLIST = Object.freeze([
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function codingAgentTokenConfigured(executor_id, env) {
+  if (!env) return false;
+  if (executor_id === "exec:github-copilot") {
+    return typeof env[CODING_AGENT_SECRET_NAMES.github_copilot_token] === "string"
+      && env[CODING_AGENT_SECRET_NAMES.github_copilot_token].trim().length > 0;
+  }
+  if (executor_id === "exec:cursor-cloud") {
+    return typeof env[CODING_AGENT_SECRET_NAMES.cursor_cloud_api_key] === "string"
+      && env[CODING_AGENT_SECRET_NAMES.cursor_cloud_api_key].trim().length > 0;
+  }
+  return false;
+}
+
+function requireImmutableBaseSha(contextEnvelope, base_commit_sha) {
+  const sha = normalizeFullSha(
+    base_commit_sha
+    || contextEnvelope?.envelope?.immutable_base_sha
+    || contextEnvelope?.compiled_pack?.immutable_base_sha
+  );
+  if (!sha) {
+    return {
+      ok: false,
+      error: "immutable_base_sha_required",
+      detail: "Coding-agent live dispatch requires an exact 40-hex immutable base SHA",
+      ...authorityClosedFields()
+    };
+  }
+  return { ok: true, immutable_base_sha: sha };
 }
 
 function isObject(value) {
@@ -345,7 +392,8 @@ export const COPILOT_ADAPTER_CONTRACT = Object.freeze({
   adapter_id: "adapter:github-copilot-v1",
   operations: Object.freeze([
     "github_copilot_task_dispatch",
-    "github_copilot_task_status"
+    "github_copilot_task_status",
+    "github_copilot_task_cancel_local_only"
   ]),
   requirements: Object.freeze([
     "verify_copilot_availability_for_repo",
@@ -354,18 +402,26 @@ export const COPILOT_ADAPTER_CONTRACT = Object.freeze({
     "return_github_task_or_session_identity",
     "async_completion_status",
     "attach_pr_diff_test_evidence",
-    "never_treat_pr_as_accepted"
+    "never_treat_pr_as_accepted",
+    "fail_closed_without_token_or_allowlist",
+    "idempotent_dispatch_per_task_run"
   ]),
   context_mode: CONTEXT_MODES.compiled_context,
-  live_path: false,
-  notes: "Contract only in 10d — dry-run stub unless a safe live GitHub Copilot hook exists. Compiled context."
+  // live_path means the code path exists; availability still requires secrets + probe.
+  live_path: true,
+  live_path_gated_by: Object.freeze([
+    CODING_AGENT_SECRET_NAMES.github_copilot_token,
+    CODING_AGENT_SECRET_NAMES.github_copilot_allowed_repo
+  ]),
+  notes: "10d.3: gated live path via GitHub Agent Tasks API. Stub/blocked until token + allowlist + live evidence."
 });
 
 export const CURSOR_ADAPTER_CONTRACT = Object.freeze({
   adapter_id: "adapter:cursor-cloud-v1",
   operations: Object.freeze([
     "cursor_cloud_task_dispatch",
-    "cursor_cloud_task_status"
+    "cursor_cloud_task_status",
+    "cursor_cloud_task_cancel"
   ]),
   requirements: Object.freeze([
     "verify_cursor_agent_availability",
@@ -374,12 +430,20 @@ export const CURSOR_ADAPTER_CONTRACT = Object.freeze({
     "return_job_or_agent_run_identity",
     "async_completion_status",
     "attach_pr_diff_test_evidence",
-    "never_treat_result_as_accepted"
+    "never_treat_result_as_accepted",
+    "fail_closed_without_token_or_allowlist",
+    "idempotent_dispatch_per_task_run"
   ]),
   context_mode: CONTEXT_MODES.cairnstone_native,
-  live_path: false,
-  notes: "Contract only in 10d — dry-run stub. CairnStone-native context capable."
+  live_path: true,
+  live_path_gated_by: Object.freeze([
+    CODING_AGENT_SECRET_NAMES.cursor_cloud_api_key,
+    CODING_AGENT_SECRET_NAMES.cursor_cloud_allowed_repo_url
+  ]),
+  notes: "10d.3: gated live path via Cursor Cloud Agents API v1. Stub/blocked until API key + allowlist + live evidence."
 });
+
+export { probeGitHubCopilotHealth, probeCursorCloudHealth };
 
 export const AFO_ADAPTER_CONTRACT = Object.freeze({
   adapter_id: "adapter:afo-specialist-v1",
@@ -552,7 +616,129 @@ export async function invokeExecutorAdapter({
     };
   }
 
-  // Stub / dry-run path for coding agents, AFO, delegate
+  // Coding agents: gated live path when Worker secrets are configured.
+  // Without secrets → dry-run stub (never claims live). With secrets → fail closed
+  // on missing SHA / allowlist / permission; never invent running/complete.
+  if (executor_id === "exec:github-copilot" || executor_id === "exec:cursor-cloud") {
+    const wantsLive = codingAgentTokenConfigured(executor_id, env);
+    if (wantsLive) {
+      const shaGate = requireImmutableBaseSha(contextEnvelope, base_commit_sha);
+      if (!shaGate.ok) return shaGate;
+
+      const fetchImpl = env?.__coding_agent_fetch || null;
+      const sleepFn = env?.__coding_agent_sleep || null;
+      const existingExternal = isObject(task_run?.external_job)
+        ? task_run.external_job
+        : (isObject(env?.__existing_external_job) ? env.__existing_external_job : null);
+
+      let live = null;
+      if (executor_id === "exec:github-copilot") {
+        live = await dispatchGitHubCopilotTask({
+          env,
+          task_run,
+          envelope: contextEnvelope.envelope,
+          compiled_pack: contextEnvelope.compiled_pack,
+          immutable_base_sha: shaGate.immutable_base_sha,
+          existing_external_task_id: existingExternal?.external_task_id || null,
+          fetchImpl,
+          sleepFn,
+          now: createdAt
+        });
+      } else {
+        live = await dispatchCursorCloudAgent({
+          env,
+          task_run,
+          envelope: contextEnvelope.envelope,
+          immutable_base_sha: shaGate.immutable_base_sha,
+          existing_external_agent_id: existingExternal?.external_agent_id || null,
+          existing_external_run_id: existingExternal?.external_run_id || null,
+          fetchImpl,
+          sleepFn,
+          now: createdAt
+        });
+      }
+
+      if (!live.ok) {
+        return {
+          ok: false,
+          error: live.error || "coding_agent_live_dispatch_failed",
+          detail: live,
+          dispatch_context: contextEnvelope,
+          ...authorityClosedFields()
+        };
+      }
+
+      const adapterContractMeta = executor_id === "exec:github-copilot"
+        ? COPILOT_ADAPTER_CONTRACT
+        : CURSOR_ADAPTER_CONTRACT;
+      const externalJob = {
+        provider: live.provider,
+        ...(live.external_identity || {}),
+        external_task_id: live.external_task_id || null,
+        external_agent_id: live.external_agent_id || null,
+        external_run_id: live.external_run_id || null,
+        immutable_base_sha: live.immutable_base_sha || shaGate.immutable_base_sha
+      };
+      const receipt = {
+        schema: ADAPTER_RECEIPT_SCHEMA,
+        receipt_id: receiptId,
+        job_id: jobId,
+        executor_id,
+        adapter_id: contract.adapter_id,
+        task_run_id: task_run?.task_run_id || null,
+        route_receipt_id: route_receipt?.route_receipt_id || null,
+        adapter_live: true,
+        dry_run: false,
+        status: live.task_status || "queued",
+        sync: false,
+        base_commit_sha: shaGate.immutable_base_sha,
+        external_job: externalJob,
+        provider_state: live.provider_state || null,
+        idempotent_replay: live.idempotent_replay === true,
+        adapter_contract: adapterContractMeta,
+        context_mode: contextEnvelope.context_mode,
+        context_resolution: contextEnvelope.context_resolution,
+        compiled_pack_included: contextEnvelope.compiled_pack_included === true,
+        compiled_pack_receipt_digest: contextEnvelope.compiled_pack?.receipt_digest || null,
+        dispatch_envelope: contextEnvelope.envelope,
+        pr_refs: live.pr_refs || [],
+        artifact_refs: live.artifact_refs || [],
+        result_summary: live.result_summary || `live ${executor_id} dispatched`,
+        failure_reason: live.failure_reason || null,
+        created_at: createdAt,
+        completed_at: ["completed", "failed", "cancelled"].includes(live.task_status) ? createdAt : null,
+        accepted_state_authority: false
+      };
+
+      return {
+        ok: true,
+        schema: ADAPTER_RECEIPT_SCHEMA,
+        job: {
+          schema: ADAPTER_JOB_SCHEMA,
+          job_id: jobId,
+          executor_id,
+          adapter_id: contract.adapter_id,
+          status: live.task_status || "queued",
+          async: true,
+          dry_run: false,
+          adapter_live: true,
+          external_job: externalJob,
+          context_mode: contextEnvelope.context_mode,
+          context_resolution: contextEnvelope.context_resolution,
+          created_at: createdAt
+        },
+        receipt,
+        dispatch_context: contextEnvelope,
+        dispatch_state: live.dispatch_state || "dispatched",
+        task_status: live.task_status || "queued",
+        pr_refs: live.pr_refs || [],
+        artifact_refs: live.artifact_refs || [],
+        ...authorityClosedFields()
+      };
+    }
+  }
+
+  // Stub / dry-run path for coding agents (no token), AFO, delegate
   let adapterContractMeta = null;
   if (executor_id === "exec:github-copilot") adapterContractMeta = COPILOT_ADAPTER_CONTRACT;
   else if (executor_id === "exec:cursor-cloud") adapterContractMeta = CURSOR_ADAPTER_CONTRACT;
@@ -578,7 +764,7 @@ export async function invokeExecutorAdapter({
     compiled_pack_included: contextEnvelope.compiled_pack_included === true,
     compiled_pack_receipt_digest: contextEnvelope.compiled_pack?.receipt_digest || null,
     dispatch_envelope: contextEnvelope.envelope,
-    result_summary: `dry-run stub job recorded for ${executor_id}; context_resolution=${contextEnvelope.context_resolution}; live adapter not invoked`,
+    result_summary: `dry-run stub job recorded for ${executor_id}; context_resolution=${contextEnvelope.context_resolution}; live adapter not invoked (token absent or not configured)`,
     failure_reason: null,
     created_at: createdAt,
     completed_at: null,
@@ -605,6 +791,77 @@ export async function invokeExecutorAdapter({
     dispatch_context: contextEnvelope,
     dispatch_state: "dispatched",
     task_status: "queued",
+    ...authorityClosedFields()
+  };
+}
+
+/**
+ * Poll provider status for a live coding-agent job. Never invents terminal success.
+ */
+export async function pollCodingAgentStatus({
+  executor_id,
+  external_job = null,
+  env = null,
+  fetchImpl = null,
+  sleepFn = null
+} = {}) {
+  if (!external_job || !isObject(external_job)) {
+    return { ok: false, error: "external_job_required", ...authorityClosedFields() };
+  }
+  const impl = fetchImpl || env?.__coding_agent_fetch || null;
+  const sleep = sleepFn || env?.__coding_agent_sleep || null;
+
+  if (executor_id === "exec:github-copilot" || external_job.kind === "github_agent_task") {
+    return getGitHubCopilotTaskStatus({
+      env,
+      owner: external_job.owner || null,
+      repo: external_job.repo || null,
+      task_id: external_job.external_task_id || external_job.task_id,
+      fetchImpl: impl,
+      sleepFn: sleep
+    });
+  }
+  if (executor_id === "exec:cursor-cloud" || external_job.kind === "cursor_cloud_agent_run") {
+    return getCursorCloudRunStatus({
+      env,
+      agent_id: external_job.external_agent_id || external_job.agent_id,
+      run_id: external_job.external_run_id || external_job.run_id,
+      fetchImpl: impl,
+      sleepFn: sleep
+    });
+  }
+  return { ok: false, error: "unsupported_coding_agent_executor", ...authorityClosedFields() };
+}
+
+/**
+ * Provider-side cancel when supported. Copilot: local-only (API has no cancel).
+ */
+export async function cancelCodingAgentJob({
+  executor_id,
+  external_job = null,
+  env = null,
+  fetchImpl = null,
+  sleepFn = null
+} = {}) {
+  const impl = fetchImpl || env?.__coding_agent_fetch || null;
+  const sleep = sleepFn || env?.__coding_agent_sleep || null;
+
+  if (executor_id === "exec:github-copilot" || external_job?.kind === "github_agent_task") {
+    return cancelGitHubCopilotTask();
+  }
+  if (executor_id === "exec:cursor-cloud" || external_job?.kind === "cursor_cloud_agent_run") {
+    return cancelCursorCloudRun({
+      env,
+      agent_id: external_job?.external_agent_id || external_job?.agent_id,
+      run_id: external_job?.external_run_id || external_job?.run_id,
+      fetchImpl: impl,
+      sleepFn: sleep
+    });
+  }
+  return {
+    ok: true,
+    provider_cancel: false,
+    provider_cancel_unsupported: true,
     ...authorityClosedFields()
   };
 }

@@ -872,7 +872,7 @@ test("authenticated tools/call succeeds on core-auth canary", async () => {
   const body = await response.json();
   const tool = JSON.parse(body.result.content[0].text);
   assert.equal(tool.ok, true);
-  assert.equal(tool.version, "0.5.43");
+  assert.equal(tool.version, "0.5.44");
 });
 
 test("legacy /mcp and /mcp/core unchanged and do not touch auth_*", async () => {
@@ -903,11 +903,11 @@ test("PRM well-known publishes residual risk + resource", async () => {
   assert.equal(body.residual_risk.stolen_same_resource_bearer_replay, "not_solved");
 });
 
-test("VERSION remains 0.5.43 (no runtime bump)", async () => {
+test("VERSION is 0.5.44 after coding-agent adapter slice", async () => {
   const env = envFor(new FakeAuthD1());
   const response = await worker.fetch(new Request("https://cairnstone.test/health"), env);
   const body = await response.json();
-  assert.equal(body.version, "0.5.43");
+  assert.equal(body.version, "0.5.44");
   assert.equal(body.mcp_core_auth, "/mcp/core-auth");
 });
 
