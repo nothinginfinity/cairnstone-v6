@@ -347,6 +347,20 @@ more accepted path-head/edge detail.
     sending an AC1 correspondence message to relevant agent IDs — especially
     if concurrent work is plausible.
 
+### Ship-threshold control loop — cross-agent instruction (2026-11-07)
+
+**Default posture: reach the next safe, human-testable milestone; do not create review loops without a new reason.** This operational rule applies to all AFO/CairnStone clients that read this guide. Use the accepted `cairnstone.ship-threshold` skill once published; until then, this guide is the lightweight common policy, not authority to bypass approvals.
+
+1. Define desired state, risk tier, test surface and existing authorization before coding. Check canonical HEAD, relevant AC1 inboxes, live repository/CI and applicable accepted instructions.
+2. Run a **bounded verification gate**: lint, tests, CI, targeted review/security checks as appropriate to risk. Triage material findings; do not equate repeated opinions or review stones with progress.
+3. **Stop internal review** when required checks pass and no material blocker remains. Reopen for a new failing test, material risk finding, changed requirements, observed failure, or relevant new signal—not another identical opinion. An agent cannot create its own AC1 message as authorization.
+4. **Risk tiers:** low-risk UI/documentation/isolated features → authorized preview + human mobile/UX testing; medium-risk logic/API changes → relevant tests, targeted review, authorized staging; high-risk auth, secrets, payments/wallet/x402, sending, production data/migrations, destructive changes, public release → explicit scope-specific authorization and enhanced safeguards. Never auto-merge or production-deploy solely from green CI.
+5. Produce a **ship-gate receipt**: project, PR/SHA, environment, passed checks, material outstanding findings, risk, authorization, verified preview URL (if any), next human test, and state. Distinguish `CANDIDATE`, `PREVIEW_READY`, `HUMAN_TEST_REQUESTED`, `HUMAN_ACCEPTED`, `PRODUCTION_RELEASED`, and `LIVE_VERIFIED`. None implies another.
+6. If authorized, ship the preview and issue an AC1 feedback handoff. If not, stop with the **single exact blocker**. AC1 and Stones are coordination/evidence, never implicit permission for merge, deployment, mutation or accepted HEAD promotions. Until AC1 explicitly supports them, encode `ship_for_human_test` / `ux_feedback_requested` as message content, not invented native intent values.
+7. Preserve Git-versioned skill acceptance: immutable candidate source → lint → individual skill path HEADs → manifest HEAD last. Guide change is not by itself accepted skill publication.
+
+**Forward pressure:** human feedback, AC1 coordination, changed code/requirements, CI failure, production telemetry or newly authorized work. **Backpressure:** bounded quality/security gates with explicit exit criteria. Optimize for real tested increments, not uncontrolled releases.
+
 ## 7. The wider AFO tool ecosystem
 
 - **GitHub**: use deterministic GitHub search/call primitives for authoritative
@@ -551,7 +565,7 @@ documented decision, not a default reflex.
 
 ---
 
-*Last updated: 2026-10-10 (added automatic AC1-to-Hop Card interactive companion policy).*\n\n*Previously: 2026-10-07 (added experimental cross-provider Hop Registry bootstrap for version-controlled precision-hop mass testing).*\n\n*Previously: 2026-09-07 (added Section 8, MCP Twin client tool-catalog
+*Last updated: 2026-11-07 (added risk-tiered cross-agent ship-threshold control loop).*\n\n*Previously: 2026-10-07 (added experimental cross-provider Hop Registry bootstrap for version-controlled precision-hop mass testing).*\n\n*Previously: 2026-09-07 (added Section 8, MCP Twin client tool-catalog
 cache workaround; renumbered old Sections 8→9, 9→10).*
 
 *Previously: 2026-09-06. V7.7.1a bounded START HERE orientation is production-live-accepted on runtime 0.5.27: normal continuation should use `cairnstone_resume_chain(..., detail="start_here")`, with `compact`/`full` as deliberate expansion modes. V7.7 vault catalog/scope/search primitives are live; Scope is retrieval/navigation context only and never synthetic global authority. Cross-chain grounded Q&A (`cairnstone_ask_scope`) remains planned for V7.7.2 and must not be assumed shipped. V6.10 remains the frozen V6 control-plane baseline; new agent-runtime architecture belongs in V7 unless an explicit correctness or security backport to V6 is required. If you update this document,
